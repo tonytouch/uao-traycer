@@ -5,6 +5,12 @@ description: "Track the latest updates and improvements to the Traycer CLI."
 rss: true
 ---
 
+<Update label="v1.4.1">
+Clearer recovery when the macOS Host service is no longer registered.
+
+- **macOS Host service** — if neither the Desktop-managed nor CLI-managed service is loaded, start and restart commands explain how to recover: quit and reopen Traycer Desktop, or run `traycer host service install` to register the CLI-managed service.
+</Update>
+
 <Update label="v1.4.0">
 Restarts and updates that recover cleanly, a cooperative stop on Windows, and a lighter Host on macOS.
 
