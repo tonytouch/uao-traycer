@@ -9,7 +9,7 @@ rss: true
 More reliable provider sign-in and model selection.
 
 - **Provider sign-in** — sign-in stays open while the Host prepares the provider. If a provider refuses the sign-in, Traycer shows its reason and offers **Verify account** when the provider supplies a verification link.
-- **Provider setup** — sign-in controls explain when a provider is turned off, its CLI is still being prepared, or the selected CLI is unavailable. Antigravity no longer offers **Add custom path**, since it requires its own agent server.
+- **Provider setup** — sign-in controls explain when a provider is turned off, its CLI is still being prepared, or the selected CLI is unavailable. Antigravity keeps **Add custom path** visible but disabled, because it uses its own ACP server instead of the `agy` CLI.
 - **Model selection** — saved models are recognized when a provider adds or removes a context-tier suffix such as `[1m]`, without confusing two different context tiers.
 </Update>
 
