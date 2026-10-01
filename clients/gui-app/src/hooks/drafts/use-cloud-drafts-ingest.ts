@@ -17,29 +17,33 @@ import {
 import { appLogger, describeLogError } from "@/lib/logger";
 import { draftDocumentFromCloudHead } from "@/lib/drafts/cloud-draft-apply";
 import {
+  cloudDraftHeadKey,
+  cloudDraftHeadSettled,
   flushAbsentOwnCloudDrafts,
   ingestCloudDraftSummary,
   reserveCloudDraftIngestFence,
   sweepAbsentCloudDraftMirrors,
 } from "@/lib/drafts/draft-mirror-coordinator";
-import { cloudDraftIdentityKey } from "@/lib/drafts/cloud-draft-identity";
 import { useCloudDraftsDirectory } from "./use-cloud-drafts-directory";
-
-function ingestKey(summary: CloudChatSummary): string {
-  return `${cloudDraftIdentityKey(summary)}:${summary.headSha256}`;
-}
 
 /**
  * Whether the guard may skip a listed head: the identity key (owner plus
- * head) was already ingested by this mount. Ownership never moves, so a row
- * whose owner differs from the listing is a different row under the same
- * id, which a new key already covers.
+ * head) was already ingested by this mount, or the coordinator has settled
+ * it in an earlier mount of this renderer and its mirror is still here. The
+ * second half is what keeps a Task open from re-reading every foreign draft
+ * head: this hook mounts on the landing page and in every tab, and the
+ * per-mount set alone made each mount a full fan-out through the host.
+ * Ownership never moves, so a row whose owner differs from the listing is a
+ * different row under the same id, which a new key already covers.
  */
 function guardMaySkip(
   ingestedKeys: ReadonlyMap<string, string>,
   summary: CloudChatSummary,
 ): boolean {
-  return ingestedKeys.has(ingestKey(summary));
+  return (
+    ingestedKeys.has(cloudDraftHeadKey(summary)) ||
+    cloudDraftHeadSettled(summary)
+  );
 }
 
 /** Attempts per head, including the first. Bounded, with exponential spacing. */
@@ -164,7 +168,7 @@ export function useCloudDraftsIngest(
       // fork or re-mint elsewhere publishes under a fresh id, but an id the
       // directory lists under another owner than this mount last ingested
       // is not the head it recorded.
-      const key = ingestKey(summary);
+      const key = cloudDraftHeadKey(summary);
       if (guardMaySkip(ingestedKeys, summary)) continue;
       ingestedKeys.set(key, summary.identity.chatId);
       unsettledKeys.add(key);

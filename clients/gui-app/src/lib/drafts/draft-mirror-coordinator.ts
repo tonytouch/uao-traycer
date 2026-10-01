@@ -31,6 +31,7 @@ import {
   blobHashesOfDocument,
 } from "./draft-write-codec";
 import { draftKindIsHostBound } from "./draft-portability";
+import { cloudDraftIdentityKey } from "./cloud-draft-identity";
 import {
   forgetCloudDraftPayloadUnsupportedHost,
   rebindCloudDraftImageClientForHost,
@@ -209,6 +210,21 @@ let landingAdoptionHostId: string | null = null;
  */
 let cloudIngestSeq = 0;
 const cloudIngestSeqByDraft = new Map<string, number>();
+/**
+ * Cloud heads this renderer has SETTLED, keyed by {@link cloudDraftHeadKey}
+ * (the row's identity plus its `headSha256`), holding the id of the landing
+ * mirror the head installed, or `null` when the head was decided without a
+ * mirror (a host-bound kind, a refused apply).
+ *
+ * Process-wide on purpose. The ingest hook used to keep this guard on its own
+ * instance, and it is mounted by the landing page and again by every tab, so
+ * each Task open re-read every foreign draft head through the host - about
+ * sixty `api/chats/resolve` on an account with two hosts, queued ahead of the
+ * chat the person was opening. A head is read once per renderer lifetime and
+ * again only when its `headSha256` changes (a new key), when the sweep drops
+ * its mirror, or when the mirror is gone from the store by any other road.
+ */
+const settledCloudDraftHeads = new Map<string, string | null>();
 /**
  * View state of landing rows a successor may inherit, keyed by the
  * superseded id: a row a host `delete` frame removed while open in this
@@ -1277,6 +1293,7 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   landingAdoptionHostId = null;
   cloudIngestSeq = 0;
   cloudIngestSeqByDraft.clear();
+  settledCloudDraftHeads.clear();
   inheritableLandingTabs.clear();
   retiredStashIdsThisSession.clear();
   warnedUnboundComposer.clear();
@@ -1391,8 +1408,12 @@ export async function ingestCloudDraftSummary(input: {
   // overwrites the row for a chat that lives on THAT host - flipping the
   // owning host's own live draft to `origin: "replica"`, which would make
   // the chat composer fork it on the next keystroke. Every tile mount
-  // re-ran this.
-  if (draftKindIsHostBound(input.document.kind)) return;
+  // re-ran this. Settled for this head: the decision is about the KIND, so
+  // nothing a later mount could read would change it.
+  if (draftKindIsHostBound(input.document.kind)) {
+    settledCloudDraftHeads.set(cloudDraftHeadKey(input.summary), null);
+    return;
+  }
   // The absence-sweep fence is reserved by `applyHostDocument` at its
   // (synchronous) start, before the blob reads: an older directory request
   // settling in that window already sees this row as newer than its
@@ -1435,6 +1456,16 @@ export async function ingestCloudDraftSummary(input: {
   // needs the account re-asked before this document is applied.
   if (fetchesStashImages && currentDraftBlobOwnerId() !== ingestOwner) return;
   const installed = await applyHostDocument(input.document, stashImages);
+  // Settled either way. An installed landing head is remembered WITH its
+  // mirror's id, so the guard can tell when that mirror has since left the
+  // store and the head has to be read again; every other outcome is terminal
+  // for THIS head (a newer head arrives under a new key).
+  settledCloudDraftHeads.set(
+    cloudDraftHeadKey(input.summary),
+    installed && input.document.kind === "landing"
+      ? input.summary.identity.chatId
+      : null,
+  );
   // No row took it, so this document roots nothing and there is nothing for
   // recovery to fetch FOR - whether it was retired, fenced by a pending
   // delete, beaten by a newer apply, refused as an older revision, or kept out
@@ -1598,6 +1629,42 @@ export function cloudDraftIngestSeq(): number {
 }
 
 /**
+ * The row's identity plus the head it currently publishes. `headSha256` is
+ * part of the key because the identity alone is stable across publishes: a
+ * newer head for the same draft must be a new key, or the replica goes stale.
+ */
+export function cloudDraftHeadKey(summary: CloudChatSummary): string {
+  return `${cloudDraftIdentityKey(summary)}:${summary.headSha256}`;
+}
+
+/**
+ * Whether this renderer has already settled the head a directory row lists,
+ * so a mount need not read it. A head recorded with a mirror id answers true
+ * only while that mirror is still in the landing store; a mirror removed by
+ * any road clears the record, and the next mount reads the head again.
+ */
+export function cloudDraftHeadSettled(summary: CloudChatSummary): boolean {
+  const key = cloudDraftHeadKey(summary);
+  const mirrorId = settledCloudDraftHeads.get(key);
+  if (mirrorId === undefined) return false;
+  if (mirrorId === null) return true;
+  const present = useLandingDraftStore
+    .getState()
+    .drafts.some((draft) => draft.id === mirrorId);
+  if (!present) settledCloudDraftHeads.delete(key);
+  return present;
+}
+
+/** Forget every settled head whose mirror is one of `draftIds`. */
+function forgetSettledCloudDraftHeads(draftIds: ReadonlySet<string>): void {
+  for (const [key, mirrorId] of settledCloudDraftHeads) {
+    if (mirrorId !== null && draftIds.has(mirrorId)) {
+      settledCloudDraftHeads.delete(key);
+    }
+  }
+}
+
+/**
  * Reserve the absence-sweep fence for a draft whose cloud head is about
  * to be READ: the read (head plus parts) can take a while, and an older
  * directory snapshot settling meanwhile must not sweep the existing mirror
@@ -1624,7 +1691,7 @@ export function sweepAbsentCloudDraftMirrors(
   listed: ReadonlyMap<string, ReadonlySet<string>>,
   fenceSeq: number,
 ): readonly string[] {
-  return dropForeignLandingMirrorsAbsent(hostId, listed, (draft) => {
+  const dropped = dropForeignLandingMirrorsAbsent(hostId, listed, (draft) => {
     if ((cloudIngestSeqByDraft.get(draft.id) ?? 0) > fenceSeq) return false;
     if (draft.origin === "replica") return true;
     // A row with no recorded publication state is treated as unpublished.
@@ -1635,6 +1702,10 @@ export function sweepAbsentCloudDraftMirrors(
       !sessions.has(draft.adoption.hostId)
     );
   });
+  // A dropped mirror's head is no longer settled here: the same head listed
+  // again later (a row that reappears) is read and applied again.
+  if (dropped.length > 0) forgetSettledCloudDraftHeads(new Set(dropped));
+  return dropped;
 }
 
 /**

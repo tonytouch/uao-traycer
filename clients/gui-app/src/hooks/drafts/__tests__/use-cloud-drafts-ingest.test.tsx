@@ -49,6 +49,12 @@ const flushMock = vi.hoisted(() => ({
     >(),
 }));
 flushMock.flush.mockReturnValue([]);
+// The coordinator's process-wide "settled" record. Nothing settled unless a
+// test says so; keyed exactly as production keys it.
+const settledMock = vi.hoisted(() => ({
+  settled: vi.fn<(summary: CloudChatSummary) => boolean>(),
+}));
+settledMock.settled.mockReturnValue(false);
 
 vi.mock("@/hooks/drafts/use-cloud-drafts-directory", () => ({
   useCloudDraftsDirectory: () => ({
@@ -67,6 +73,10 @@ vi.mock("@/lib/drafts/cloud-draft-reader", () => ({
     readMock.read(),
 }));
 vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
+  cloudDraftHeadKey: (summary: CloudChatSummary): string =>
+    `${summary.ownerHostId}:${summary.identity.taskId}:${summary.identity.ownerUserId}:${summary.identity.chatId}:${summary.headSha256}`,
+  cloudDraftHeadSettled: (summary: CloudChatSummary): boolean =>
+    settledMock.settled(summary),
   reserveCloudDraftIngestFence: (draftId: string): void =>
     reserveMock.reserve(draftId),
   ingestCloudDraftSummary: (args: {
@@ -163,6 +173,8 @@ afterEach(() => {
   sweepMock.sweep.mockReturnValue([]);
   flushMock.flush.mockReset();
   flushMock.flush.mockReturnValue([]);
+  settledMock.settled.mockReset();
+  settledMock.settled.mockReturnValue(false);
   vi.useRealTimers();
 });
 
@@ -583,6 +595,63 @@ describe("useCloudDraftsIngest", () => {
     expect(firstReserve).toBeGreaterThanOrEqual(0);
     expect(firstSweep).toBeGreaterThanOrEqual(0);
     expect(firstReserve).toBeLessThan(firstSweep);
+  });
+
+  it("a fresh mount reads nothing for a head the coordinator has settled: no read, no fence, no ingest", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    settledMock.settled.mockReturnValue(true);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    // A second mount of the hook (a new tab) starts with an empty per-mount
+    // set; the coordinator's record is what stops the fan-out.
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settledMock.settled).toHaveBeenCalled();
+    expect(readMock.read).not.toHaveBeenCalled();
+    expect(reserveMock.reserve).not.toHaveBeenCalled();
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
+  });
+
+  it("a settled head is still swept and nudged like any listed row; only the read is skipped", async () => {
+    settledMock.settled.mockReturnValue(true);
+    directoryMock.settled = true;
+    directoryMock.snapshotSeq = 7;
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sweepMock.sweep).toHaveBeenCalledTimes(1);
+    const [, listed, fenceSeq] = sweepMock.sweep.mock.calls[0];
+    expect(fenceSeq).toBe(7);
+    expect(listed.get("draft-1")).toEqual(new Set([OWNER_HOST_ID]));
+    expect(flushMock.flush).toHaveBeenCalledTimes(1);
+    expect(readMock.read).not.toHaveBeenCalled();
+  });
+
+  it("reads a head again once the coordinator no longer reports it settled (its mirror left the store)", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    settledMock.settled.mockReturnValue(true);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(readMock.read).not.toHaveBeenCalled();
+
+    settledMock.settled.mockReturnValue(false);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+    view.rerender();
+
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(1);
   });
 
   it("releases the guard for a chat the sweep drops, so a later listing re-ingests its head", async () => {
