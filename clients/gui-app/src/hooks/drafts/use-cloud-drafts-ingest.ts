@@ -19,6 +19,7 @@ import { draftDocumentFromCloudHead } from "@/lib/drafts/cloud-draft-apply";
 import {
   beginCloudDraftHeadRead,
   cloudDraftHeadKey,
+  cloudDraftHeadReading,
   cloudDraftHeadSettled,
   flushAbsentOwnCloudDrafts,
   ingestCloudDraftSummary,
@@ -129,10 +130,14 @@ export function useCloudDraftsIngest(
     // replica names must be re-read, not dropped by the owner-aware absence
     // check below and re-created by the ingest, reconciling away an open
     // tab in between. Its summary is a new key, so it is always among these.
-    const toRead = foreign.filter(
-      (summary) => !guardMaySkip(ingestedKeys, summary),
+    // A head ANOTHER mount is reading right now is reserved too: this mount
+    // would have read it itself before the coordinator held the claim, and
+    // the reader's apply must not meet a replica this run's sweep dropped.
+    const toReserve = foreign.filter(
+      (summary) =>
+        !guardMaySkip(ingestedKeys, summary) || cloudDraftHeadReading(summary),
     );
-    for (const summary of toRead) {
+    for (const summary of toReserve) {
       reserveCloudDraftIngestFence(summary.identity.chatId);
     }
     if (directory.settled) {
@@ -242,9 +247,16 @@ export function useCloudDraftsIngest(
         // in this loop under a new key. Recorded in the coordinator too, or
         // every later mount would resolve the same head again for the same
         // answer - for an app older than the heads it is shown, the whole
-        // fan-out over again.
+        // fan-out over again. One kind is NOT about the head: an ambiguous
+        // identity is the server's precedence among rows for the viewer,
+        // which can change under the same sha, so that claim is released
+        // and the next mount asks again, as every mount did before.
         if (outcome.kind !== "ok") {
-          settleCloudDraftHeadWithoutApply(summary);
+          if (outcome.kind === "ambiguous-identity") {
+            releaseCloudDraftHeadRead(summary);
+          } else {
+            settleCloudDraftHeadWithoutApply(summary);
+          }
           settle();
           return;
         }

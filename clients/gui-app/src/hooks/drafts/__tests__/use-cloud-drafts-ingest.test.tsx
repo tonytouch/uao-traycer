@@ -55,6 +55,12 @@ const settledMock = vi.hoisted(() => ({
   settled: vi.fn<(summary: CloudChatSummary) => boolean>(),
 }));
 settledMock.settled.mockReturnValue(false);
+// Whether ANOTHER mount is reading the head right now (the coordinator's
+// "reading" record). Nobody is unless a test says so.
+const readingMock = vi.hoisted(() => ({
+  reading: vi.fn<(summary: CloudChatSummary) => boolean>(),
+}));
+readingMock.reading.mockReturnValue(false);
 // The coordinator's claim on a head: begun before a read, released when the
 // read ends without a decision, settled when it answers a terminal refusal.
 const claimMock = vi.hoisted(() => ({
@@ -84,6 +90,8 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
     `${summary.ownerHostId}:${summary.identity.taskId}:${summary.identity.ownerUserId}:${summary.identity.chatId}:${summary.headSha256}`,
   cloudDraftHeadSettled: (summary: CloudChatSummary): boolean =>
     settledMock.settled(summary),
+  cloudDraftHeadReading: (summary: CloudChatSummary): boolean =>
+    readingMock.reading(summary),
   beginCloudDraftHeadRead: (summary: CloudChatSummary): void =>
     claimMock.begin(summary),
   releaseCloudDraftHeadRead: (summary: CloudChatSummary): void =>
@@ -188,6 +196,8 @@ afterEach(() => {
   flushMock.flush.mockReturnValue([]);
   settledMock.settled.mockReset();
   settledMock.settled.mockReturnValue(false);
+  readingMock.reading.mockReset();
+  readingMock.reading.mockReturnValue(false);
   claimMock.begin.mockReset();
   claimMock.release.mockReset();
   claimMock.settleWithoutApply.mockReset();
@@ -631,6 +641,39 @@ describe("useCloudDraftsIngest", () => {
     expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 
+  it("fences, without reading or claiming, a head another mount is reading right now", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    // A head under read is settled as far as the guard is concerned (the
+    // coordinator answers true for both), and reading as well.
+    settledMock.settled.mockReturnValue(true);
+    readingMock.reading.mockReturnValue(true);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Reserved once, pre-sweep: the reader's apply must not meet a replica
+    // this mount's absence sweep dropped. Nothing else is done with the row.
+    expect(reserveMock.reserve).toHaveBeenCalledTimes(1);
+    expect(reserveMock.reserve).toHaveBeenCalledWith("draft-1");
+    expect(readMock.read).not.toHaveBeenCalled();
+    expect(claimMock.begin).not.toHaveBeenCalled();
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
+  });
+
+  it("does not fence a settled head nobody is reading", async () => {
+    settledMock.settled.mockReturnValue(true);
+    readingMock.reading.mockReturnValue(false);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reserveMock.reserve).not.toHaveBeenCalled();
+    expect(readMock.read).not.toHaveBeenCalled();
+  });
+
   it("a settled head is still swept and nudged like any listed row; only the read is skipped", async () => {
     settledMock.settled.mockReturnValue(true);
     directoryMock.settled = true;
@@ -794,6 +837,31 @@ describe("useCloudDraftsIngest", () => {
     expect(readMock.read).toHaveBeenCalledTimes(1);
     expect(ingestMock.ingest).not.toHaveBeenCalled();
     expect(claimMock.release).not.toHaveBeenCalled();
+  });
+
+  it("releases, and does not settle, a head whose read answers an ambiguous identity, without a retry or an ingest", async () => {
+    vi.useFakeTimers();
+    readMock.read.mockResolvedValue({
+      kind: "ambiguous-identity",
+      record: null,
+    });
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(claimMock.release).toHaveBeenCalledTimes(1);
+    });
+    expect(claimMock.release).toHaveBeenCalledWith(row);
+    expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
+    expect(claimMock.release).toHaveBeenCalledTimes(1);
+    expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
   });
 
   it("releases the coordinator's claim when the effect is torn down with a read still pending", async () => {

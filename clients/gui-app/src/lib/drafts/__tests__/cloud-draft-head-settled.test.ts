@@ -5,6 +5,7 @@ import {
   applyIncomingDraftDocument,
   beginCloudDraftHeadRead,
   cloudDraftHeadKey,
+  cloudDraftHeadReading,
   cloudDraftHeadSettled,
   cloudDraftIngestSeq,
   ingestCloudDraftSummary,
@@ -18,6 +19,7 @@ import {
   retireLandingDraft,
 } from "@/lib/drafts/landing-draft-retirement";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
+import { useAuthStore } from "@/stores/auth/auth-store";
 
 const HOST_ID = "host-a";
 const OWNER_HOST_ID = "host-b";
@@ -117,6 +119,7 @@ afterEach(() => {
   resetDraftMirrorCoordinatorForTests();
   useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
   resetLandingDraftRetirementsForTests();
+  useAuthStore.setState({ contextMetadata: null });
 });
 
 describe("cloudDraftHeadSettled", () => {
@@ -339,5 +342,77 @@ describe("cloudDraftHeadSettled", () => {
     expect(cloudDraftHeadSettled(firstNewer)).toBe(true);
     expect(cloudDraftHeadSettled(first)).toBe(false);
     expect(cloudDraftHeadSettled(second)).toBe(true);
+  });
+});
+
+describe("cloudDraftHeadReading", () => {
+  it("is true while a head is being read, for the same sha only", () => {
+    const reading = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const other = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO);
+    expect(cloudDraftHeadReading(reading)).toBe(false);
+
+    beginCloudDraftHeadRead(reading);
+
+    expect(cloudDraftHeadReading(reading)).toBe(true);
+    expect(cloudDraftHeadReading(other)).toBe(false);
+  });
+
+  it("is false once the read is released", () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    beginCloudDraftHeadRead(summary);
+
+    releaseCloudDraftHeadRead(summary);
+
+    expect(cloudDraftHeadReading(summary)).toBe(false);
+  });
+
+  it("is false once the head is settled, although the head still counts as settled", () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    beginCloudDraftHeadRead(summary);
+
+    settleCloudDraftHeadWithoutApply(summary);
+
+    expect(cloudDraftHeadReading(summary)).toBe(false);
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+  });
+
+  it("releases, rather than settles, a read whose apply started under another account", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    useAuthStore.setState({
+      contextMetadata: { userId: "user-b", username: "b" },
+    });
+    beginCloudDraftHeadRead(summary);
+    expect(cloudDraftHeadReading(summary)).toBe(true);
+
+    // The read was issued under user-a; the window now belongs to user-b.
+    await ingestCloudDraftSummary({
+      hostId: HOST_ID,
+      summary,
+      document: cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+      readOwner: "user-a",
+    });
+
+    expect(landingIds()).toEqual([]);
+    expect(cloudDraftHeadSettled(summary)).toBe(false);
+    expect(cloudDraftHeadReading(summary)).toBe(false);
+  });
+
+  it("still applies and settles a read whose account matches the window's", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    useAuthStore.setState({
+      contextMetadata: { userId: "user-a", username: "a" },
+    });
+    beginCloudDraftHeadRead(summary);
+
+    await ingestCloudDraftSummary({
+      hostId: HOST_ID,
+      summary,
+      document: cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+      readOwner: "user-a",
+    });
+
+    expect(landingIds()).toEqual([DRAFT_ID]);
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+    expect(cloudDraftHeadReading(summary)).toBe(false);
   });
 });

@@ -215,8 +215,10 @@ const cloudIngestSeqByDraft = new Map<string, number>();
  * `headSha256` it is reading or has settled, and for a settled landing head
  * the id of the mirror it installed, so the guard can tell when that mirror
  * has since left the store. One entry per row (`cloudDraftIdentityKey`); a
- * new head for the row overwrites the old one, so the map is bounded by the
- * directory's size.
+ * new head for the row overwrites the old one. A mirror's record ends with
+ * the mirror; a settled record without one stays until the row's head
+ * changes, so the map is bounded by the rows this renderer has ever been
+ * shown, not by the directory's current size.
  */
 type CloudDraftHeadRecord = {
   readonly headSha256: string | null;
@@ -1437,7 +1439,13 @@ export async function ingestCloudDraftSummary(input: {
   // started under A and finished under B would install A's text under B with
   // every check agreeing.
   const ingestOwner = input.readOwner;
-  if (currentDraftBlobOwnerId() !== ingestOwner) return;
+  // A head read under another account decides nothing about this one: the
+  // claim is released, like every refusal about the moment, or a reader
+  // that switched A -> B -> A would find its own stale claim and never ask.
+  if (currentDraftBlobOwnerId() !== ingestOwner) {
+    releaseCloudDraftHeadRead(input.summary);
+    return;
+  }
   // A stash row's bytes have to arrive WITH it. `ingestRemote` is idempotent
   // by entry id and the images ride the same durable write as the row, so
   // there is no second chance after the apply - which is why this fetch is
@@ -1465,7 +1473,10 @@ export async function ingestCloudDraftSummary(input: {
   // `null` for a stash document too - no hashes, no mounted client, a read that
   // threw - and every one of those still awaited, so every one of them still
   // needs the account re-asked before this document is applied.
-  if (fetchesStashImages && currentDraftBlobOwnerId() !== ingestOwner) return;
+  if (fetchesStashImages && currentDraftBlobOwnerId() !== ingestOwner) {
+    releaseCloudDraftHeadRead(input.summary);
+    return;
+  }
   const installed = await applyHostDocument(input.document, stashImages);
   // What the guard remembers about this head. An installed landing head is
   // remembered WITH its mirror's id, so the record ends when that mirror
@@ -1683,6 +1694,21 @@ export function cloudDraftHeadSettled(summary: CloudChatSummary): boolean {
     .drafts.some((draft) => draft.id === mirrorId);
   if (!present) cloudDraftHeads.delete(key);
   return present;
+}
+
+/**
+ * Whether another mount of this renderer is reading the head a row lists
+ * right now. A mount that skips such a head still reserves its ingest fence,
+ * as it did when it read every head itself: the reader's apply must not meet
+ * a replica this mount's absence sweep dropped in the meantime.
+ */
+export function cloudDraftHeadReading(summary: CloudChatSummary): boolean {
+  const record = cloudDraftHeads.get(cloudDraftIdentityKey(summary));
+  return (
+    record !== undefined &&
+    record.state === "reading" &&
+    record.headSha256 === summary.headSha256
+  );
 }
 
 /**
