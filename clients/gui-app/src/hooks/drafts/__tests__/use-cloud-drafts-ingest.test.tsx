@@ -55,6 +55,13 @@ const settledMock = vi.hoisted(() => ({
   settled: vi.fn<(summary: CloudChatSummary) => boolean>(),
 }));
 settledMock.settled.mockReturnValue(false);
+// The coordinator's claim on a head: begun before a read, released when the
+// read ends without a decision, settled when it answers a terminal refusal.
+const claimMock = vi.hoisted(() => ({
+  begin: vi.fn<(summary: CloudChatSummary) => void>(),
+  release: vi.fn<(summary: CloudChatSummary) => void>(),
+  settleWithoutApply: vi.fn<(summary: CloudChatSummary) => void>(),
+}));
 
 vi.mock("@/hooks/drafts/use-cloud-drafts-directory", () => ({
   useCloudDraftsDirectory: () => ({
@@ -77,6 +84,12 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
     `${summary.ownerHostId}:${summary.identity.taskId}:${summary.identity.ownerUserId}:${summary.identity.chatId}:${summary.headSha256}`,
   cloudDraftHeadSettled: (summary: CloudChatSummary): boolean =>
     settledMock.settled(summary),
+  beginCloudDraftHeadRead: (summary: CloudChatSummary): void =>
+    claimMock.begin(summary),
+  releaseCloudDraftHeadRead: (summary: CloudChatSummary): void =>
+    claimMock.release(summary),
+  settleCloudDraftHeadWithoutApply: (summary: CloudChatSummary): void =>
+    claimMock.settleWithoutApply(summary),
   reserveCloudDraftIngestFence: (draftId: string): void =>
     reserveMock.reserve(draftId),
   ingestCloudDraftSummary: (args: {
@@ -113,7 +126,7 @@ const MAX_HEAD_READ_ATTEMPTS = 3;
 const HEAD_READ_RETRY_BASE_MS = 2_000;
 
 function summary(
-  headSha256: string,
+  headSha256: string | null,
   overrides: Partial<CloudChatSummary> | null,
 ): CloudChatSummary {
   return {
@@ -175,6 +188,9 @@ afterEach(() => {
   flushMock.flush.mockReturnValue([]);
   settledMock.settled.mockReset();
   settledMock.settled.mockReturnValue(false);
+  claimMock.begin.mockReset();
+  claimMock.release.mockReset();
+  claimMock.settleWithoutApply.mockReset();
   vi.useRealTimers();
 });
 
@@ -690,5 +706,181 @@ describe("useCloudDraftsIngest", () => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(2);
     });
     expect(readMock.read).toHaveBeenCalledTimes(3);
+  });
+
+  it("neither reads, fences nor claims a row that has no head yet, while still reading the rows beside it", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    const headless = summary(null, null);
+    const published = summary(DIGEST_ONE, {
+      identity: {
+        taskId: "scp_1",
+        chatId: "draft-2",
+        ownerUserId: "user-1",
+      },
+    });
+    directoryMock.chats = [headless, published];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    // Only the published row was read, claimed and fenced.
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(claimMock.begin).toHaveBeenCalledWith(published);
+    expect(claimMock.begin).not.toHaveBeenCalledWith(headless);
+    expect(reserveMock.reserve).not.toHaveBeenCalledWith("draft-1");
+    expect(reserveMock.reserve).toHaveBeenCalledWith("draft-2");
+    expect(ingestMock.ingest.mock.calls[0][0].summary).toBe(published);
+  });
+
+  it("does nothing at all for a lone row that has no head yet", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    directoryMock.chats = [summary(null, null)];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(readMock.read).not.toHaveBeenCalled();
+    expect(reserveMock.reserve).not.toHaveBeenCalled();
+    expect(claimMock.begin).not.toHaveBeenCalled();
+    expect(claimMock.release).not.toHaveBeenCalled();
+    expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
+  });
+
+  it("claims the head with the coordinator before its read starts", async () => {
+    const order: string[] = [];
+    claimMock.begin.mockImplementation(() => {
+      order.push("begin");
+    });
+    readMock.read.mockImplementation(() => {
+      order.push("read");
+      // Never resolves: the claim must already stand while the read is pending.
+      return new Promise(() => {});
+    });
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(readMock.read).toHaveBeenCalledTimes(1);
+    });
+    expect(order).toEqual(["begin", "read"]);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(claimMock.begin).toHaveBeenCalledWith(row);
+    expect(claimMock.release).not.toHaveBeenCalled();
+    expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
+  });
+
+  it("settles a head whose read answers a terminal refusal, without a retry or an ingest", async () => {
+    vi.useFakeTimers();
+    readMock.read.mockResolvedValue({ kind: "unpublished", record: null });
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(claimMock.settleWithoutApply).toHaveBeenCalledTimes(1);
+    });
+    expect(claimMock.settleWithoutApply).toHaveBeenCalledWith(row);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
+    expect(claimMock.release).not.toHaveBeenCalled();
+  });
+
+  it("releases the coordinator's claim when the effect is torn down with a read still pending", async () => {
+    readMock.read.mockImplementation(() => new Promise(() => {}));
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(readMock.read).toHaveBeenCalledTimes(1);
+    });
+    expect(claimMock.begin).toHaveBeenCalledWith(row);
+    expect(claimMock.release).not.toHaveBeenCalled();
+
+    view.unmount();
+
+    expect(claimMock.release).toHaveBeenCalledTimes(1);
+    expect(claimMock.release).toHaveBeenCalledWith(row);
+    expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
+  });
+
+  it("releases the coordinator's claim once, at the end, when every attempt of a head read throws", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
+    readMock.read.mockRejectedValue(new Error("persistent read failure"));
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    // Attempt 0 fails and arms the first retry; the claim stands through it.
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    expect(claimMock.release).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
+
+    // Attempt 1 fails and arms the second retry (doubled); still claimed.
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(2);
+    expect(claimMock.release).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 2);
+
+    // Attempt 2 is the last: it gives up and releases.
+    await vi.waitFor(() => {
+      expect(claimMock.release).toHaveBeenCalledTimes(1);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+    expect(claimMock.release).toHaveBeenCalledWith(row);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
+    expect(claimMock.release).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  it("releases the coordinator's claim once, at the end, when every attempt of an apply throws", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockRejectedValue(new Error("persistent apply failure"));
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    expect(claimMock.release).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    expect(claimMock.release).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 2);
+
+    await vi.waitFor(() => {
+      expect(claimMock.release).toHaveBeenCalledTimes(1);
+    });
+    expect(ingestMock.ingest).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+    expect(claimMock.release).toHaveBeenCalledWith(row);
+    warnSpy.mockRestore();
   });
 });

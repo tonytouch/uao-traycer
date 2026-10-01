@@ -17,30 +17,37 @@ import {
 import { appLogger, describeLogError } from "@/lib/logger";
 import { draftDocumentFromCloudHead } from "@/lib/drafts/cloud-draft-apply";
 import {
+  beginCloudDraftHeadRead,
   cloudDraftHeadKey,
   cloudDraftHeadSettled,
   flushAbsentOwnCloudDrafts,
   ingestCloudDraftSummary,
+  releaseCloudDraftHeadRead,
   reserveCloudDraftIngestFence,
+  settleCloudDraftHeadWithoutApply,
   sweepAbsentCloudDraftMirrors,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { useCloudDraftsDirectory } from "./use-cloud-drafts-directory";
 
 /**
- * Whether the guard may skip a listed head: the identity key (owner plus
- * head) was already ingested by this mount, or the coordinator has settled
- * it in an earlier mount of this renderer and its mirror is still here. The
- * second half is what keeps a Task open from re-reading every foreign draft
- * head: this hook mounts on the landing page and in every tab, and the
- * per-mount set alone made each mount a full fan-out through the host.
- * Ownership never moves, so a row whose owner differs from the listing is a
- * different row under the same id, which a new key already covers.
+ * Whether the guard may skip a listed row: it has no head yet (nothing to
+ * resolve; a first publish arrives as a new `headSha256`), the identity key
+ * (owner plus head) was already ingested by this mount, or the coordinator
+ * has it in hand - another mount is reading it now, or an earlier mount of
+ * this renderer settled it and its mirror is still here. The coordinator's
+ * half is what keeps a Task open from re-reading every foreign draft head:
+ * this hook mounts on the landing page and in every tab, and the per-mount
+ * set alone made each mount a full fan-out through the host, N-fold when N
+ * tabs restored at once. Ownership never moves, so a row whose owner differs
+ * from the listing is a different row under the same id, which a new key
+ * already covers.
  */
 function guardMaySkip(
   ingestedKeys: ReadonlyMap<string, string>,
   summary: CloudChatSummary,
 ): boolean {
   return (
+    summary.headSha256 === null ||
     ingestedKeys.has(cloudDraftHeadKey(summary)) ||
     cloudDraftHeadSettled(summary)
   );
@@ -101,10 +108,12 @@ export function useCloudDraftsIngest(
     // In both cases the key sits in `ingestedKeys`, so the next run of this
     // effect would skip the row as already handled. Releasing only at settle
     // time is too late: the next setup has already walked the list by then.
-    // So teardown clears the timers AND releases every key still unsettled,
-    // and the chains themselves return without touching the set once aborted.
+    // So teardown clears the timers AND releases every key still unsettled -
+    // here and in the coordinator, whose process-wide "reading" record is
+    // what keeps the other mounts off the head - and the chains themselves
+    // return without touching the set once aborted.
     const pendingTimers = new Set<TimerHandle>();
-    const unsettledKeys = new Set<string>();
+    const unsettledKeys = new Map<string, CloudChatSummary>();
     const tornDown = (): boolean => scope.signal.aborted;
     const foreign = directory.chats.filter(
       (chat) => chat.ownerHostId !== hostId,
@@ -171,7 +180,13 @@ export function useCloudDraftsIngest(
       const key = cloudDraftHeadKey(summary);
       if (guardMaySkip(ingestedKeys, summary)) continue;
       ingestedKeys.set(key, summary.identity.chatId);
-      unsettledKeys.add(key);
+      unsettledKeys.set(key, summary);
+      // Claimed process-wide BEFORE the read: a second mount walking the same
+      // directory in the same tick (N tabs restored into one Task) skips the
+      // head instead of reading it too. The coordinator settles or releases
+      // the claim when the read decides; the two exhausted-attempt exits and
+      // teardown below release it themselves.
+      beginCloudDraftHeadRead(summary);
       const settle = (): void => {
         unsettledKeys.delete(key);
       };
@@ -203,6 +218,7 @@ export function useCloudDraftsIngest(
             // rather than leaving the row hidden for good.
             settle();
             ingestedKeys.delete(key);
+            releaseCloudDraftHeadRead(summary);
             appLogger.warn("[cloud-drafts] head read failed", {
               attempts: nextAttempt,
               error: describeLogError(error),
@@ -223,8 +239,12 @@ export function useCloudDraftsIngest(
         // A SETTLED refusal - unpublished, corrupt, needs-newer-app - stays
         // marked rather than retried: it is terminal for THIS head, and a head
         // that later publishes arrives under a new `headSha256`, so it lands
-        // in this loop under a new key.
+        // in this loop under a new key. Recorded in the coordinator too, or
+        // every later mount would resolve the same head again for the same
+        // answer - for an app older than the heads it is shown, the whole
+        // fan-out over again.
         if (outcome.kind !== "ok") {
+          settleCloudDraftHeadWithoutApply(summary);
           settle();
           return;
         }
@@ -252,6 +272,7 @@ export function useCloudDraftsIngest(
           if (nextAttempt >= MAX_HEAD_READ_ATTEMPTS) {
             settle();
             ingestedKeys.delete(key);
+            releaseCloudDraftHeadRead(summary);
             appLogger.warn("[cloud-drafts] head apply failed", {
               attempts: nextAttempt,
               error: describeLogError(error),
@@ -274,7 +295,10 @@ export function useCloudDraftsIngest(
       scope.abort();
       for (const timer of pendingTimers) clearTimeout(timer);
       pendingTimers.clear();
-      for (const pendingKey of unsettledKeys) ingestedKeys.delete(pendingKey);
+      for (const [pendingKey, pendingSummary] of unsettledKeys) {
+        ingestedKeys.delete(pendingKey);
+        releaseCloudDraftHeadRead(pendingSummary);
+      }
       unsettledKeys.clear();
     };
   }, [
