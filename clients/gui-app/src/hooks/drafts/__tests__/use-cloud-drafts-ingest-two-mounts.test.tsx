@@ -239,7 +239,7 @@ describe("useCloudDraftsIngest across mounts, on the real coordinator", () => {
     });
     expect(cloudDraftHeadReading(pendingRow)).toBe(true);
 
-    // A second mount skips the claimed head but still reserves its ingest
+    // A second mount skips the claimed head but still reserves its SWEEP
     // fence: the sequence moves, and no second read is issued.
     const fenceBefore = cloudDraftIngestSeq();
     const bystander = mount();

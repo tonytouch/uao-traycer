@@ -212,6 +212,24 @@ let landingAdoptionHostId: string | null = null;
 let cloudIngestSeq = 0;
 const cloudIngestSeqByDraft = new Map<string, number>();
 /**
+ * The same ordering fence, reserved for a row a directory LISTS but that the
+ * walking mount will not apply (another mount is reading the head, or it is
+ * settled). Kept apart from `cloudIngestSeqByDraft` because that map is
+ * also the apply's supersession check: an apply abandons itself when the
+ * row's sequence moved under its blob reads, which is right for a newer
+ * apply or a newer head's read and wrong for a mount that merely walked a
+ * directory listing the row. The sweep and the flush read the later of the
+ * two.
+ */
+const cloudSweepFenceByDraft = new Map<string, number>();
+
+function cloudDraftFenceSeq(draftId: string): number {
+  return Math.max(
+    cloudIngestSeqByDraft.get(draftId) ?? 0,
+    cloudSweepFenceByDraft.get(draftId) ?? 0,
+  );
+}
+/**
  * What this renderer knows about one foreign cloud draft row's head: the
  * `headSha256` it is reading or has settled, and for a settled landing head
  * the id of the mirror it installed, so the guard can tell when that mirror
@@ -1348,6 +1366,7 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   landingAdoptionHostId = null;
   cloudIngestSeq = 0;
   cloudIngestSeqByDraft.clear();
+  cloudSweepFenceByDraft.clear();
   cloudDraftHeads.clear();
   cloudDraftHeadAbandonListeners.clear();
   inheritableLandingTabs.clear();
@@ -2087,6 +2106,20 @@ export function reserveCloudDraftIngestFence(draftId: string): void {
 }
 
 /**
+ * Reserve the absence-sweep fence for a row a directory lists that this
+ * mount will NOT read or apply: it is another mount's head, or a settled
+ * one. A positive listing still has to order against older snapshots (a
+ * later-dispatched response that lists the row can run before an
+ * earlier-dispatched one that omits it), but this reservation must not
+ * supersede an apply of the row that another mount has in flight, which
+ * {@link reserveCloudDraftIngestFence} would: it keeps its own map.
+ */
+export function reserveCloudDraftSweepFence(draftId: string): void {
+  cloudIngestSeq += 1;
+  cloudSweepFenceByDraft.set(draftId, cloudIngestSeq);
+}
+
+/**
  * Drop local mirrors of cloud rows a settled directory no longer lists.
  * `fenceSeq` is the ingest sequence at that directory's fetch start: a row
  * ingested since is kept. A replica qualifies once clean. An OWN row
@@ -2101,7 +2134,7 @@ export function sweepAbsentCloudDraftMirrors(
   fenceSeq: number,
 ): readonly string[] {
   const dropped = dropForeignLandingMirrorsAbsent(hostId, listed, (draft) => {
-    if ((cloudIngestSeqByDraft.get(draft.id) ?? 0) > fenceSeq) return false;
+    if (cloudDraftFenceSeq(draft.id) > fenceSeq) return false;
     if (draft.origin === "replica") return true;
     // A row with no recorded publication state is treated as unpublished.
     return (
@@ -2144,7 +2177,7 @@ export function flushAbsentOwnCloudDrafts(
     ) {
       continue;
     }
-    if ((cloudIngestSeqByDraft.get(draft.id) ?? 0) > fenceSeq) continue;
+    if (cloudDraftFenceSeq(draft.id) > fenceSeq) continue;
     const owners = listed.get(draft.id);
     if (
       owners !== undefined &&

@@ -3,16 +3,21 @@ import type {
   IStreamSession,
   ServerFrameHandler,
 } from "@traycer-clients/shared/host-transport/i-stream-session";
-import type { DraftWrite } from "@traycer/protocol/host";
+import type { DraftDocument, DraftWrite } from "@traycer/protocol/host";
+import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import {
   acquireDraftMirrorSession,
   draftsCloudScopeId,
   flushAbsentOwnCloudDrafts,
+  ingestCloudDraftSummary,
   releaseDraftMirrorSession,
   reserveCloudDraftIngestFence,
+  reserveCloudDraftSweepFence,
   resetDraftMirrorCoordinatorForTests,
   subscribeDraftsCloudScope,
+  sweepAbsentCloudDraftMirrors,
 } from "@/lib/drafts/draft-mirror-coordinator";
+import { installFreshIndexedDb } from "@/lib/composer/__tests__/fake-idb";
 import { cloudDraftsDirectoryIsVisible } from "@/lib/drafts/cloud-drafts-visibility";
 import {
   emptyLandingDraftWorkspaceSnapshot,
@@ -217,6 +222,16 @@ function publishedOwnRow(
   };
 }
 
+/**
+ * The two ways a row is reserved against an older directory snapshot. Both
+ * order a positive listing (or an apply) against the sweep and the flush; only
+ * the ingest fence is also an apply's supersession check.
+ */
+const RESERVERS: ReadonlyArray<readonly [string, (draftId: string) => void]> = [
+  ["ingest fence", reserveCloudDraftIngestFence],
+  ["sweep fence", reserveCloudDraftSweepFence],
+];
+
 describe("flushAbsentOwnCloudDrafts", () => {
   it("nudges a published own row the directory no longer lists with a subscribe flush for that row, and nothing else", async () => {
     const stream = streamHarness();
@@ -287,26 +302,224 @@ describe("flushAbsentOwnCloudDrafts", () => {
     releaseDraftMirrorSession(HOST_ID);
   });
 
-  it("does not nudge a row applied after the directory snapshot was dispatched", async () => {
-    const stream = streamHarness();
+  it.each(RESERVERS)(
+    "does not nudge a row reserved after the directory snapshot was dispatched: %s",
+    async (_name, reserve) => {
+      const stream = streamHarness();
+      acquireDraftMirrorSession({
+        hostId: HOST_ID,
+        client: listNullClient() as never,
+        streamClient: stream.client as never,
+        timing: undefined,
+      });
+      await vi.waitFor(() => {
+        expect(stream.subscribeCalls.count).toBe(1);
+      });
+      useLandingDraftStore.setState({
+        drafts: [
+          publishedOwnRow("fresh-own", {}),
+          publishedOwnRow("stale-own", {}),
+        ],
+        activeDraftId: null,
+      });
+      // Reserved after the snapshot's fence (0): newer than the directory.
+      // `stale-own` is the control: the same row, never reserved.
+      reserve("fresh-own");
+
+      expect(flushAbsentOwnCloudDrafts(new Map(), 0, new Set())).toEqual([
+        "stale-own",
+      ]);
+      await vi.waitFor(() => {
+        expect(stream.sentFrames).toEqual([
+          { kind: "flush", hasBinaryPayload: false, draftIds: ["stale-own"] },
+        ]);
+      });
+      releaseDraftMirrorSession(HOST_ID);
+    },
+  );
+});
+
+describe("sweepAbsentCloudDraftMirrors: fences", () => {
+  it.each(RESERVERS)(
+    "keeps a replica reserved after the snapshot's fence and drops the same row unreserved: %s",
+    (_name, reserve) => {
+      const replica = (id: string): LandingDraftTab =>
+        publishedOwnRow(id, {
+          origin: "replica",
+          ownerHostId: "host-other",
+          adoption: { state: "adopted", hostId: "host-other" },
+        });
+      useLandingDraftStore.setState({
+        drafts: [replica("reserved-replica"), replica("unreserved-replica")],
+        activeDraftId: null,
+      });
+      // Reserved after the snapshot's fence (0): newer than the directory.
+      reserve("reserved-replica");
+
+      const dropped = sweepAbsentCloudDraftMirrors(
+        "host-ingesting",
+        new Map(),
+        0,
+      );
+
+      expect(dropped).toEqual(["unreserved-replica"]);
+      expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toEqual([
+        "reserved-replica",
+      ]);
+    },
+  );
+});
+
+describe("a fence reservation while a landing apply awaits its blob read", () => {
+  const OWNER_HOST_ID = "host-owner";
+  const INGEST_HOST_ID = "host-ingest";
+  const DRAFT_ID = "draft-in-flight";
+  const BLOB_HASH = "ef".repeat(32);
+
+  function landingDocumentNamingBlob(): DraftDocument {
+    return {
+      draftId: DRAFT_ID,
+      kind: "landing",
+      target: { epicId: null, chatId: null, blockId: null },
+      revision: 1,
+      lastTouchedAt: 2,
+      workspace: null,
+      supersedes: null,
+      ownerHostId: OWNER_HOST_ID,
+      origin: "replica",
+      adoption: { state: "adopted", hostId: OWNER_HOST_ID },
+      publication: {
+        status: "current",
+        lastPublishedAt: 1,
+        publishedRevision: null,
+        halted: null,
+      },
+      portable: {
+        content: EMPTY_LANDING_DRAFT_CONTENT,
+        selection: null,
+        runSettings: null,
+        composerMode: "chat",
+        blobHashes: [BLOB_HASH],
+        closed: false,
+      },
+    };
+  }
+
+  function cloudSummaryOf(document: DraftDocument): CloudChatSummary {
+    return {
+      identity: {
+        taskId: SCOPE_ID,
+        chatId: document.draftId,
+        ownerUserId: "user-1",
+      },
+      ownerHostId: document.ownerHostId,
+      createdAt: 1,
+      visibility: "private",
+      title: null,
+      isTitleEditedByUser: false,
+      parentChatId: null,
+      isArchived: false,
+      runSettingsSummary: null,
+      metadataUpdatedAt: 1,
+      headSha256: "ab".repeat(32),
+      publishedAt: 1,
+      throughRecordSeq: 1,
+      isOwnedByViewer: true,
+    };
+  }
+
+  /**
+   * Mounts the OWNER host's mirror session (the apply's blob prefetch reads
+   * through `sessionClients.get(document.ownerHostId)`) with a client whose
+   * `drafts.readBlob` parks until `releaseBlobRead` answers it "missing".
+   */
+  function mountOwnerHostWithParkedBlobRead(): {
+    readonly blobReadRequested: () => boolean;
+    readonly releaseBlobRead: () => void;
+  } {
+    let requested = false;
+    let release: () => void = () => undefined;
+    const parked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     acquireDraftMirrorSession({
-      hostId: HOST_ID,
-      client: listNullClient() as never,
-      streamClient: stream.client as never,
+      hostId: OWNER_HOST_ID,
+      client: {
+        request: (method: string) => {
+          if (method === "drafts.list") {
+            return Promise.resolve({
+              drafts: [],
+              tombstones: [],
+              snapshotSeq: 0,
+              scopeId: null,
+            });
+          }
+          if (method === "drafts.readBlob") {
+            requested = true;
+            return parked.then(() => ({
+              ok: false as const,
+              reason: "missing" as const,
+            }));
+          }
+          return Promise.reject(new Error(`unexpected ${String(method)}`));
+        },
+      } as never,
+      streamClient: streamHarness().client as never,
       timing: undefined,
     });
-    await vi.waitFor(() => {
-      expect(stream.subscribeCalls.count).toBe(1);
-    });
-    useLandingDraftStore.setState({
-      drafts: [publishedOwnRow("fresh-own", {})],
-      activeDraftId: null,
-    });
-    // Reserved after the snapshot's fence (0): newer than the directory.
-    reserveCloudDraftIngestFence("fresh-own");
+    return {
+      blobReadRequested: () => requested,
+      releaseBlobRead: release,
+    };
+  }
 
-    expect(flushAbsentOwnCloudDrafts(new Map(), 0, new Set())).toEqual([]);
-    expect(stream.sentFrames).toEqual([]);
-    releaseDraftMirrorSession(HOST_ID);
+  /** Starts the ingest and returns once its blob read is parked. */
+  async function startIngestAwaitingBlobRead(): Promise<{
+    readonly ingest: Promise<void>;
+    readonly releaseBlobRead: () => void;
+  }> {
+    installFreshIndexedDb();
+    const owner = mountOwnerHostWithParkedBlobRead();
+    await Promise.resolve(); // let the session's bootstrap `list` settle
+    const document = landingDocumentNamingBlob();
+    const ingest = ingestCloudDraftSummary({
+      hostId: INGEST_HOST_ID,
+      summary: cloudSummaryOf(document),
+      document,
+      readOwner: null,
+    });
+    await vi.waitFor(() => {
+      expect(owner.blobReadRequested()).toBe(true);
+    });
+    expect(useLandingDraftStore.getState().drafts).toEqual([]);
+    return { ingest, releaseBlobRead: owner.releaseBlobRead };
+  }
+
+  it("installs the row when only the SWEEP fence was reserved for it meanwhile", async () => {
+    const inFlight = await startIngestAwaitingBlobRead();
+
+    // Another mount's walk lists the row and orders it against older
+    // snapshots; it must not supersede the apply this mount has in flight.
+    reserveCloudDraftSweepFence(DRAFT_ID);
+    inFlight.releaseBlobRead();
+    await inFlight.ingest;
+
+    expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toEqual([
+      DRAFT_ID,
+    ]);
+    releaseDraftMirrorSession(OWNER_HOST_ID);
+  });
+
+  it("abandons the apply when the INGEST fence was reserved for the row meanwhile", async () => {
+    const inFlight = await startIngestAwaitingBlobRead();
+
+    // A newer head's read starting is a supersession: whoever reserved last
+    // wins the row, and this older apply installs nothing.
+    reserveCloudDraftIngestFence(DRAFT_ID);
+    inFlight.releaseBlobRead();
+    await inFlight.ingest;
+
+    expect(useLandingDraftStore.getState().drafts).toEqual([]);
+    releaseDraftMirrorSession(OWNER_HOST_ID);
   });
 });

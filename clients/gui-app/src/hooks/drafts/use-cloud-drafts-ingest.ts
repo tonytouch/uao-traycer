@@ -26,6 +26,7 @@ import {
   noteCloudDraftHeadHost,
   releaseCloudDraftHeadRead,
   reserveCloudDraftIngestFence,
+  reserveCloudDraftSweepFence,
   settleCloudDraftHeadWithoutApply,
   subscribeCloudDraftHeadAbandoned,
   sweepAbsentCloudDraftMirrors,
@@ -146,10 +147,14 @@ export function useCloudDraftsIngest(
     // the row reserved past its own fence. Before the coordinator held the
     // record, a mount's first walk reserved every head because it read every
     // head; this keeps that ordering for the heads it now skips, at the cost
-    // of one map write per listed row per walk.
+    // of one map write per listed row per walk. The SWEEP fence, not the
+    // ingest fence: the ingest fence is also the apply's supersession check,
+    // and a walk that merely lists a row must not abandon the apply another
+    // mount has in flight for it. A head this run reads reserves the ingest
+    // fence itself, before its read.
     for (const summary of foreign) {
       if (summary.headSha256 === null) continue;
-      reserveCloudDraftIngestFence(summary.identity.chatId);
+      reserveCloudDraftSweepFence(summary.identity.chatId);
     }
     if (directory.settled) {
       // Every listed row, keyed by id with the owners it is listed under:

@@ -13,7 +13,14 @@ const directoryMock = vi.hoisted(() => ({
 const readMock = vi.hoisted(() => ({
   read: vi.fn<() => Promise<{ kind: string; record: unknown }>>(),
 }));
+// The INGEST fence: reserved only when a head read starts, and it is also the
+// coordinator's apply supersession check.
 const reserveMock = vi.hoisted(() => ({
+  reserve: vi.fn<(draftId: string) => void>(),
+}));
+// The SWEEP fence: reserved for every listed foreign head on each walk, read
+// or skipped, and never supersedes an apply.
+const sweepFenceMock = vi.hoisted(() => ({
   reserve: vi.fn<(draftId: string) => void>(),
 }));
 const ingestMock = vi.hoisted(() => ({
@@ -123,6 +130,8 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
     claimMock.settleWithoutApply(summary),
   reserveCloudDraftIngestFence: (draftId: string): void =>
     reserveMock.reserve(draftId),
+  reserveCloudDraftSweepFence: (draftId: string): void =>
+    sweepFenceMock.reserve(draftId),
   ingestCloudDraftSummary: (args: {
     hostId: string;
     summary: CloudChatSummary;
@@ -221,6 +230,7 @@ afterEach(() => {
   directoryMock.snapshotSeq = 0;
   readMock.read.mockReset();
   reserveMock.reserve.mockReset();
+  sweepFenceMock.reserve.mockReset();
   ingestMock.ingest.mockReset();
   sweepMock.sweep.mockReset();
   // No mirrors dropped unless a test says otherwise.
@@ -277,16 +287,16 @@ describe("useCloudDraftsIngest", () => {
 
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
 
-    // The fence is reserved BEFORE the head read resolves - while the read
-    // is still pending, the reserve has already happened but nothing has
-    // ingested yet. It is reserved twice: once pre-sweep for every foreign
-    // row with a head, and once more inside `attemptRead`, before its own
-    // read.
+    // The ingest fence is reserved BEFORE the head read resolves - while the
+    // read is still pending, the reserve has already happened but nothing
+    // has ingested yet. It is reserved once, inside `attemptRead`, before its
+    // own read; the pre-sweep walk reservation is the separate SWEEP fence.
     await vi.waitFor(() => {
-      expect(reserveMock.reserve).toHaveBeenCalledTimes(2);
+      expect(reserveMock.reserve).toHaveBeenCalledTimes(1);
     });
     expect(reserveMock.reserve).toHaveBeenNthCalledWith(1, "draft-1");
-    expect(reserveMock.reserve).toHaveBeenNthCalledWith(2, "draft-1");
+    expect(sweepFenceMock.reserve).toHaveBeenCalledTimes(1);
+    expect(sweepFenceMock.reserve).toHaveBeenCalledWith("draft-1");
     expect(readMock.read).toHaveBeenCalledTimes(1);
     expect(ingestMock.ingest).not.toHaveBeenCalled();
 
@@ -347,10 +357,11 @@ describe("useCloudDraftsIngest", () => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
     });
     expect(readMock.read).toHaveBeenCalledTimes(2);
-    // Reserved once pre-sweep (every foreign row with a head is) plus once
-    // per attempt: the failed first read and the successful retry each
-    // reserve the fence again before their own read.
-    expect(reserveMock.reserve).toHaveBeenCalledTimes(3);
+    // The ingest fence is reserved once per attempt: the failed first read
+    // and the successful retry each reserve it again before their own read.
+    // The sweep fence is the walk's and is taken once, not per attempt.
+    expect(reserveMock.reserve).toHaveBeenCalledTimes(2);
+    expect(sweepFenceMock.reserve).toHaveBeenCalledTimes(1);
   });
 
   it("gives up after MAX_HEAD_READ_ATTEMPTS reads and makes no further attempt", async () => {
@@ -632,10 +643,13 @@ describe("useCloudDraftsIngest", () => {
     expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 
-  it("reserves the ingest fence for a foreign row with a head before the settled sweep runs", async () => {
+  it("reserves the sweep fence for a foreign row with a head before the settled sweep runs, and the ingest fence only once its read starts", async () => {
     const order: string[] = [];
+    sweepFenceMock.reserve.mockImplementation(() => {
+      order.push("sweep-fence");
+    });
     reserveMock.reserve.mockImplementation(() => {
-      order.push("reserve");
+      order.push("ingest-fence");
     });
     sweepMock.sweep.mockImplementation(() => {
       order.push("sweep");
@@ -650,16 +664,23 @@ describe("useCloudDraftsIngest", () => {
     await vi.waitFor(() => {
       expect(sweepMock.sweep).toHaveBeenCalledTimes(1);
     });
-    // The pre-sweep reserve (over every foreign row with a head) happens
-    // before the settled sweep runs, on the first effect run.
-    const firstReserve = order.indexOf("reserve");
+    await vi.waitFor(() => {
+      expect(reserveMock.reserve).toHaveBeenCalledTimes(1);
+    });
+    // The pre-sweep reserve (over every foreign row with a head) is the SWEEP
+    // fence and happens before the settled sweep runs, on the first effect
+    // run. The ingest fence follows, when the head read starts.
+    const firstSweepFence = order.indexOf("sweep-fence");
     const firstSweep = order.indexOf("sweep");
-    expect(firstReserve).toBeGreaterThanOrEqual(0);
+    const firstIngestFence = order.indexOf("ingest-fence");
+    expect(firstSweepFence).toBeGreaterThanOrEqual(0);
     expect(firstSweep).toBeGreaterThanOrEqual(0);
-    expect(firstReserve).toBeLessThan(firstSweep);
+    expect(firstSweepFence).toBeLessThan(firstSweep);
+    expect(firstIngestFence).toBeGreaterThan(firstSweep);
+    expect(sweepFenceMock.reserve).toHaveBeenCalledTimes(1);
   });
 
-  it("a fresh mount reads nothing for a head the coordinator has settled: no read, no claim, no ingest, but the head is still fenced", async () => {
+  it("a fresh mount reads nothing for a head the coordinator has settled: no read, no claim, no ingest, but the head is still sweep-fenced and never ingest-fenced", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
     settledMock.settled.mockReturnValue(true);
@@ -675,10 +696,13 @@ describe("useCloudDraftsIngest", () => {
     expect(readMock.read).not.toHaveBeenCalled();
     expect(claimMock.begin).not.toHaveBeenCalled();
     expect(ingestMock.ingest).not.toHaveBeenCalled();
-    // One pre-sweep reserve per mount: the fence is taken for a listed head
-    // whether or not this mount reads it.
-    expect(reserveMock.reserve).toHaveBeenCalledTimes(2);
-    expect(reserveMock.reserve).toHaveBeenCalledWith("draft-1");
+    // One pre-sweep SWEEP-fence reserve per mount: the fence is taken for a
+    // listed head whether or not this mount reads it. The ingest fence is
+    // the apply's supersession check, so a head this mount does not read
+    // never takes it - that would abandon another mount's apply of the row.
+    expect(sweepFenceMock.reserve).toHaveBeenCalledTimes(2);
+    expect(sweepFenceMock.reserve).toHaveBeenCalledWith("draft-1");
+    expect(reserveMock.reserve).not.toHaveBeenCalled();
   });
 
   it("fences a skipped head without reading or claiming it, so the reader's apply never meets a replica this mount's sweep dropped", async () => {
@@ -692,9 +716,12 @@ describe("useCloudDraftsIngest", () => {
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    // Reserved once, pre-sweep. Nothing else is done with the row.
-    expect(reserveMock.reserve).toHaveBeenCalledTimes(1);
-    expect(reserveMock.reserve).toHaveBeenCalledWith("draft-1");
+    // Sweep-fenced once, pre-sweep. Nothing else is done with the row; in
+    // particular a skipped head never reserves the INGEST fence, which is
+    // also the apply's supersession check.
+    expect(sweepFenceMock.reserve).toHaveBeenCalledTimes(1);
+    expect(sweepFenceMock.reserve).toHaveBeenCalledWith("draft-1");
+    expect(reserveMock.reserve).not.toHaveBeenCalled();
     expect(readMock.read).not.toHaveBeenCalled();
     expect(claimMock.begin).not.toHaveBeenCalled();
     expect(ingestMock.ingest).not.toHaveBeenCalled();
@@ -822,13 +849,15 @@ describe("useCloudDraftsIngest", () => {
     await vi.waitFor(() => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
     });
-    // Only the published row was read, claimed and fenced.
+    // Only the published row was read, claimed and fenced (both fences).
     expect(readMock.read).toHaveBeenCalledTimes(1);
     expect(claimMock.begin).toHaveBeenCalledTimes(1);
     expect(claimMock.begin).toHaveBeenCalledWith(published);
     expect(claimMock.begin).not.toHaveBeenCalledWith(headless);
     expect(reserveMock.reserve).not.toHaveBeenCalledWith("draft-1");
     expect(reserveMock.reserve).toHaveBeenCalledWith("draft-2");
+    expect(sweepFenceMock.reserve).not.toHaveBeenCalledWith("draft-1");
+    expect(sweepFenceMock.reserve).toHaveBeenCalledWith("draft-2");
     expect(ingestMock.ingest.mock.calls[0][0].summary).toBe(published);
   });
 
@@ -841,6 +870,7 @@ describe("useCloudDraftsIngest", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(readMock.read).not.toHaveBeenCalled();
     expect(reserveMock.reserve).not.toHaveBeenCalled();
+    expect(sweepFenceMock.reserve).not.toHaveBeenCalled();
     expect(claimMock.begin).not.toHaveBeenCalled();
     expect(claimMock.release).not.toHaveBeenCalled();
     expect(claimMock.abandon).not.toHaveBeenCalled();
