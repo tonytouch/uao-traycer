@@ -35,6 +35,7 @@ import { cloudDraftIdentityKey } from "./cloud-draft-identity";
 import {
   forgetCloudDraftPayloadUnsupportedHost,
   rebindCloudDraftImageClientForHost,
+  cloudDraftImageSourcesRecorded,
   recordCloudDraftImageSources,
   recoverCloudDraftImages,
   resetCloudDraftImageRecoveryForTests,
@@ -236,15 +237,17 @@ type CloudDraftHeadRecord = {
   readonly state: "reading" | "settled";
   readonly mirrorId: string | null;
   /**
-   * The image hashes the installed document names, and the hosts whose
-   * requester has been recorded as a source for them. A mount on another
-   * host that skips this head still registers its host
+   * The image hashes the installed document names. A mount on another host
+   * that skips this head still registers its host as a source for them
    * (`noteCloudDraftHeadHost`), as its own ingest did when every mount read
    * every head: once the ingesting host's mirror is released its requester
-   * is closed, and without this the images have no live source.
+   * is closed, and without this the images have no live source. Which hosts
+   * ARE recorded is the image-source registry's to say
+   * (`cloudDraftImageSourcesRecorded`), not this record's: the registry caps
+   * the sources per hash and evicts the oldest, and a list kept here would
+   * go on naming an evicted host as registered.
    */
   readonly imageHashes: readonly string[];
-  readonly sourceHosts: ReadonlySet<string>;
   /**
    * The hosts whose mounts skipped this head while it was still being read.
    * Whether the head names images is not known until the read settles, so
@@ -257,12 +260,10 @@ type CloudDraftHeadRecord = {
 type CloudDraftHeadSettlement = {
   readonly mirrorId: string | null;
   readonly imageHashes: readonly string[];
-  readonly sourceHost: string | null;
 };
 const SETTLED_WITHOUT_MIRROR: CloudDraftHeadSettlement = {
   mirrorId: null,
   imageHashes: [],
-  sourceHost: null,
 };
 const cloudDraftHeadAbandonListeners = new Set<
   (summary: CloudChatSummary) => void
@@ -1538,10 +1539,7 @@ export async function ingestCloudDraftSummary(input: {
   // the read, a dirty local row - is about this moment, not this head, so the
   // record is released and the next mount asks again, as it always did.
   if (installed) {
-    settleCloudDraftHead(
-      input.summary,
-      installedHeadSettlement(input, ingestOwner),
-    );
+    settleCloudDraftHead(input.summary, installedHeadSettlement(input));
   } else if (
     input.document.kind === "landing" &&
     landingDraftIsRetired(input.document.draftId)
@@ -1830,7 +1828,6 @@ export function beginCloudDraftHeadRead(summary: CloudChatSummary): void {
     state: "reading",
     mirrorId: null,
     imageHashes: [],
-    sourceHosts: new Set<string>(),
     skippedHosts: new Set<string>(),
   });
 }
@@ -1926,9 +1923,12 @@ export function noteCloudDraftHeadHost(
 
 /**
  * Record `hostId`'s requester as a source for the settled head's images, if
- * the head names any, the host's session is mounted and the account is still
- * served. A host not marked here is marked by a later
- * {@link noteCloudDraftHeadHost} once it can be.
+ * the head names any, the registry does not already hold this host for all
+ * of them, the host's session is mounted and the account is still served. A
+ * host not recorded here is recorded by a later {@link noteCloudDraftHeadHost}
+ * once it can be, and one the registry evicts since (it keeps three hosts per
+ * hash) is recorded again by the next walk, because the registry is asked
+ * each time rather than a list kept here.
  */
 function registerCloudDraftHeadHost(
   key: string,
@@ -1941,26 +1941,22 @@ function registerCloudDraftHeadHost(
     record.state !== "settled" ||
     record.headSha256 !== summary.headSha256 ||
     record.imageHashes.length === 0 ||
-    record.sourceHosts.has(hostId)
+    cloudDraftImageSourcesRecorded(summary.identity, hostId, record.imageHashes)
   ) {
     return;
   }
   const client = sessionClients.get(hostId);
   if (client === undefined) return;
   // The registry refuses a source for an account this window no longer
-  // serves (a cached directory rendered across a switch); marking the host
-  // then would hide the images from the account on its return. Marked only
-  // when the registry will take it.
+  // serves (a cached directory rendered across a switch), and its refusal
+  // is what the next walk's query sees, so the account's return registers
+  // the host then.
   if (summary.identity.ownerUserId !== currentDraftBlobOwnerId()) return;
   recordCloudDraftImageSources({
     identity: summary.identity,
     hostId,
     client,
     hashes: record.imageHashes,
-  });
-  cloudDraftHeads.set(key, {
-    ...record,
-    sourceHosts: new Set([...record.sourceHosts, hostId]),
   });
 }
 
@@ -2002,32 +1998,20 @@ export function settleCloudDraftHeadWithoutApply(
 
 /**
  * What an INSTALLED head is remembered with: a landing head with its mirror's
- * id (the record ends when that mirror leaves the store), and the host
- * `recoverIngestedCloudDraftImages` is about to record as an image source,
- * only when it will: through a mounted session's requester, and for the
- * account still being served (the owner re-check in the ingest returns
- * before it registers anything, and a host marked without a source would
- * never be repaired by `noteCloudDraftHeadHost`).
+ * id (the record ends when that mirror leaves the store) and the image hashes
+ * the document names. Which hosts are sources for them is the registry's
+ * record: `recoverIngestedCloudDraftImages` records the ingesting host when
+ * it can, and `noteCloudDraftHeadHost` asks the registry before recording
+ * another.
  */
-function installedHeadSettlement(
-  input: {
-    readonly hostId: string;
-    readonly summary: CloudChatSummary;
-    readonly document: DraftDocument;
-  },
-  ingestOwner: string | null,
-): CloudDraftHeadSettlement {
-  const imageHashes = imageHashesOfDocument(input.document);
+function installedHeadSettlement(input: {
+  readonly summary: CloudChatSummary;
+  readonly document: DraftDocument;
+}): CloudDraftHeadSettlement {
   return {
     mirrorId:
       input.document.kind === "landing" ? input.summary.identity.chatId : null,
-    imageHashes,
-    sourceHost:
-      imageHashes.length > 0 &&
-      sessionClients.has(input.hostId) &&
-      currentDraftBlobOwnerId() === ingestOwner
-        ? input.hostId
-        : null,
+    imageHashes: imageHashesOfDocument(input.document),
   };
 }
 
@@ -2069,10 +2053,6 @@ function settleCloudDraftHead(
     state: "settled",
     mirrorId: settlement.mirrorId,
     imageHashes: settlement.imageHashes,
-    sourceHosts:
-      settlement.sourceHost === null
-        ? new Set<string>()
-        : new Set([settlement.sourceHost]),
     skippedHosts: new Set<string>(),
   });
   // The mounts that skipped this head while it was being read register
