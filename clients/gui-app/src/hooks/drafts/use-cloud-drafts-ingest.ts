@@ -418,7 +418,9 @@ export function useCloudDraftsIngest(
       if (guardMaySkip(ingestedKeys, summary)) {
         // Skipped, but this host still registers as a source for the head's
         // images (once per host; a no-op for a head without any, or one this
-        // host already ingested).
+        // host already ingested), and is remembered on the row so a stash
+        // entry's conversion can ask it for the bytes the reading host
+        // misses.
         noteCloudDraftHeadHost(summary, hostId);
         continue;
       }

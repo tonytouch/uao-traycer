@@ -16,6 +16,7 @@ import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messen
 import {
   acquireDraftMirrorSession,
   ingestCloudDraftSummary,
+  noteCloudDraftHeadHost,
   releaseDraftMirrorSession,
   resetDraftMirrorCoordinatorForTests,
 } from "@/lib/drafts/draft-mirror-coordinator";
@@ -26,6 +27,7 @@ import { resolveDraftImageBytes } from "@/lib/drafts/resolve-draft-image-bytes";
 
 const INGESTING_HOST = "host-a";
 const OWNER_HOST = "host-b"; // never mirrored on this window
+const OTHER_MOUNTED_HOST = "host-c"; // mirrored here, and lists the same row
 const EMPTY_DOC = {
   type: "doc" as const,
   content: [{ type: "paragraph" }],
@@ -183,11 +185,44 @@ function bytesRefused(): Uint8Array<ArrayBuffer> {
 }
 
 /**
+ * Bytes that sniff to `image/png`, which is all the stash fetch needs of them.
+ * `tail` makes each test's digest its own: the session cache outlives the
+ * IndexedDB reset, and the transfer is single-flight per digest.
+ */
+function pngBytesWithTail(tail: number): Uint8Array<ArrayBuffer> {
+  return new Uint8Array([
+    0x89,
+    0x50,
+    0x4e,
+    0x47,
+    0x0d,
+    0x0a,
+    0x1a,
+    0x0a,
+    tail,
+    tail + 1,
+  ]);
+}
+
+function payloadReadCount(calls: readonly RecordedCall[]): number {
+  return calls.filter((call) => call.method === "epic.readCloudChatPayload")
+    .length;
+}
+
+/**
  * Mounts a draft-mirror session for `INGESTING_HOST` whose `request` answers
  * `drafts.list` (session bootstrap) plus whatever `handleOther` supplies, and
  * records every call.
  */
 function mountIngestingHostSession(
+  handleOther: (method: string, params: unknown) => unknown,
+): RecordedCall[] {
+  return mountHostSession(INGESTING_HOST, handleOther);
+}
+
+/** The same, for any host: a second mounted session needs its own requester. */
+function mountHostSession(
+  hostId: string,
   handleOther: (method: string, params: unknown) => unknown,
 ): RecordedCall[] {
   const calls: RecordedCall[] = [];
@@ -204,7 +239,7 @@ function mountIngestingHostSession(
     return handleOther(method, params);
   }) as FakeRequest;
   acquireDraftMirrorSession({
-    hostId: INGESTING_HOST,
+    hostId,
     client: { request } as never,
     streamClient: fakeDraftStreamClient(),
     timing: undefined,
@@ -500,6 +535,133 @@ describe("ingestCloudDraftSummary - cloud image recovery", () => {
     const drafts = useLandingDraftStore.getState().drafts;
     expect(drafts).toHaveLength(1);
     expect(JSON.stringify(drafts[0]?.content)).toContain(junkHash);
+  });
+
+  describe("a stash document whose ingesting host misses an image", () => {
+    const INGESTING_MISSES: ReadonlyArray<
+      readonly [string, number, () => Promise<unknown>]
+    > = [
+      [
+        "a rejected read",
+        120,
+        () => Promise.reject(new Error("payload read exploded")),
+      ],
+      [
+        "an unavailable outcome",
+        130,
+        () => Promise.resolve({ outcome: { status: "unavailable" as const } }),
+      ],
+    ];
+
+    it.each(INGESTING_MISSES)(
+      "converts with the bytes another host that listed the row still holds, asking the ingesting host first: %s",
+      async (_name, tail, ingestingAnswer) => {
+        // A stash entry is converted BEFORE its head settles, and the
+        // conversion retires the source row, so a byte the ingesting host's
+        // cloud read misses is lost for good unless the conversion asks the
+        // other hosts the row was shown on. The second host's mount skipped the
+        // head (`noteCloudDraftHeadHost`) while the read was in flight, which
+        // remembers it on the row; recovery then records it behind the
+        // ingesting host, which stays the first address tried.
+        const bytes = pngBytesWithTail(tail);
+        const hash = await sha256HexOf(bytes);
+        const askedHosts: string[] = [];
+
+        const ingestingCalls = mountHostSession(INGESTING_HOST, (method) => {
+          if (method === "epic.readCloudChatPayload") {
+            askedHosts.push(INGESTING_HOST);
+            return ingestingAnswer();
+          }
+          throw new Error(`unexpected ${String(method)}`);
+        });
+        const otherCalls = mountHostSession(OTHER_MOUNTED_HOST, (method) => {
+          if (method === "epic.readCloudChatPayload") {
+            askedHosts.push(OTHER_MOUNTED_HOST);
+            return Promise.resolve({
+              outcome: {
+                status: "ok" as const,
+                bytesBase64: toBase64(bytes),
+                byteLength: bytes.byteLength,
+              },
+            });
+          }
+          throw new Error(`unexpected ${String(method)}`);
+        });
+        await Promise.resolve();
+
+        const cloudSummary = summary();
+        noteCloudDraftHeadHost(cloudSummary, OTHER_MOUNTED_HOST);
+        await ingestCloudDraftSummary({
+          hostId: INGESTING_HOST,
+          readOwner: OWNER,
+          summary: cloudSummary,
+          document: stashDocument(
+            cloudSummary,
+            [hash],
+            "image/png",
+            bytes.byteLength,
+          ),
+        });
+
+        expect(askedHosts).toEqual([INGESTING_HOST, OTHER_MOUNTED_HOST]);
+        expect(payloadReadCount(ingestingCalls)).toBe(1);
+        expect(payloadReadCount(otherCalls)).toBe(1);
+        const drafts = useLandingDraftStore.getState().drafts;
+        expect(drafts).toHaveLength(1);
+        expect(JSON.stringify(drafts[0]?.content)).toContain("imageAttachment");
+        // Resident in the landing partition: the fallback host's bytes reached
+        // the import, so the image is not a hash-only unavailable one.
+        expect(await getImageBytes(hash)).toEqual(bytes);
+      },
+    );
+
+    it("converts hash-only after one request when no other host is remembered on the row", async () => {
+      // Control: the second host is mounted but never noted the head, so the
+      // registry holds the ingesting host alone and the previous behaviour
+      // stands.
+      const bytes = pngBytesWithTail(140);
+      const hash = await sha256HexOf(bytes);
+
+      const ingestingCalls = mountHostSession(INGESTING_HOST, (method) => {
+        if (method === "epic.readCloudChatPayload") {
+          return Promise.reject(new Error("payload read exploded"));
+        }
+        throw new Error(`unexpected ${String(method)}`);
+      });
+      const otherCalls = mountHostSession(OTHER_MOUNTED_HOST, (method) => {
+        if (method === "epic.readCloudChatPayload") {
+          return Promise.resolve({
+            outcome: {
+              status: "ok" as const,
+              bytesBase64: toBase64(bytes),
+              byteLength: bytes.byteLength,
+            },
+          });
+        }
+        throw new Error(`unexpected ${String(method)}`);
+      });
+      await Promise.resolve();
+
+      const cloudSummary = summary();
+      await ingestCloudDraftSummary({
+        hostId: INGESTING_HOST,
+        readOwner: OWNER,
+        summary: cloudSummary,
+        document: stashDocument(
+          cloudSummary,
+          [hash],
+          "image/png",
+          bytes.byteLength,
+        ),
+      });
+
+      expect(payloadReadCount(ingestingCalls)).toBe(1);
+      expect(payloadReadCount(otherCalls)).toBe(0);
+      const drafts = useLandingDraftStore.getState().drafts;
+      expect(drafts).toHaveLength(1);
+      expect(JSON.stringify(drafts[0]?.content)).toContain(hash);
+      expect(await getImageBytes(hash)).toBeUndefined();
+    });
   });
 
   it("memoizes a host that withholds the payload read, and re-probes it on a new mirror session", async () => {

@@ -226,6 +226,13 @@ const cloudIngestSeqByDraft = new Map<string, number>();
  * sweep and the flush read the later of the two.
  */
 const cloudSweepFenceByRow = new Map<string, number>();
+/**
+ * The same listing fence under the bare id, the later of every owner's: for
+ * a mirror WITHOUT an owner, which the absence predicate treats as listed
+ * under any owner, so a positive listing of the id by any owner must hold
+ * an older snapshot's absence off it the same way.
+ */
+const cloudSweepFenceByDraftId = new Map<string, number>();
 
 /**
  * The sweep fence is keyed by the ROW (owner plus id), not the bare id: cloud
@@ -241,9 +248,9 @@ function cloudSweepFenceKey(draftId: string, ownerHostId: string): string {
 }
 
 /**
- * The later of the row's two fences for a mirror. A mirror with no owner has
- * no sweep fence: it is treated as listed under any owner by the absence
- * predicate, so the fence never decides for it.
+ * The later of the row's two fences for a mirror. A mirror with no owner is
+ * treated as listed under any owner by the absence predicate, so its sweep
+ * fence is the id's under any owner.
  */
 function cloudDraftFenceSeq(
   draftId: string,
@@ -252,7 +259,7 @@ function cloudDraftFenceSeq(
   return Math.max(
     cloudIngestSeqByDraft.get(draftId) ?? 0,
     ownerHostId === null
-      ? 0
+      ? (cloudSweepFenceByDraftId.get(draftId) ?? 0)
       : (cloudSweepFenceByRow.get(cloudSweepFenceKey(draftId, ownerHostId)) ??
           0),
   );
@@ -329,7 +336,9 @@ const cloudDraftHeads = new Map<string, CloudDraftHeadRecord>();
  * a mount whose host-scoped directory is cached at an older head runs no
  * note again until its next delivery, so every head of the row that settles
  * with images registers these hosts as sources for its hashes then, whatever
- * records were claimed, settled, released or abandoned in between. Whether a
+ * records were claimed, settled, released or abandoned in between (a stash
+ * entry, converted before its head settles, asks one of them for the bytes
+ * its reading host missed, `recoverCloudStashImages`). Whether a
  * host IS recorded for a hash is the registry's to say
  * (`cloudDraftImageSourcesRecorded`), and a host whose session is gone is
  * skipped at registration; this map only names who to ask for. Bounded by
@@ -1417,6 +1426,7 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   cloudIngestSeq = 0;
   cloudIngestSeqByDraft.clear();
   cloudSweepFenceByRow.clear();
+  cloudSweepFenceByDraftId.clear();
   cloudDraftHeads.clear();
   cloudDraftRowHosts.clear();
   cloudDraftHeadAbandonListeners.clear();
@@ -1690,6 +1700,12 @@ async function recoverCloudStashImages(input: {
   // cloud read is a byte pipe through whatever host this device runs.
   const client = sessionClients.get(input.hostId);
   if (client === undefined) return null;
+  // One account check ahead of every record below: the registry refuses a
+  // source from another account per record, with a line each, and a row of
+  // an account this window no longer serves has nothing worth asking for.
+  if (input.summary.identity.ownerUserId !== currentDraftBlobOwnerId()) {
+    return null;
+  }
   let recovered: ReadonlyMap<string, ImageBytes>;
   try {
     recovered = await recoverCloudDraftImages({
@@ -1703,6 +1719,33 @@ async function recoverCloudStashImages(input: {
       error: describeLogError(error),
     });
     return null;
+  }
+  // A byte the reading host's pipe missed is asked of another mounted host
+  // of the row. A stash entry is converted before its head settles, and its
+  // settlement keeps no image hashes, so the hosts whose mounts skipped
+  // this head (`noteCloudDraftHeadHost` remembers them on the row) would
+  // otherwise never be a source for it - and the conversion retires the
+  // source row, so the miss would be for good. Only for the hashes still
+  // missing, and one host: the registry keeps three addresses per hash,
+  // and recording a wider set here would push out the one an earlier draft
+  // published the same bytes under.
+  const missing = hashes.filter((hash) => !recovered.has(hash));
+  const fallback = missing.length === 0 ? null : stashImageFallbackHost(input);
+  if (fallback !== null) {
+    try {
+      const more = await recoverCloudDraftImages({
+        identity: input.summary.identity,
+        hostId: fallback.hostId,
+        client: fallback.client,
+        hashes: missing,
+      });
+      recovered = new Map([...recovered, ...more]);
+    } catch (error: unknown) {
+      appLogger.warn(
+        "[draft-mirror] cloud stash image recovery through another host failed",
+        { error: describeLogError(error) },
+      );
+    }
   }
   const images = new Map<string, ImageBlob>();
   for (const hash of hashes) {
@@ -1721,6 +1764,23 @@ async function recoverCloudStashImages(input: {
     images.set(hash, { bytes, mimeType });
   }
   return images;
+}
+
+/**
+ * The first host remembered on the row, other than the reading one, whose
+ * session is mounted here; `null` when there is none.
+ */
+function stashImageFallbackHost(input: {
+  readonly hostId: string;
+  readonly summary: CloudChatSummary;
+}): { hostId: string; client: HostRequester<HostRpcRegistry> } | null {
+  const key = cloudDraftIdentityKey(input.summary);
+  for (const rowHostId of cloudDraftRowHosts.get(key) ?? []) {
+    if (rowHostId === input.hostId) continue;
+    const client = sessionClients.get(rowHostId);
+    if (client !== undefined) return { hostId: rowHostId, client };
+  }
+  return null;
 }
 
 function recoverIngestedCloudDraftImages(input: {
@@ -2321,7 +2381,8 @@ export function reserveCloudDraftIngestFence(draftId: string): void {
  * reservation must not supersede an apply of the row that another mount has
  * in flight, which {@link reserveCloudDraftIngestFence} would: it keeps its
  * own map, keyed by the row (owner plus id), so one owner's listing protects
- * only its own mirror.
+ * only its own mirror - and, under the bare id, a mirror without an owner,
+ * which the absence predicate treats as listed under any owner.
  */
 export function reserveCloudDraftSweepFence(
   draftId: string,
@@ -2331,6 +2392,10 @@ export function reserveCloudDraftSweepFence(
   const key = cloudSweepFenceKey(draftId, ownerHostId);
   const current = cloudSweepFenceByRow.get(key) ?? 0;
   if (listedAtSeq > current) cloudSweepFenceByRow.set(key, listedAtSeq);
+  const currentById = cloudSweepFenceByDraftId.get(draftId) ?? 0;
+  if (listedAtSeq > currentById) {
+    cloudSweepFenceByDraftId.set(draftId, listedAtSeq);
+  }
 }
 
 /**

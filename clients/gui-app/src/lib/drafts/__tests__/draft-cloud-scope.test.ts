@@ -492,6 +492,86 @@ describe("sweepAbsentCloudDraftMirrors: fences", () => {
     ).toEqual(["stamped-replica"]);
   });
 
+  it("holds an older snapshot's absence off an owner-less mirror when ANY owner listed the id after it, and keeps the newest listing across owners", () => {
+    // A mirror with no recorded owner is treated as listed under any owner by
+    // the absence predicate, so its fence is the id's under any owner: a
+    // listing by host-a protects it, where it used to carry no fence at all.
+    const ownerless = publishedOwnRow("ownerless-replica", {
+      origin: "replica",
+      ownerHostId: null,
+      adoption: { state: "adopted", hostId: "host-other" },
+    });
+    const seedOwnerless = (): void => {
+      useLandingDraftStore.setState({
+        drafts: [ownerless],
+        activeDraftId: null,
+      });
+    };
+    const older = cloudDraftIngestSeq();
+    const newer = cloudDraftIngestSeq();
+    expect(newer).toBeGreaterThan(older);
+
+    // Control: with no listing reserved for the id, the snapshot's absence
+    // drops the owner-less mirror, whatever position it was dispatched at.
+    seedOwnerless();
+    expect(
+      sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), older - 1),
+    ).toEqual(["ownerless-replica"]);
+    expect(useLandingDraftStore.getState().drafts).toEqual([]);
+
+    // host-a listed the id at `older`: a snapshot dispatched before that
+    // listing omitting the id does not drop the owner-less mirror.
+    reserveCloudDraftSweepFence("ownerless-replica", "host-a", older);
+    seedOwnerless();
+    expect(
+      sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), older - 1),
+    ).toEqual([]);
+    expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toEqual([
+      "ownerless-replica",
+    ]);
+
+    // A snapshot dispatched after the listing is the later fact: dropped.
+    expect(
+      sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), newer),
+    ).toEqual(["ownerless-replica"]);
+    expect(useLandingDraftStore.getState().drafts).toEqual([]);
+
+    // Max semantics across owners: host-b listing at `newer`, then host-a
+    // listing again at the older position, leaves the id fence at `newer`.
+    reserveCloudDraftSweepFence("ownerless-replica", "host-b", newer);
+    reserveCloudDraftSweepFence("ownerless-replica", "host-a", older);
+    seedOwnerless();
+    expect(
+      sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), older),
+    ).toEqual([]);
+    expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toEqual([
+      "ownerless-replica",
+    ]);
+    expect(
+      sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), newer),
+    ).toEqual(["ownerless-replica"]);
+  });
+
+  it("does not lower the owner-less fence of an id when a later owner reserves a smaller position", () => {
+    const ownerless = publishedOwnRow("lowered-id", {
+      origin: "replica",
+      ownerHostId: null,
+      adoption: { state: "adopted", hostId: "host-other" },
+    });
+    const smaller = cloudDraftIngestSeq();
+    const larger = cloudDraftIngestSeq();
+    reserveCloudDraftSweepFence("lowered-id", "host-a", larger);
+    reserveCloudDraftSweepFence("lowered-id", "host-b", smaller);
+
+    // Still held at `larger`: a snapshot dispatched at `smaller` cannot drop
+    // the owner-less mirror.
+    useLandingDraftStore.setState({ drafts: [ownerless], activeDraftId: null });
+    expect(
+      sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), smaller),
+    ).toEqual([]);
+    expect(useLandingDraftStore.getState().drafts).toHaveLength(1);
+  });
+
   it.each(RESERVERS)(
     "keeps a replica reserved after the snapshot's fence and drops the same row unreserved: %s",
     (_name, reserve) => {
