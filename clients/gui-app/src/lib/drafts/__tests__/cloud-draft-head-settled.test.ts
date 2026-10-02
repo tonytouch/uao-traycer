@@ -1567,6 +1567,73 @@ describe("noteCloudDraftHeadHost", () => {
       expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 2);
     });
 
+    it("carries a host skipped during one head's read into a newer head's read of the row, and registers it when that newer head settles with images", async () => {
+      const HEAD_THREE = "34".repeat(32);
+      const headB = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        9,
+      );
+      const staleListing = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+        5,
+      );
+      const headC = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_THREE),
+        12,
+      );
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      const versionBefore = cloudDraftImageSourceVersion();
+      beginCloudDraftHeadRead(headB);
+
+      // A stale listing skipped while B is read: kept on B's reading record.
+      noteCloudDraftHeadHost(staleListing, SECOND_HOST_ID);
+
+      // C displaces B's record; the skip must travel with it.
+      beginCloudDraftHeadRead(headC);
+
+      expect(cloudDraftHeadReading(headC)).toBe(true);
+      expect(sources.count()).toBe(0);
+      expect(cloudDraftImageSourceVersion()).toBe(versionBefore);
+
+      // The reading host ingests C: its own source plus the carried host's.
+      await ingestWithImage(HOST_ID, headC);
+
+      expect(cloudDraftHeadSettled(headC)).toBe(true);
+      expect(sources.count()).toBe(2);
+      expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 2);
+
+      // The host is marked on the settled record: noting it again adds nothing.
+      noteCloudDraftHeadHost(headC, SECOND_HOST_ID);
+
+      expect(sources.count()).toBe(2);
+      expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 2);
+    });
+
+    it("does not carry a skipped host when a read starts on a row with no record", async () => {
+      const summary = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        9,
+      );
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      const versionBefore = cloudDraftImageSourceVersion();
+
+      // No record, so nothing for the new reading record to inherit.
+      beginCloudDraftHeadRead(summary);
+      expect(cloudDraftHeadReading(summary)).toBe(true);
+
+      await ingestWithImage(HOST_ID, summary);
+
+      expect(cloudDraftHeadSettled(summary)).toBe(true);
+      // Only the reading host's own source: no second-host registration.
+      expect(sources.count()).toBe(1);
+      expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 1);
+
+      noteCloudDraftHeadHost(summary, HOST_ID);
+      expect(sources.count()).toBe(1);
+    });
+
     it("leaves a skipped host with no mounted session unmarked at the settle, and a later note registers it once its session mounts", async () => {
       const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
       mountSession(HOST_ID);

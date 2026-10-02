@@ -1913,7 +1913,14 @@ export function beginCloudDraftHeadRead(summary: CloudChatSummary): void {
     state: "reading",
     mirrorId: null,
     imageHashes: [],
-    skippedHosts: new Set<string>(),
+    // The hosts that skipped the row while its previous head was being read
+    // are the row's, not that head's: their directories still list the row
+    // and run no note again until their next delivery, so a newer head's
+    // read inherits them and registers them when it settles with images.
+    skippedHosts:
+      current === undefined
+        ? new Set<string>()
+        : new Set<string>(current.skippedHosts),
   });
 }
 
