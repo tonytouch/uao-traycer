@@ -1946,6 +1946,14 @@ export function abandonCloudDraftHeadRead(summary: CloudChatSummary): void {
     return;
   }
   cloudDraftHeads.delete(key);
+  notifyCloudDraftHeadAbandoned(summary);
+}
+
+/**
+ * Tell every listening mount a head needs a reader now. Each one reads what
+ * its own directory lists under the head's key, after asking the guard.
+ */
+function notifyCloudDraftHeadAbandoned(summary: CloudChatSummary): void {
   for (const listener of [...cloudDraftHeadAbandonListeners]) {
     listener(summary);
   }
@@ -2064,7 +2072,52 @@ export function releaseCloudDraftHeadRead(summary: CloudChatSummary): void {
 export function settleCloudDraftHeadWithoutApply(
   summary: CloudChatSummary,
 ): void {
+  const key = cloudDraftIdentityKey(summary);
+  const current = cloudDraftHeads.get(key);
+  // The refusal answers for the publication the read STARTED from. A record
+  // advanced to a later republication of the same digest while that read was
+  // in flight (A at 5 retracted and republished unchanged at 9, with a
+  // directory listing 9 answered first) must not take the refusal as the
+  // republication's: it is the one exception to the stamp never moving back,
+  // because the later stamp was a fact about a listing nobody has read. The
+  // record settles the publication it answered for, and the mounts listing
+  // the republication are woken to read it now, as after an abandoned read;
+  // their walk finds the same digest listed later than the record and reads
+  // it, while the mount whose listing was refused finds it settled.
+  if (
+    current !== undefined &&
+    current.state === "reading" &&
+    current.headSha256 === summary.headSha256 &&
+    recordIsLaterThanListing(current, summary)
+  ) {
+    cloudDraftHeads.set(key, {
+      headSha256: summary.headSha256,
+      publishedAt: summary.publishedAt,
+      state: "settled",
+      mirrorId: null,
+      imageHashes: [],
+      skippedHosts: new Set<string>(),
+    });
+    notifyCloudDraftHeadAbandoned(summary);
+    return;
+  }
   settleCloudDraftHead(summary, SETTLED_WITHOUT_MIRROR);
+}
+
+/**
+ * Whether the record names a LATER publication of the same digest than the
+ * listing a read started from. Unknown on either side compares as not later.
+ */
+function recordIsLaterThanListing(
+  record: CloudDraftHeadRecord,
+  summary: CloudChatSummary,
+): boolean {
+  return (
+    record.headSha256 === summary.headSha256 &&
+    record.publishedAt !== null &&
+    summary.publishedAt !== null &&
+    record.publishedAt > summary.publishedAt
+  );
 }
 
 /**

@@ -322,6 +322,109 @@ describe("cloudDraftHeadSettled", () => {
     expect(cloudDraftHeadSettled(newer)).toBe(true);
   });
 
+  it("a refusal of a read started at an earlier publication settles that publication, not the later one the record advanced to, and the later listing is read again", () => {
+    const early = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    const later = withPublishedAt(early, 9);
+    beginCloudDraftHeadRead(early);
+    // Reading: the later listing of the same digest advances the stamp.
+    expect(cloudDraftHeadSettled(later)).toBe(true);
+    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const unsubscribe = subscribeCloudDraftHeadAbandoned(listener);
+
+    settleCloudDraftHeadWithoutApply(early);
+    unsubscribe();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0][0]).toBe(early);
+    // Ask with the earlier listing first: asking with the later one deletes
+    // the record.
+    expect(cloudDraftHeadSettled(early)).toBe(true);
+    expect(cloudDraftHeadSettled(later)).toBe(false);
+  });
+
+  it("a refusal of a read whose record was not advanced settles at its own stamp and wakes nobody", () => {
+    const early = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const unsubscribe = subscribeCloudDraftHeadAbandoned(listener);
+    beginCloudDraftHeadRead(early);
+
+    settleCloudDraftHeadWithoutApply(early);
+    unsubscribe();
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(cloudDraftHeadSettled(withPublishedAt(early, 5))).toBe(true);
+    // A later listing of a head settled without a mirror is read again.
+    expect(cloudDraftHeadSettled(withPublishedAt(early, 9))).toBe(false);
+  });
+
+  it("a refusal whose record was advanced wakes a listener that has since unsubscribed no more", () => {
+    const early = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    const later = withPublishedAt(early, 9);
+    const gone = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const kept = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const unsubscribeGone = subscribeCloudDraftHeadAbandoned(gone);
+    const unsubscribeKept = subscribeCloudDraftHeadAbandoned(kept);
+    unsubscribeGone();
+    beginCloudDraftHeadRead(early);
+    expect(cloudDraftHeadSettled(later)).toBe(true);
+
+    settleCloudDraftHeadWithoutApply(early);
+    unsubscribeKept();
+
+    expect(gone).not.toHaveBeenCalled();
+    expect(kept).toHaveBeenCalledTimes(1);
+    expect(kept.mock.calls[0][0]).toBe(early);
+  });
+
+  it("a refusal for a row whose record names another head leaves that record alone and wakes nobody", () => {
+    const reading = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      9,
+    );
+    const refused = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const unsubscribe = subscribeCloudDraftHeadAbandoned(listener);
+    beginCloudDraftHeadRead(reading);
+
+    settleCloudDraftHeadWithoutApply(refused);
+    unsubscribe();
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(cloudDraftHeadReading(reading)).toBe(true);
+    expect(cloudDraftHeadSettled(reading)).toBe(true);
+  });
+
+  it("a refusal with an unpublished stamp on either side keeps the later stamp as before", () => {
+    const unpublished = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      null,
+    );
+    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const unsubscribe = subscribeCloudDraftHeadAbandoned(listener);
+    beginCloudDraftHeadRead(unpublished);
+    // Advances the record's stamp from null to 9.
+    expect(cloudDraftHeadSettled(withPublishedAt(unpublished, 9))).toBe(true);
+
+    settleCloudDraftHeadWithoutApply(unpublished);
+    unsubscribe();
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(cloudDraftHeadReading(unpublished)).toBe(false);
+    expect(cloudDraftHeadSettled(withPublishedAt(unpublished, 9))).toBe(true);
+  });
+
   it("releases a read in flight when the apply is refused for a reason about the moment (an older revision than the row holds)", async () => {
     const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
     // The row already holds a newer revision from the same owner, so the
@@ -677,7 +780,7 @@ describe("a listing older than the record", () => {
     expect(cloudDraftHeadSettled(withPublishedAt(settled, null))).toBe(true);
   });
 
-  it("advances the stamp of a head still being read, and the stamp never moves back when that read settles or restarts", () => {
+  it("advances the stamp of a head still being read; a refusal of that read settles the publication it started from (the one move back), and a restart keeps the stamp", () => {
     const first = withPublishedAt(
       summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
       5,
@@ -694,14 +797,19 @@ describe("a listing older than the record", () => {
     expect(cloudDraftHeadSettled(republished)).toBe(true);
     expect(cloudDraftHeadReading(republished)).toBe(true);
 
-    // The read that started from the publishedAt-5 listing settles.
+    // The read that started from the publishedAt-5 listing is refused: the
+    // record settles at 5, the publication the refusal answers for, so the
+    // intermediate head (7) is no longer stale and the republication (9) is
+    // read again.
     settleCloudDraftHeadWithoutApply(first);
-    expect(cloudDraftHeadSettled(intermediate)).toBe(true);
+    expect(cloudDraftHeadSettled(intermediate)).toBe(false);
+    expect(cloudDraftHeadSettled(first)).toBe(true);
+    expect(cloudDraftHeadSettled(republished)).toBe(false);
 
     // A later read of the same digest from the old listing keeps the stamp.
     beginCloudDraftHeadRead(first);
-    expect(cloudDraftHeadSettled(intermediate)).toBe(true);
     expect(cloudDraftHeadReading(first)).toBe(true);
+    expect(cloudDraftHeadSettled(first)).toBe(true);
   });
 
   it("does not move the stamp back when the same digest is listed again earlier", () => {
