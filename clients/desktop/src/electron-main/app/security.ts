@@ -2,7 +2,11 @@ import { URL } from "node:url";
 import { shell, session, type Session, type WebContents } from "electron";
 import { log } from "./logger";
 import { confirmDestructiveInMain } from "./confirm-destructive";
-import { CONTENT_SECURITY_POLICY } from "../../shared/content-security-policy";
+import {
+  CONTENT_SECURITY_POLICY,
+  isUaoDevMode,
+  isUaoProxyDocument,
+} from "../../shared/content-security-policy";
 import { isDevBuild } from "../../config";
 import { devRendererOriginFromEnv } from "../../ipc-contracts/dev-renderer-origin";
 
@@ -353,8 +357,19 @@ export function installPermissionHandlers(target: Session): void {
 const CSP_HEADER_VALUE: readonly string[] = [CONTENT_SECURITY_POLICY];
 
 export function installContentSecurityPolicy(target: Session): void {
+  const uaoDev = isUaoDevMode(process.env);
   target.webRequest.onHeadersReceived((details, callback) => {
     const headers = details.responseHeaders ?? {};
+
+    if (uaoDev) {
+      if (
+        isUaoProxyDocument(details.url, devRendererOriginFromEnv(process.env))
+      ) {
+        callback({ responseHeaders: headers });
+        return;
+      }
+    }
+
     headers["Content-Security-Policy"] = CSP_HEADER_VALUE as string[];
     callback({ responseHeaders: headers });
   });

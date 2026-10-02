@@ -7,7 +7,10 @@ import { resolve } from "path";
 import { defineConfig, type HtmlTagDescriptor, type UserConfig } from "vite";
 import { asciiOnlyOutput } from "../gui-app/vite/ascii-only-output";
 import { pdfjsAssets } from "../gui-app/vite/pdfjs-assets";
-import { CONTENT_SECURITY_POLICY } from "./src/shared/content-security-policy";
+import {
+  CONTENT_SECURITY_POLICY,
+  isUaoDevMode,
+} from "./src/shared/content-security-policy";
 
 const rendererEnvPrefix = [
   "VITE_APP_",
@@ -32,6 +35,7 @@ const rendererEnvPrefix = [
  */
 export default defineConfig((): UserConfig => {
   const noWatch = process.env.TRAYCER_DESKTOP_NO_WATCH === "1";
+  const isUaoDev = isUaoDevMode(process.env);
   const port = Number(process.env.PORT) || 5173;
   const guiAppRoot = resolve(__dirname, "..", "gui-app");
   const sharedRoot = resolve(__dirname, "..", "shared");
@@ -125,8 +129,51 @@ export default defineConfig((): UserConfig => {
         "/uao-api": {
           target: "http://127.0.0.1:5050",
           changeOrigin: true,
+          ws: true,
+          headers: process.env.AGENT_OS_TOKEN
+            ? { "x-agent-os-token": process.env.AGENT_OS_TOKEN }
+            : {},
           rewrite: (path) => path.replace(/^\/uao-api/, ""),
         },
+        ...(isUaoDev
+          ? Object.fromEntries(
+              [
+                "/assets",
+                "/api",
+                "/hermes-webui",
+                "/omnigent",
+                "/openmaic",
+                "/harnessrouter",
+                "/n8n",
+                "/voice-studio",
+                "/open-design",
+                "/screenshot-to-code",
+                "/wikid",
+                "/omniroute",
+                "/hermes-panel",
+                "/hermes-agent",
+                "/acestep",
+                "/manifest.webmanifest",
+                "/favicon.svg",
+                "/icon192.png",
+                "/icon512.png",
+                "/icons.svg",
+              ].map((prefix) => [
+                prefix,
+                {
+                  target: "http://127.0.0.1:5050",
+                  changeOrigin: true,
+                  ws: true,
+                  headers: {
+                    origin: "http://127.0.0.1:5050",
+                    ...(process.env.AGENT_OS_TOKEN
+                      ? { "x-agent-os-token": process.env.AGENT_OS_TOKEN }
+                      : {}),
+                  },
+                },
+              ]),
+            )
+          : {}),
       },
     },
   };

@@ -7,6 +7,32 @@ import {
 import { uaoQueryKeys } from "@/lib/query-keys/uao-query-keys";
 
 export const uaoQueryOptions = {
+  builtUi: () =>
+    queryOptions({
+      queryKey: uaoQueryKeys.builtUi(),
+      queryFn: async ({ signal }) => {
+        const response = await fetch("/uao-api/", {
+          signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]),
+          headers: { Accept: "text/html" },
+          cache: "no-store",
+        });
+        if (!response.ok)
+          throw new Error(`UAO UI returned HTTP ${response.status}`);
+        const html = await response.text();
+        if (
+          !response.headers.get("content-type")?.includes("text/html") ||
+          !html.includes('id="root"') ||
+          !html.includes("/assets/")
+        ) {
+          throw new Error(
+            "UAO backend is reachable but its built UI is missing.",
+          );
+        }
+        return true;
+      },
+      retry: false,
+      staleTime: 30000,
+    }),
   boards: () =>
     queryOptions({
       queryKey: uaoQueryKeys.boards(),

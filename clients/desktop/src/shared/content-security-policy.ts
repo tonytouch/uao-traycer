@@ -77,7 +77,34 @@ export function devConnectSrcExtras(env: NodeJS.ProcessEnv): string {
   return origin.length === 0 ? "" : ` ${origin}`;
 }
 
+export function isUaoDevMode(env: NodeJS.ProcessEnv): boolean {
+  return config.environment === "dev" && env.TRAYCER_DESKTOP_UAO_DEV === "1";
+}
+
+/** Only documents on the renderer's own proxy paths retain upstream policies. */
+export function isUaoProxyDocument(
+  url: string,
+  rendererOrigin: string,
+): boolean {
+  const parsed = new URL(url);
+  return (
+    parsed.origin === rendererOrigin &&
+    /^\/(uao-api|hermes-webui|omnigent|openmaic|harnessrouter|n8n|voice-studio|open-design|screenshot-to-code|wikid|omniroute|hermes-panel|hermes-agent|acestep)(?:\/|$)/.test(
+      parsed.pathname,
+    )
+  );
+}
+
+// The outer shell embeds only the same-origin UAO UI. Nested tool documents
+// keep their own upstream policies through isUaoProxyDocument.
+export const UAO_EMBEDDED_TOOL_ORIGINS = "'self'";
+
 export function buildCspDirectives(env: NodeJS.ProcessEnv): readonly string[] {
+  const uaoDev = isUaoDevMode(env);
+  const frameSrc = uaoDev
+    ? `frame-src ${UAO_EMBEDDED_TOOL_ORIGINS}`
+    : "frame-src 'none'";
+
   return [
     "default-src 'self'",
     "style-src 'self' 'unsafe-inline'",
@@ -87,7 +114,7 @@ export function buildCspDirectives(env: NodeJS.ProcessEnv): readonly string[] {
     `connect-src 'self' blob: data: https: wss: ws: sentry-ipc: http://localhost:5173 ws://localhost:5173${devConnectSrcExtras(
       env,
     )}`,
-    "frame-src 'none'",
+    frameSrc,
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
