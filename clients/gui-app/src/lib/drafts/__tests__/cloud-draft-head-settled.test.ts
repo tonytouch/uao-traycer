@@ -171,8 +171,10 @@ describe("cloudDraftHeadSettled", () => {
     const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
 
     expect(cloudDraftHeadKey(summary)).toBe(
-      `${OWNER_HOST_ID}:scp_TESTDRAFTSSCOPEID000001:user-1:${DRAFT_ID}:${HEAD_ONE}`,
+      `["${OWNER_HOST_ID}","scp_TESTDRAFTSSCOPEID000001","user-1","${DRAFT_ID}"]:${HEAD_ONE}`,
     );
+    const newer = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO);
+    expect(cloudDraftHeadKey(newer)).not.toBe(cloudDraftHeadKey(summary));
   });
 
   it("settles a host-bound head without touching the landing store", async () => {
