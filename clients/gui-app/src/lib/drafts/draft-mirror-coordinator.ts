@@ -291,10 +291,15 @@ type CloudDraftHeadRecord = {
    */
   readonly imageHashes: readonly string[];
   /**
-   * The hosts whose mounts skipped this head while it was still being read.
-   * Whether the head names images is not known until the read settles, so
-   * they are kept here and registered as sources at that settle; a `settled`
-   * record carries none.
+   * The hosts whose mounts showed this ROW without reading its head: they
+   * skipped it while it was being read, or noted it once it was settled.
+   * They are the row's, carried across every transition of its record
+   * (reading to settled, settled or reading to a newer head's read), because
+   * a mount whose host-scoped directory is cached at an older head runs no
+   * note again until its next delivery, and each head that settles with
+   * images registers them as sources then. Whether a host IS recorded for a
+   * hash is the registry's to say (above); this set only names who to ask
+   * for.
    */
   readonly skippedHosts: ReadonlySet<string>;
 };
@@ -2025,14 +2030,16 @@ export function noteCloudDraftHeadHost(
   ) {
     return;
   }
-  if (record.state === "reading") {
-    if (record.skippedHosts.has(hostId)) return;
+  // Kept on the record in both states, so a newer head of the row registers
+  // this host for its own images when it settles; a settled record also
+  // registers it now.
+  if (!record.skippedHosts.has(hostId)) {
     cloudDraftHeads.set(key, {
       ...record,
       skippedHosts: new Set([...record.skippedHosts, hostId]),
     });
-    return;
   }
+  if (record.state === "reading") return;
   registerCloudDraftHeadHost(key, summary.identity, hostId);
 }
 
@@ -2138,7 +2145,7 @@ export function settleCloudDraftHeadWithoutApply(
       state: "settled",
       mirrorId: null,
       imageHashes: [],
-      skippedHosts: new Set<string>(),
+      skippedHosts: new Set<string>(current.skippedHosts),
     });
     notifyCloudDraftHeadAbandoned(summary);
     return;
@@ -2217,11 +2224,16 @@ function settleCloudDraftHead(
     state: "settled",
     mirrorId: settlement.mirrorId,
     imageHashes: settlement.imageHashes,
-    skippedHosts: new Set<string>(),
+    // The row's hosts outlive the head: a later head's read inherits them
+    // and registers them again for ITS images.
+    skippedHosts:
+      current === undefined
+        ? new Set<string>()
+        : new Set<string>(current.skippedHosts),
   });
-  // The mounts that skipped this head while it was being read register
-  // their hosts now that the head's images are known.
-  if (current !== undefined && current.state === "reading") {
+  // The hosts that showed the row without reading this head register as
+  // sources now that the head's images are known.
+  if (current !== undefined) {
     for (const hostId of current.skippedHosts) {
       registerCloudDraftHeadHost(key, summary.identity, hostId);
     }

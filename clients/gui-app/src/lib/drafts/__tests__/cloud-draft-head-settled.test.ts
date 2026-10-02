@@ -19,6 +19,7 @@ import {
   sweepAbsentCloudDraftMirrors,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import {
+  cloudDraftImageSourcesRecorded,
   cloudDraftImageSourceVersion,
   resetCloudDraftImageRecoveryForTests,
   subscribeCloudDraftImageSources,
@@ -1608,6 +1609,148 @@ describe("noteCloudDraftHeadHost", () => {
 
       expect(sources.count()).toBe(2);
       expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 2);
+    });
+
+    /** Ingests a head whose document names exactly `hashes`, through a mounted host. */
+    function ingestWithHashes(
+      hostId: string,
+      summary: CloudChatSummary,
+      hashes: readonly string[],
+    ): Promise<void> {
+      return ingestCloudDraftSummary({
+        hostId,
+        summary,
+        document: landingDocumentWithImages(DRAFT_ID, OWNER_HOST_ID, hashes),
+        readOwner: OWNER_USER_ID,
+      });
+    }
+
+    it("registers a host skipped during one head's read again for a later head's images once that head settles", async () => {
+      const HEAD_THREE = "34".repeat(32);
+      const LATER_IMAGE_HASH = "12".repeat(32);
+      const headB = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        9,
+      );
+      const staleListing = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+        5,
+      );
+      const headC = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_THREE),
+        12,
+      );
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      beginCloudDraftHeadRead(headB);
+      noteCloudDraftHeadHost(staleListing, SECOND_HOST_ID);
+
+      // B settles: its own source plus the skipped host's, for B's hashes.
+      await ingestWithHashes(HOST_ID, headB, [IMAGE_HASH]);
+
+      expect(cloudDraftHeadSettled(headB)).toBe(true);
+      expect(sources.count()).toBe(2);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, SECOND_HOST_ID, [
+          IMAGE_HASH,
+        ]),
+      ).toBe(true);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, SECOND_HOST_ID, [
+          LATER_IMAGE_HASH,
+        ]),
+      ).toBe(false);
+
+      // C is read after B settled, and names other images: the host, still the
+      // row's, is registered for them too when C settles.
+      beginCloudDraftHeadRead(headC);
+      await ingestWithHashes(HOST_ID, headC, [LATER_IMAGE_HASH]);
+
+      expect(cloudDraftHeadSettled(headC)).toBe(true);
+      expect(sources.count()).toBe(4);
+      expect(
+        cloudDraftImageSourcesRecorded(headC.identity, SECOND_HOST_ID, [
+          LATER_IMAGE_HASH,
+        ]),
+      ).toBe(true);
+
+      // The registry holds the host for C's hashes now: a repeat note adds nothing.
+      noteCloudDraftHeadHost(headC, SECOND_HOST_ID);
+
+      expect(sources.count()).toBe(4);
+    });
+
+    it("registers a host noted on a settled head again for a later head's images", async () => {
+      const HEAD_THREE = "34".repeat(32);
+      const LATER_IMAGE_HASH = "12".repeat(32);
+      const headB = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        9,
+      );
+      const headC = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_THREE),
+        12,
+      );
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      beginCloudDraftHeadRead(headB);
+      await ingestWithHashes(HOST_ID, headB, [IMAGE_HASH]);
+      expect(cloudDraftHeadSettled(headB)).toBe(true);
+      expect(sources.count()).toBe(1);
+
+      // Noted after B settled: registered for B at once, and kept on the record.
+      noteCloudDraftHeadHost(headB, SECOND_HOST_ID);
+
+      expect(sources.count()).toBe(2);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, SECOND_HOST_ID, [
+          IMAGE_HASH,
+        ]),
+      ).toBe(true);
+
+      beginCloudDraftHeadRead(headC);
+      await ingestWithHashes(HOST_ID, headC, [LATER_IMAGE_HASH]);
+
+      expect(cloudDraftHeadSettled(headC)).toBe(true);
+      expect(sources.count()).toBe(4);
+      expect(
+        cloudDraftImageSourcesRecorded(headC.identity, SECOND_HOST_ID, [
+          LATER_IMAGE_HASH,
+        ]),
+      ).toBe(true);
+    });
+
+    it("carries the row's hosts through a refusal that settles without a mirror", async () => {
+      const headAtFive = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        5,
+      );
+      const headAtNine = withPublishedAt(headAtFive, 9);
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      beginCloudDraftHeadRead(headAtFive);
+      noteCloudDraftHeadHost(headAtFive, SECOND_HOST_ID);
+
+      // The same digest is listed again at 9 while the read of 5 is in flight:
+      // the record's stamp advances, and the refusal then answers for 5 only.
+      expect(cloudDraftHeadSettled(headAtNine)).toBe(true);
+      settleCloudDraftHeadWithoutApply(headAtFive);
+
+      expect(cloudDraftHeadSettled(headAtFive)).toBe(true);
+      expect(sources.count()).toBe(0);
+
+      // The republication at 9 is read now and names images: the host the
+      // refusal's record carried is registered for them.
+      beginCloudDraftHeadRead(headAtNine);
+      await ingestWithHashes(HOST_ID, headAtNine, [IMAGE_HASH]);
+
+      expect(cloudDraftHeadSettled(headAtNine)).toBe(true);
+      expect(sources.count()).toBe(2);
+      expect(
+        cloudDraftImageSourcesRecorded(headAtNine.identity, SECOND_HOST_ID, [
+          IMAGE_HASH,
+        ]),
+      ).toBe(true);
     });
 
     it("does not carry a skipped host when a read starts on a row with no record", async () => {
