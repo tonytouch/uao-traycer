@@ -263,6 +263,13 @@ export function useCloudDraftsIngest(
       // the claim displaced by a newer head stops without releasing, because
       // the claim is not its own any more.
       beginCloudDraftHeadRead(summary);
+      // A host of the row from the moment it reads, whatever the read
+      // decides: a read that settles without an install (unpublished,
+      // corrupt, needs a newer app) or gives the head back still leaves this
+      // host's directory cached at the head, and a later head of the row
+      // that settles with images on another host must register this host as
+      // a source for them, as it does a host that merely listed the row.
+      noteCloudDraftHeadHost(summary, hostId);
       const settle = (): void => {
         unsettledKeys.delete(key);
       };

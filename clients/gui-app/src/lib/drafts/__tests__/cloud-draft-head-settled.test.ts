@@ -2022,6 +2022,79 @@ describe("noteCloudDraftHeadHost", () => {
       ).toBe(true);
     });
 
+    it("a host whose read of a head settled without an install is registered as an image source when a later head of the row settles with images", async () => {
+      const headA = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+        5,
+      );
+      const headB = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        9,
+      );
+      await mountBothSessions();
+      const sources = countSourceChanges();
+
+      // What the ingest hook does at the start of a read: the reading host is
+      // a host of the row, whatever the read goes on to decide.
+      beginCloudDraftHeadRead(headA);
+      noteCloudDraftHeadHost(headA, SECOND_HOST_ID);
+      settleCloudDraftHeadWithoutApply(headA);
+
+      expect(cloudDraftHeadSettled(headA)).toBe(true);
+      expect(sources.count()).toBe(0);
+
+      // A later head of the row is read and installed through the other host,
+      // naming images: the host whose read settled without an install is
+      // registered as a source for them.
+      beginCloudDraftHeadRead(headB);
+      await ingestWithHashes(HOST_ID, headB, [IMAGE_HASH]);
+
+      expect(cloudDraftHeadSettled(headB)).toBe(true);
+      expect(sources.count()).toBe(2);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, HOST_ID, [IMAGE_HASH]),
+      ).toBe(true);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, SECOND_HOST_ID, [
+          IMAGE_HASH,
+        ]),
+      ).toBe(true);
+    });
+
+    it("a host whose read of a head was released on an ambiguous identity is registered as an image source when a later head of the row settles with images", async () => {
+      const headA = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+        5,
+      );
+      const headB = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        9,
+      );
+      await mountBothSessions();
+      const sources = countSourceChanges();
+
+      // The read starts and notes its host; the read then answers an
+      // ambiguous identity and is released silently, undecided.
+      beginCloudDraftHeadRead(headA);
+      noteCloudDraftHeadHost(headA, SECOND_HOST_ID);
+      releaseCloudDraftHeadRead(headA);
+
+      expect(cloudDraftHeadReading(headA)).toBe(false);
+      expect(cloudDraftHeadSettled(headA)).toBe(false);
+      expect(sources.count()).toBe(0);
+
+      beginCloudDraftHeadRead(headB);
+      await ingestWithHashes(HOST_ID, headB, [IMAGE_HASH]);
+
+      expect(cloudDraftHeadSettled(headB)).toBe(true);
+      expect(sources.count()).toBe(2);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, SECOND_HOST_ID, [
+          IMAGE_HASH,
+        ]),
+      ).toBe(true);
+    });
+
     it("remembers a host noted for a row with no record yet, and registers it when the row's first head settles with images", async () => {
       const headB = withPublishedAt(
         summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),

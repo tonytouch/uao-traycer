@@ -1022,7 +1022,7 @@ describe("useCloudDraftsIngest", () => {
     expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 
-  it("registers this host as an image source for a skipped head, with the hook's host id, and not for a head it reads", async () => {
+  it("registers this host as a row host for a skipped head and, at read start, for a head it reads, each with the hook's host id", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
     const skipped = summary(DIGEST_ONE, null);
@@ -1044,9 +1044,49 @@ describe("useCloudDraftsIngest", () => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
     });
     expect(ingestMock.ingest.mock.calls[0][0].summary).toBe(read);
-    expect(noteHostMock.note).toHaveBeenCalledTimes(1);
+    // The skipped head is noted by the skip path; the head it reads is noted
+    // once, by the read's own start (see the read-start test below).
+    expect(noteHostMock.note).toHaveBeenCalledTimes(2);
     expect(noteHostMock.note).toHaveBeenCalledWith(skipped, HOST_ID);
-    expect(noteHostMock.note.mock.calls[0][0]).toBe(skipped);
+    expect(noteHostMock.note).toHaveBeenCalledWith(read, HOST_ID);
+    expect(
+      noteHostMock.note.mock.calls.filter((call) => call[0] === skipped),
+    ).toHaveLength(1);
+    expect(
+      noteHostMock.note.mock.calls.filter((call) => call[0] === read),
+    ).toHaveLength(1);
+  });
+
+  it("notes the reading host as a row host when its read starts, before the read decides", async () => {
+    const order: string[] = [];
+    claimMock.begin.mockImplementation(() => {
+      order.push("begin");
+    });
+    noteHostMock.note.mockImplementation(() => {
+      order.push("note");
+    });
+    readMock.read.mockImplementation(() => {
+      order.push("read");
+      // Never resolves: the host must already be noted while the read is pending.
+      return new Promise(() => {});
+    });
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(readMock.read).toHaveBeenCalledTimes(1);
+    });
+    // Noted right after the claim begins and before the read starts, and the
+    // read has decided nothing: no settle, no release, no ingest.
+    expect(order).toEqual(["begin", "note", "read"]);
+    expect(noteHostMock.note).toHaveBeenCalledTimes(1);
+    expect(noteHostMock.note).toHaveBeenCalledWith(row, HOST_ID);
+    expect(noteHostMock.note.mock.calls[0][0]).toBe(row);
+    expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
+    expect(claimMock.release).not.toHaveBeenCalled();
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 
   it("a settled head is still swept and nudged like any listed row; only the read is skipped", async () => {
@@ -1219,11 +1259,16 @@ describe("useCloudDraftsIngest", () => {
     });
     expect(claimMock.settleWithoutApply).toHaveBeenCalledWith(row);
     expect(vi.getTimerCount()).toBe(0);
+    // The reading host is a row host although the head settled without an
+    // install: it was noted when the read started, once.
+    expect(noteHostMock.note).toHaveBeenCalledTimes(1);
+    expect(noteHostMock.note).toHaveBeenCalledWith(row, HOST_ID);
 
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
     expect(readMock.read).toHaveBeenCalledTimes(1);
     expect(ingestMock.ingest).not.toHaveBeenCalled();
     expect(claimMock.release).not.toHaveBeenCalled();
+    expect(noteHostMock.note).toHaveBeenCalledTimes(1);
   });
 
   it("releases silently, and does not settle or abandon, a head whose read answers an ambiguous identity, then asks again at the next delivery", async () => {
@@ -1248,6 +1293,10 @@ describe("useCloudDraftsIngest", () => {
     expect(claimMock.abandon).not.toHaveBeenCalled();
     expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+    // The release does not take the host back: it was noted when the read
+    // started, and stays a row host of the head.
+    expect(noteHostMock.note).toHaveBeenCalledTimes(1);
+    expect(noteHostMock.note).toHaveBeenCalledWith(row, HOST_ID);
 
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
     expect(readMock.read).toHaveBeenCalledTimes(1);
@@ -1269,6 +1318,8 @@ describe("useCloudDraftsIngest", () => {
     await vi.waitFor(() => {
       expect(claimMock.release).toHaveBeenCalledTimes(2);
     });
+    // Each read noted its host as it started.
+    expect(noteHostMock.note).toHaveBeenCalledTimes(2);
     expect(claimMock.abandon).not.toHaveBeenCalled();
     expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
     expect(ingestMock.ingest).not.toHaveBeenCalled();
@@ -1762,8 +1813,11 @@ describe("useCloudDraftsIngest", () => {
     expect(readMock.read).toHaveBeenCalledTimes(2);
     expect(claimMock.begin).toHaveBeenCalledTimes(2);
     expect(claimMock.begin.mock.calls[1][0]).toBe(republished);
-    // Read, not skipped.
-    expect(noteHostMock.note).not.toHaveBeenCalled();
+    // Read, not skipped: the only note is the republished head's read start,
+    // not a skip-path note.
+    expect(noteHostMock.note).toHaveBeenCalledTimes(1);
+    expect(noteHostMock.note).toHaveBeenCalledWith(republished, HOST_ID);
+    expect(noteHostMock.note.mock.calls[0][0]).toBe(republished);
   });
 
   it("keeps skipping a head this mount already ingested when it is listed again at the same or an earlier publication time and the coordinator does not hold it", async () => {
