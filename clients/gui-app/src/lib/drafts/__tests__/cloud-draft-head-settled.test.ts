@@ -1380,6 +1380,104 @@ describe("noteCloudDraftHeadHost", () => {
     expect(sources.count()).toBe(1);
     expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 1);
   });
+
+  it("registers a host whose stale listing names an OLDER head of the row as a source for the installed head's images, once", async () => {
+    const installed = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      9,
+    );
+    const staleListing = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    mountSession(HOST_ID);
+    mountSession(SECOND_HOST_ID);
+    await Promise.resolve();
+    await ingestWithImage(HOST_ID, installed);
+    expect(cloudDraftHeadSettled(installed)).toBe(true);
+    expect(cloudDraftHeadSettled(staleListing)).toBe(true);
+    const sources = countSourceChanges();
+    const versionBefore = cloudDraftImageSourceVersion();
+
+    noteCloudDraftHeadHost(staleListing, SECOND_HOST_ID);
+
+    expect(sources.count()).toBe(1);
+    expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 1);
+
+    // The host is remembered for the record's images: a second note adds nothing.
+    noteCloudDraftHeadHost(staleListing, SECOND_HOST_ID);
+
+    expect(sources.count()).toBe(1);
+    expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 1);
+  });
+
+  it("does nothing for a listing of a NEWER head than the record's", async () => {
+    const installed = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      9,
+    );
+    mountSession(HOST_ID);
+    mountSession(SECOND_HOST_ID);
+    await Promise.resolve();
+    await ingestWithImage(HOST_ID, installed);
+    expect(cloudDraftHeadSettled(installed)).toBe(true);
+    const sources = countSourceChanges();
+    const versionBefore = cloudDraftImageSourceVersion();
+
+    noteCloudDraftHeadHost(
+      withPublishedAt(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), 12),
+      SECOND_HOST_ID,
+    );
+
+    expect(sources.count()).toBe(0);
+    expect(cloudDraftImageSourceVersion()).toBe(versionBefore);
+  });
+
+  it("does nothing for a stale listing when either publication time is unknown", async () => {
+    const installed = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      9,
+    );
+    mountSession(HOST_ID);
+    mountSession(SECOND_HOST_ID);
+    await Promise.resolve();
+    await ingestWithImage(HOST_ID, installed);
+    expect(cloudDraftHeadSettled(installed)).toBe(true);
+    const sources = countSourceChanges();
+    const versionBefore = cloudDraftImageSourceVersion();
+
+    // The listing's own time is unknown.
+    noteCloudDraftHeadHost(
+      withPublishedAt(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), null),
+      SECOND_HOST_ID,
+    );
+
+    expect(sources.count()).toBe(0);
+    expect(cloudDraftImageSourceVersion()).toBe(versionBefore);
+  });
+
+  it("does nothing for a stale listing when the record's publication time is unknown", async () => {
+    const installed = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      null,
+    );
+    mountSession(HOST_ID);
+    mountSession(SECOND_HOST_ID);
+    await Promise.resolve();
+    await ingestWithImage(HOST_ID, installed);
+    expect(cloudDraftHeadSettled(installed)).toBe(true);
+    const sources = countSourceChanges();
+    const versionBefore = cloudDraftImageSourceVersion();
+
+    noteCloudDraftHeadHost(
+      withPublishedAt(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), 5),
+      SECOND_HOST_ID,
+    );
+
+    expect(sources.count()).toBe(0);
+    expect(cloudDraftImageSourceVersion()).toBe(versionBefore);
+  });
+
   describe("a host skipped while the head is still being read", () => {
     /** Mounts both sessions, so each host has a requester to register. */
     async function mountBothSessions(): Promise<void> {
@@ -1427,6 +1525,41 @@ describe("noteCloudDraftHeadHost", () => {
 
       // The host is marked on the settled record: noting it again adds nothing.
       noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+      expect(sources.count()).toBe(2);
+      expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 2);
+    });
+
+    it("keeps a host whose stale listing was skipped while the newer head is still being read, and registers it when that read settles with images", async () => {
+      const reading = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        9,
+      );
+      const staleListing = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+        5,
+      );
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      const versionBefore = cloudDraftImageSourceVersion();
+      beginCloudDraftHeadRead(reading);
+
+      noteCloudDraftHeadHost(staleListing, SECOND_HOST_ID);
+
+      expect(cloudDraftHeadReading(reading)).toBe(true);
+      expect(sources.count()).toBe(0);
+      expect(cloudDraftImageSourceVersion()).toBe(versionBefore);
+
+      // The reading host ingests the newer head: its own source plus the
+      // stale-listing host's, registered at the settle.
+      await ingestWithImage(HOST_ID, reading);
+
+      expect(cloudDraftHeadSettled(reading)).toBe(true);
+      expect(sources.count()).toBe(2);
+      expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 2);
+
+      // The host is marked on the settled record: noting it again adds nothing.
+      noteCloudDraftHeadHost(staleListing, SECOND_HOST_ID);
 
       expect(sources.count()).toBe(2);
       expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 2);

@@ -444,6 +444,52 @@ describe("sweepAbsentCloudDraftMirrors: fences", () => {
       "shared-id",
     ]);
   });
+
+  it("keys the sweep fence by the row's two halves injectively: a NUL inside one half does not alias another row", () => {
+    const replicaOf = (draftId: string, ownerHostId: string): LandingDraftTab =>
+      publishedOwnRow(draftId, {
+        origin: "replica",
+        ownerHostId,
+        adoption: { state: "adopted", hostId: ownerHostId },
+      });
+    // Joined by a NUL, both pairs read "a\0b\0c".
+    const nulInOwner = { draftId: "c", ownerHostId: "a\u0000b" };
+    const nulInDraft = { draftId: "b\u0000c", ownerHostId: "a" };
+
+    // The fence reserved for one row keeps that row's own replica...
+    useLandingDraftStore.setState({
+      drafts: [replicaOf(nulInOwner.draftId, nulInOwner.ownerHostId)],
+      activeDraftId: null,
+    });
+    reserveCloudDraftSweepFence(nulInOwner.draftId, nulInOwner.ownerHostId);
+    expect(
+      sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), 0),
+    ).toEqual([]);
+    expect(useLandingDraftStore.getState().drafts).toHaveLength(1);
+
+    // ...and does not protect the other row, whose absent replica is swept.
+    useLandingDraftStore.setState({
+      drafts: [replicaOf(nulInDraft.draftId, nulInDraft.ownerHostId)],
+      activeDraftId: null,
+    });
+    expect(
+      sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), 0),
+    ).toEqual([nulInDraft.draftId]);
+    expect(useLandingDraftStore.getState().drafts).toEqual([]);
+
+    // The other way round: a fence for the NUL-in-draft row leaves the
+    // NUL-in-owner row unprotected (each side starts from a fresh fence map).
+    resetDraftMirrorCoordinatorForTests();
+    useLandingDraftStore.setState({
+      drafts: [replicaOf(nulInOwner.draftId, nulInOwner.ownerHostId)],
+      activeDraftId: null,
+    });
+    reserveCloudDraftSweepFence(nulInDraft.draftId, nulInDraft.ownerHostId);
+    expect(
+      sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), 0),
+    ).toEqual([nulInOwner.draftId]);
+    expect(useLandingDraftStore.getState().drafts).toEqual([]);
+  });
 });
 
 describe("a fence reservation while a landing apply awaits its blob read", () => {

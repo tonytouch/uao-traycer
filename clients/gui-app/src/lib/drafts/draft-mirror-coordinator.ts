@@ -231,7 +231,9 @@ const cloudSweepFenceByRow = new Map<string, number>();
  * under that id is.
  */
 function cloudSweepFenceKey(draftId: string, ownerHostId: string): string {
-  return `${ownerHostId}\u0000${draftId}`;
+  // Encoded, not joined: the wire accepts any non-empty string for either
+  // half, so no delimiter character is one a half cannot contain.
+  return JSON.stringify([ownerHostId, draftId]);
 }
 
 /**
@@ -1998,7 +2000,17 @@ export function noteCloudDraftHeadHost(
 ): void {
   const key = cloudDraftIdentityKey(summary);
   const record = cloudDraftHeads.get(key);
-  if (record === undefined || record.headSha256 !== summary.headSha256) {
+  if (record === undefined) return;
+  // The head the guard skipped: this very digest, or a STALE listing of the
+  // row (an older head, from a host-scoped directory cache not yet
+  // refreshed) that the guard answered as settled because the record holds
+  // a newer one. That mount shows the row all the same, and its host is a
+  // source for the head the record holds: a listing of a newer head than
+  // the record's is read, never noted, and nothing else reaches here.
+  if (
+    record.headSha256 !== summary.headSha256 &&
+    !listingIsOlderThanRecord(record, summary)
+  ) {
     return;
   }
   if (record.state === "reading") {
@@ -2009,7 +2021,7 @@ export function noteCloudDraftHeadHost(
     });
     return;
   }
-  registerCloudDraftHeadHost(key, summary, hostId);
+  registerCloudDraftHeadHost(key, summary.identity, hostId);
 }
 
 /**
@@ -2023,16 +2035,17 @@ export function noteCloudDraftHeadHost(
  */
 function registerCloudDraftHeadHost(
   key: string,
-  summary: CloudChatSummary,
+  identity: CloudChatSummary["identity"],
   hostId: string,
 ): void {
+  // The record is the row's (the key names it), and its images are the ones
+  // this host is a source for, whichever head the caller's listing named.
   const record = cloudDraftHeads.get(key);
   if (
     record === undefined ||
     record.state !== "settled" ||
-    record.headSha256 !== summary.headSha256 ||
     record.imageHashes.length === 0 ||
-    cloudDraftImageSourcesRecorded(summary.identity, hostId, record.imageHashes)
+    cloudDraftImageSourcesRecorded(identity, hostId, record.imageHashes)
   ) {
     return;
   }
@@ -2042,9 +2055,9 @@ function registerCloudDraftHeadHost(
   // serves (a cached directory rendered across a switch), and its refusal
   // is what the next walk's query sees, so the account's return registers
   // the host then.
-  if (summary.identity.ownerUserId !== currentDraftBlobOwnerId()) return;
+  if (identity.ownerUserId !== currentDraftBlobOwnerId()) return;
   recordCloudDraftImageSources({
-    identity: summary.identity,
+    identity,
     hostId,
     client,
     hashes: record.imageHashes,
@@ -2193,7 +2206,7 @@ function settleCloudDraftHead(
   // their hosts now that the head's images are known.
   if (current !== undefined && current.state === "reading") {
     for (const hostId of current.skippedHosts) {
-      registerCloudDraftHeadHost(key, summary, hostId);
+      registerCloudDraftHeadHost(key, summary.identity, hostId);
     }
   }
 }
