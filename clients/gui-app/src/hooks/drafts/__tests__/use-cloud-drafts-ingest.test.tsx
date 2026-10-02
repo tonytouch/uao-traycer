@@ -110,47 +110,56 @@ vi.mock("@/lib/drafts/cloud-draft-reader", () => ({
   readCloudDraft: (): Promise<{ kind: string; record: unknown }> =>
     readMock.read(),
 }));
-vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
-  cloudDraftHeadKey: (summary: CloudChatSummary): string =>
-    `${summary.ownerHostId}:${summary.identity.taskId}:${summary.identity.ownerUserId}:${summary.identity.chatId}:${summary.headSha256}`,
-  cloudDraftHeadSettled: (summary: CloudChatSummary): boolean =>
-    settledMock.settled(summary),
-  beginCloudDraftHeadRead: (summary: CloudChatSummary): void =>
-    claimMock.begin(summary),
-  releaseCloudDraftHeadRead: (summary: CloudChatSummary): void =>
-    claimMock.release(summary),
-  abandonCloudDraftHeadRead: (summary: CloudChatSummary): void =>
-    claimMock.abandon(summary),
-  noteCloudDraftHeadHost: (summary: CloudChatSummary, hostId: string): void =>
-    noteHostMock.note(summary, hostId),
-  subscribeCloudDraftHeadAbandoned: (
-    listener: (summary: CloudChatSummary) => void,
-  ): (() => void) => abandonSubscriptionMock.subscribe(listener),
-  settleCloudDraftHeadWithoutApply: (summary: CloudChatSummary): void =>
-    claimMock.settleWithoutApply(summary),
-  reserveCloudDraftIngestFence: (draftId: string): void =>
-    reserveMock.reserve(draftId),
-  reserveCloudDraftSweepFence: (draftId: string, ownerHostId: string): void =>
-    sweepFenceMock.reserve(draftId, ownerHostId),
-  ingestCloudDraftSummary: (args: {
-    hostId: string;
-    summary: CloudChatSummary;
-    document: unknown;
-  }): Promise<void> => ingestMock.ingest(args),
-  sweepAbsentCloudDraftMirrors: (
-    hostId: string,
-    listed: ReadonlyMap<string, ReadonlySet<string>>,
-    fenceSeq: number,
-  ): readonly string[] => sweepMock.sweep(hostId, listed, fenceSeq),
-  flushAbsentOwnCloudDrafts: (
-    listed: ReadonlyMap<string, ReadonlySet<string>>,
-    fenceSeq: number,
-    alreadyFlushed: ReadonlySet<string>,
-    // Snapshotted: the hook mutates the set after the call, and the tests
-    // read what was excluded AT the call.
-  ): readonly string[] =>
-    flushMock.flush(listed, fenceSeq, new Set(alreadyFlushed)),
-}));
+vi.mock("@/lib/drafts/draft-mirror-coordinator", async (importOriginal) => {
+  // The one real rule for "a later publication", shared with the hook: pulled
+  // from the coordinator rather than re-implemented here.
+  const actual =
+    await importOriginal<
+      typeof import("@/lib/drafts/draft-mirror-coordinator")
+    >();
+  return {
+    publishedLaterThan: actual.publishedLaterThan,
+    cloudDraftHeadKey: (summary: CloudChatSummary): string =>
+      `${summary.ownerHostId}:${summary.identity.taskId}:${summary.identity.ownerUserId}:${summary.identity.chatId}:${summary.headSha256}`,
+    cloudDraftHeadSettled: (summary: CloudChatSummary): boolean =>
+      settledMock.settled(summary),
+    beginCloudDraftHeadRead: (summary: CloudChatSummary): void =>
+      claimMock.begin(summary),
+    releaseCloudDraftHeadRead: (summary: CloudChatSummary): void =>
+      claimMock.release(summary),
+    abandonCloudDraftHeadRead: (summary: CloudChatSummary): void =>
+      claimMock.abandon(summary),
+    noteCloudDraftHeadHost: (summary: CloudChatSummary, hostId: string): void =>
+      noteHostMock.note(summary, hostId),
+    subscribeCloudDraftHeadAbandoned: (
+      listener: (summary: CloudChatSummary) => void,
+    ): (() => void) => abandonSubscriptionMock.subscribe(listener),
+    settleCloudDraftHeadWithoutApply: (summary: CloudChatSummary): void =>
+      claimMock.settleWithoutApply(summary),
+    reserveCloudDraftIngestFence: (draftId: string): void =>
+      reserveMock.reserve(draftId),
+    reserveCloudDraftSweepFence: (draftId: string, ownerHostId: string): void =>
+      sweepFenceMock.reserve(draftId, ownerHostId),
+    ingestCloudDraftSummary: (args: {
+      hostId: string;
+      summary: CloudChatSummary;
+      document: unknown;
+    }): Promise<void> => ingestMock.ingest(args),
+    sweepAbsentCloudDraftMirrors: (
+      hostId: string,
+      listed: ReadonlyMap<string, ReadonlySet<string>>,
+      fenceSeq: number,
+    ): readonly string[] => sweepMock.sweep(hostId, listed, fenceSeq),
+    flushAbsentOwnCloudDrafts: (
+      listed: ReadonlyMap<string, ReadonlySet<string>>,
+      fenceSeq: number,
+      alreadyFlushed: ReadonlySet<string>,
+      // Snapshotted: the hook mutates the set after the call, and the tests
+      // read what was excluded AT the call.
+    ): readonly string[] =>
+      flushMock.flush(listed, fenceSeq, new Set(alreadyFlushed)),
+  };
+});
 
 const { useCloudDraftsIngest } =
   await import("@/hooks/drafts/use-cloud-drafts-ingest");
@@ -1302,7 +1311,7 @@ describe("useCloudDraftsIngest", () => {
     warnSpy.mockRestore();
   });
 
-  it("asks the coordinator about a head this mount already ingested when it is listed again, and starts no read", async () => {
+  it("asks the coordinator about a head this mount already ingested when the same digest is listed at a later publication time, and reads it again when the coordinator no longer holds it", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
     const first = summary(DIGEST_ONE, null);
@@ -1319,20 +1328,85 @@ describe("useCloudDraftsIngest", () => {
     noteHostMock.note.mockClear();
 
     // The same identity and digest listed again at a later publication time:
-    // the coordinator is the one that moves the record's stamp on it, so the
-    // guard must reach it even though this mount's own set has the key.
+    // the coordinator is asked first, and it answers false (it forgot the
+    // head), so this mount's own set must not outvote it.
     const republished = summary(DIGEST_ONE, { publishedAt: 9 });
     directoryMock.chats = [republished];
     view.rerender();
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(2);
+    });
     expect(settledMock.settled).toHaveBeenCalledTimes(1);
     expect(settledMock.settled).toHaveBeenCalledWith(republished);
     expect(settledMock.settled.mock.calls[0][0]).toBe(republished);
-    // The per-mount set still skips it when the coordinator does not hold it.
+    expect(readMock.read).toHaveBeenCalledTimes(2);
+    expect(claimMock.begin).toHaveBeenCalledTimes(2);
+    expect(claimMock.begin.mock.calls[1][0]).toBe(republished);
+    // Read, not skipped.
+    expect(noteHostMock.note).not.toHaveBeenCalled();
+  });
+
+  it("keeps skipping a head this mount already ingested when it is listed again at the same or an earlier publication time and the coordinator does not hold it", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    settledMock.settled.mockClear();
+    noteHostMock.note.mockClear();
+
+    const listings = [
+      summary(DIGEST_ONE, { publishedAt: 1 }),
+      summary(DIGEST_ONE, { publishedAt: 0 }),
+      summary(DIGEST_ONE, { publishedAt: null }),
+    ];
+    for (const listing of listings) {
+      noteHostMock.note.mockClear();
+      directoryMock.chats = [listing];
+      view.rerender();
+
+      await vi.waitFor(() => {
+        expect(noteHostMock.note).toHaveBeenCalledTimes(1);
+      });
+      expect(noteHostMock.note).toHaveBeenCalledWith(listing, HOST_ID);
+      expect(readMock.read).toHaveBeenCalledTimes(1);
+      expect(claimMock.begin).toHaveBeenCalledTimes(1);
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("a sole mount that was refused a head reads the same digest again when it is republished later, and the coordinator is asked first", async () => {
+    readMock.read.mockResolvedValue({ kind: "unpublished", record: null });
+    const first = summary(DIGEST_ONE, { publishedAt: 5 });
+    directoryMock.chats = [first];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(claimMock.settleWithoutApply).toHaveBeenCalledTimes(1);
+    });
     expect(readMock.read).toHaveBeenCalledTimes(1);
-    expect(claimMock.begin).toHaveBeenCalledTimes(1);
-    expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
-    expect(noteHostMock.note).toHaveBeenCalledWith(republished, HOST_ID);
+    settledMock.settled.mockClear();
+
+    const republished = summary(DIGEST_ONE, { publishedAt: 9 });
+    directoryMock.chats = [republished];
+    view.rerender();
+
+    await vi.waitFor(() => {
+      expect(claimMock.settleWithoutApply).toHaveBeenCalledTimes(2);
+    });
+    expect(settledMock.settled).toHaveBeenCalledWith(republished);
+    expect(readMock.read).toHaveBeenCalledTimes(2);
+    expect(claimMock.begin).toHaveBeenCalledTimes(2);
+    expect(claimMock.begin.mock.calls[1][0]).toBe(republished);
+    expect(claimMock.settleWithoutApply.mock.calls[1][0]).toBe(republished);
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 });

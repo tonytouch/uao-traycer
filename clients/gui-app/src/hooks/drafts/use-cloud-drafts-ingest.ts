@@ -24,6 +24,7 @@ import {
   flushAbsentOwnCloudDrafts,
   ingestCloudDraftSummary,
   noteCloudDraftHeadHost,
+  publishedLaterThan,
   releaseCloudDraftHeadRead,
   reserveCloudDraftIngestFence,
   reserveCloudDraftSweepFence,
@@ -50,14 +51,33 @@ import { useCloudDraftsDirectory } from "./use-cloud-drafts-directory";
  * whose set would otherwise short-circuit past it.
  */
 function guardMaySkip(
-  ingestedKeys: ReadonlyMap<string, string>,
+  ingestedKeys: ReadonlyMap<string, IngestedHead>,
   summary: CloudChatSummary,
 ): boolean {
+  if (summary.headSha256 === null || cloudDraftHeadSettled(summary)) {
+    return true;
+  }
+  // The per-mount set must not outvote the coordinator when it has just
+  // forgotten this head because the same digest was republished since: a
+  // sole long-lived mount that read the head itself (and was refused, or
+  // installed a document without a mirror) is the one mount whose set has
+  // the key, and it would skip the republication until it remounted. The key
+  // keeps the publication the mount handled, and a later one is read again,
+  // by the coordinator's own rule.
+  const ingested = ingestedKeys.get(cloudDraftHeadKey(summary));
   return (
-    summary.headSha256 === null ||
-    cloudDraftHeadSettled(summary) ||
-    ingestedKeys.has(cloudDraftHeadKey(summary))
+    ingested !== undefined &&
+    !publishedLaterThan(summary.publishedAt, ingested.publishedAt)
   );
+}
+
+/**
+ * What a mount remembers of a head it handled: the chat id (the absence
+ * sweep releases keys by it) and the publication it read.
+ */
+interface IngestedHead {
+  readonly chatId: string;
+  readonly publishedAt: number | null;
 }
 
 /** Attempts per head, including the first. Bounded, with exponential spacing. */
@@ -77,9 +97,11 @@ export function useCloudDraftsIngest(
   // Destructured so the effect depends on the (stable) reader, not on the
   // directory object a method call would otherwise bind.
   const { snapshotIngestSeq } = directory;
-  // Guard key -> chat id: a key is released when the absence sweep drops
-  // that chat's mirror, so the same head listed again later is read again.
-  const ingested = useRef(new Map<string, string>());
+  // Guard key -> the head this mount handled: a key is released when the
+  // absence sweep drops that chat's mirror, so the same head listed again
+  // later is read again, and outvoted when the same digest is listed at a
+  // later publication time (`guardMaySkip`).
+  const ingested = useRef(new Map<string, IngestedHead>());
   // Own rows already nudged (`flushAbsentOwnCloudDrafts`) for a directory
   // snapshot, keyed by that snapshot's fence: once per snapshot, not on
   // every effect run that re-reads the same settled directory.
@@ -170,8 +192,8 @@ export function useCloudDraftsIngest(
         sweepAbsentCloudDraftMirrors(hostId, listed, fenceSeq),
       );
       if (dropped.size > 0) {
-        for (const [key, chatId] of ingestedKeys) {
-          if (dropped.has(chatId)) ingestedKeys.delete(key);
+        for (const [key, head] of ingestedKeys) {
+          if (dropped.has(head.chatId)) ingestedKeys.delete(key);
         }
       }
       // An own row the directory no longer lists is the owner host's to
@@ -199,7 +221,10 @@ export function useCloudDraftsIngest(
       // directory lists under another owner than this mount last ingested
       // is not the head it recorded.
       const key = cloudDraftHeadKey(summary);
-      ingestedKeys.set(key, summary.identity.chatId);
+      ingestedKeys.set(key, {
+        chatId: summary.identity.chatId,
+        publishedAt: summary.publishedAt,
+      });
       unsettledKeys.set(key, summary);
       // Claimed process-wide BEFORE the read: a second mount walking the same
       // directory in the same tick (N tabs restored into one Task) skips the

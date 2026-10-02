@@ -1843,10 +1843,22 @@ function listingIsLaterThanRecord(
 ): boolean {
   return (
     record.headSha256 === summary.headSha256 &&
-    record.publishedAt !== null &&
-    summary.publishedAt !== null &&
-    summary.publishedAt > record.publishedAt
+    publishedLaterThan(summary.publishedAt, record.publishedAt)
   );
+}
+
+/**
+ * Whether `later` is a LATER publication time than `earlier`: the one rule
+ * for "the same digest was republished since". Unknown on either side
+ * compares as not later. Shared with the ingest hook, whose per-mount set
+ * must not outvote this coordinator when it forgets a head for exactly this
+ * reason.
+ */
+export function publishedLaterThan(
+  later: number | null,
+  earlier: number | null,
+): boolean {
+  return later !== null && earlier !== null && later > earlier;
 }
 
 /** The later of two publication times; an unknown side yields the other. */
@@ -2114,9 +2126,7 @@ function recordIsLaterThanListing(
 ): boolean {
   return (
     record.headSha256 === summary.headSha256 &&
-    record.publishedAt !== null &&
-    summary.publishedAt !== null &&
-    record.publishedAt > summary.publishedAt
+    publishedLaterThan(record.publishedAt, summary.publishedAt)
   );
 }
 
