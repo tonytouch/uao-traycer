@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftDocument } from "@traycer/protocol/host";
 import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import {
+  abandonCloudDraftHeadRead,
+  acquireDraftMirrorSession,
   applyIncomingDraftDocument,
   beginCloudDraftHeadRead,
   cloudDraftHeadKey,
@@ -9,11 +11,20 @@ import {
   cloudDraftHeadSettled,
   cloudDraftIngestSeq,
   ingestCloudDraftSummary,
+  noteCloudDraftHeadHost,
   releaseCloudDraftHeadRead,
   resetDraftMirrorCoordinatorForTests,
   settleCloudDraftHeadWithoutApply,
+  subscribeCloudDraftHeadAbandoned,
   sweepAbsentCloudDraftMirrors,
 } from "@/lib/drafts/draft-mirror-coordinator";
+import {
+  cloudDraftImageSourceVersion,
+  resetCloudDraftImageRecoveryForTests,
+  subscribeCloudDraftImageSources,
+} from "@/lib/drafts/cloud-draft-image-recovery";
+import { installFreshIndexedDb } from "@/lib/composer/__tests__/fake-idb";
+import { fakeDraftStreamClient } from "@/lib/drafts/__tests__/draft-mirror-test-stream";
 import {
   resetLandingDraftRetirementsForTests,
   retireLandingDraft,
@@ -98,6 +109,22 @@ function cloudDocument(
   };
 }
 
+/** A landing document whose portable body names `hashes`, as a published head with images does. */
+function landingDocumentWithImages(
+  draftId: string,
+  ownerHostId: string,
+  hashes: readonly string[],
+): DraftDocument {
+  const document = cloudDocument(draftId, ownerHostId, "landing");
+  if (document.kind !== "landing") {
+    throw new Error("expected a landing document");
+  }
+  return {
+    ...document,
+    portable: { ...document.portable, blobHashes: [...hashes] },
+  };
+}
+
 function landingIds(): readonly string[] {
   return useLandingDraftStore.getState().drafts.map((draft) => draft.id);
 }
@@ -117,6 +144,7 @@ async function ingest(
 
 afterEach(() => {
   resetDraftMirrorCoordinatorForTests();
+  resetCloudDraftImageRecoveryForTests();
   useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
   resetLandingDraftRetirementsForTests();
   useAuthStore.setState({ contextMetadata: null });
@@ -333,6 +361,9 @@ describe("cloudDraftHeadSettled", () => {
     expect(cloudDraftHeadSettled(second)).toBe(true);
 
     const firstNewer = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO);
+    // The reader claims the new head before it reads it, which is what
+    // replaces the row's record: a settle alone never replaces another head's.
+    beginCloudDraftHeadRead(firstNewer);
     await ingest(
       HOST_ID,
       firstNewer,
@@ -414,5 +445,337 @@ describe("cloudDraftHeadReading", () => {
     expect(landingIds()).toEqual([DRAFT_ID]);
     expect(cloudDraftHeadSettled(summary)).toBe(true);
     expect(cloudDraftHeadReading(summary)).toBe(false);
+  });
+});
+
+describe("a settle is guarded by the head", () => {
+  it("leaves a newer head's read in flight when an older head of the row settles", () => {
+    const older = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const newer = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO);
+    beginCloudDraftHeadRead(newer);
+
+    settleCloudDraftHeadWithoutApply(older);
+
+    expect(cloudDraftHeadReading(newer)).toBe(true);
+    expect(cloudDraftHeadSettled(older)).toBe(false);
+    expect(cloudDraftHeadSettled(newer)).toBe(true);
+  });
+
+  it("settles the head once its own settle arrives, after an older head's was ignored", () => {
+    const older = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const newer = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO);
+    beginCloudDraftHeadRead(newer);
+    settleCloudDraftHeadWithoutApply(older);
+
+    settleCloudDraftHeadWithoutApply(newer);
+
+    expect(cloudDraftHeadReading(newer)).toBe(false);
+    expect(cloudDraftHeadSettled(newer)).toBe(true);
+    expect(cloudDraftHeadSettled(older)).toBe(false);
+  });
+
+  it("keeps a settled newer head when an older head settles after it", () => {
+    const older = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const newer = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO);
+    settleCloudDraftHeadWithoutApply(newer);
+
+    settleCloudDraftHeadWithoutApply(older);
+
+    expect(cloudDraftHeadSettled(newer)).toBe(true);
+    expect(cloudDraftHeadSettled(older)).toBe(false);
+  });
+
+  it("settles a row that has no record, and re-settles the same head", () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    expect(cloudDraftHeadSettled(summary)).toBe(false);
+
+    settleCloudDraftHeadWithoutApply(summary);
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+
+    settleCloudDraftHeadWithoutApply(summary);
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+    expect(cloudDraftHeadReading(summary)).toBe(false);
+  });
+
+  it("does not let an install of an older head replace the newer head's claim", async () => {
+    const older = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const newer = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO);
+    beginCloudDraftHeadRead(newer);
+
+    await ingest(
+      HOST_ID,
+      older,
+      cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+    );
+
+    expect(cloudDraftHeadReading(newer)).toBe(true);
+    expect(cloudDraftHeadSettled(older)).toBe(false);
+  });
+});
+
+describe("abandonCloudDraftHeadRead", () => {
+  it("clears a read in flight and tells every subscriber which head, once", () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const first = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const second = vi.fn<(abandoned: CloudChatSummary) => void>();
+    subscribeCloudDraftHeadAbandoned(first);
+    subscribeCloudDraftHeadAbandoned(second);
+    beginCloudDraftHeadRead(summary);
+
+    abandonCloudDraftHeadRead(summary);
+
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(first.mock.calls[0][0]).toBe(summary);
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(second.mock.calls[0][0]).toBe(summary);
+    expect(cloudDraftHeadReading(summary)).toBe(false);
+    expect(cloudDraftHeadSettled(summary)).toBe(false);
+  });
+
+  it("has already cleared the claim when a subscriber hears of it, so a woken mount can claim the head", () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const seenSettled: boolean[] = [];
+    subscribeCloudDraftHeadAbandoned((abandoned) => {
+      seenSettled.push(cloudDraftHeadSettled(abandoned));
+      beginCloudDraftHeadRead(abandoned);
+    });
+    beginCloudDraftHeadRead(summary);
+
+    abandonCloudDraftHeadRead(summary);
+
+    expect(seenSettled).toEqual([false]);
+    expect(cloudDraftHeadReading(summary)).toBe(true);
+  });
+
+  it("notifies nobody and keeps the record when the head is already settled", () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    subscribeCloudDraftHeadAbandoned(listener);
+    beginCloudDraftHeadRead(summary);
+    settleCloudDraftHeadWithoutApply(summary);
+
+    abandonCloudDraftHeadRead(summary);
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+  });
+
+  it("notifies nobody and keeps the claim when it names another head of the row", () => {
+    const reading = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const other = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO);
+    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    subscribeCloudDraftHeadAbandoned(listener);
+    beginCloudDraftHeadRead(reading);
+
+    abandonCloudDraftHeadRead(other);
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(cloudDraftHeadReading(reading)).toBe(true);
+  });
+
+  it("notifies nobody when the row has no record", () => {
+    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    subscribeCloudDraftHeadAbandoned(listener);
+
+    abandonCloudDraftHeadRead(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE));
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("stops notifying a subscriber once it unsubscribes, and only that one", () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const gone = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const kept = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const unsubscribeGone = subscribeCloudDraftHeadAbandoned(gone);
+    subscribeCloudDraftHeadAbandoned(kept);
+    unsubscribeGone();
+    beginCloudDraftHeadRead(summary);
+
+    abandonCloudDraftHeadRead(summary);
+
+    expect(gone).not.toHaveBeenCalled();
+    expect(kept).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not heard after resetDraftMirrorCoordinatorForTests drops the record", () => {
+    // The record, not the subscription, is what an abandon needs: with no
+    // read in flight there is nothing to hand over.
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    subscribeCloudDraftHeadAbandoned(listener);
+    beginCloudDraftHeadRead(summary);
+    resetDraftMirrorCoordinatorForTests();
+
+    abandonCloudDraftHeadRead(summary);
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+describe("noteCloudDraftHeadHost", () => {
+  const IMAGE_HASH = "ef".repeat(32);
+  const SECOND_HOST_ID = "host-c";
+  const OWNER_USER_ID = "user-1";
+
+  beforeEach(() => {
+    installFreshIndexedDb();
+    // A cloud image source carries the account it was minted under, and is
+    // refused unless the window serves that account.
+    useAuthStore.setState({
+      status: "signed-in",
+      contextMetadata: { userId: OWNER_USER_ID, username: OWNER_USER_ID },
+    });
+  });
+
+  afterEach(() => {
+    useAuthStore.setState(useAuthStore.getInitialState(), true);
+  });
+
+  function mountSession(hostId: string): void {
+    acquireDraftMirrorSession({
+      hostId,
+      client: {
+        request: () =>
+          Promise.resolve({
+            drafts: [],
+            tombstones: [],
+            snapshotSeq: 0,
+            scopeId: null,
+          }),
+      } as never,
+      streamClient: fakeDraftStreamClient(),
+      timing: undefined,
+    });
+  }
+
+  function ingestWithImage(
+    hostId: string,
+    summary: CloudChatSummary,
+  ): Promise<void> {
+    return ingestCloudDraftSummary({
+      hostId,
+      summary,
+      document: landingDocumentWithImages(DRAFT_ID, OWNER_HOST_ID, [
+        IMAGE_HASH,
+      ]),
+      readOwner: OWNER_USER_ID,
+    });
+  }
+
+  /** Counts every change of the recorded image sources from here on. */
+  function countSourceChanges(): { readonly count: () => number } {
+    let changes = 0;
+    subscribeCloudDraftImageSources(() => {
+      changes += 1;
+    });
+    return { count: () => changes };
+  }
+
+  it("is a no-op, and throws nothing, for a settled head that has no images", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    mountSession(SECOND_HOST_ID);
+    await ingestCloudDraftSummary({
+      hostId: HOST_ID,
+      summary,
+      document: cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+      readOwner: OWNER_USER_ID,
+    });
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+    const sources = countSourceChanges();
+    const versionBefore = cloudDraftImageSourceVersion();
+
+    expect(() => {
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+    }).not.toThrow();
+
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+    expect(cloudDraftImageSourceVersion()).toBe(versionBefore);
+    expect(sources.count()).toBe(0);
+  });
+
+  it("is a no-op for a row with no record and for a head still being read", () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    mountSession(SECOND_HOST_ID);
+    const sources = countSourceChanges();
+
+    noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+    beginCloudDraftHeadRead(summary);
+    noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+    expect(cloudDraftHeadReading(summary)).toBe(true);
+    expect(sources.count()).toBe(0);
+  });
+
+  it("registers a second host's requester as a source for an installed head's images, once", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    mountSession(HOST_ID);
+    mountSession(SECOND_HOST_ID);
+    await Promise.resolve();
+    await ingestWithImage(HOST_ID, summary);
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+    const sources = countSourceChanges();
+    const versionBefore = cloudDraftImageSourceVersion();
+
+    noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+    expect(sources.count()).toBe(1);
+    expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 1);
+
+    // The second skip of the same head by a mount on the same host adds
+    // nothing: the host is remembered on the record.
+    noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+    expect(sources.count()).toBe(1);
+    expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 1);
+  });
+
+  it("does not register the host that already ingested the head with a mounted session", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    mountSession(HOST_ID);
+    await Promise.resolve();
+    await ingestWithImage(HOST_ID, summary);
+    const sources = countSourceChanges();
+
+    noteCloudDraftHeadHost(summary, HOST_ID);
+
+    expect(sources.count()).toBe(0);
+  });
+
+  it("registers a host that ingested the head without a mounted session once its session is mounted, and not before", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    // The head is installed through a host this window holds no mirror on:
+    // no source could be recorded at ingest.
+    await ingestWithImage(HOST_ID, summary);
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+    const sources = countSourceChanges();
+
+    noteCloudDraftHeadHost(summary, HOST_ID);
+    expect(sources.count()).toBe(0);
+
+    mountSession(HOST_ID);
+    await Promise.resolve();
+    const afterMount = sources.count();
+
+    noteCloudDraftHeadHost(summary, HOST_ID);
+    expect(sources.count()).toBe(afterMount + 1);
+
+    noteCloudDraftHeadHost(summary, HOST_ID);
+    expect(sources.count()).toBe(afterMount + 1);
+  });
+
+  it("is a no-op for another head of the row than the settled one", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    mountSession(HOST_ID);
+    mountSession(SECOND_HOST_ID);
+    await Promise.resolve();
+    await ingestWithImage(HOST_ID, summary);
+    const sources = countSourceChanges();
+
+    noteCloudDraftHeadHost(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      SECOND_HOST_ID,
+    );
+
+    expect(sources.count()).toBe(0);
   });
 });

@@ -225,7 +225,31 @@ type CloudDraftHeadRecord = {
   /** `reading`: a mount has the head read in flight; `settled`: decided. */
   readonly state: "reading" | "settled";
   readonly mirrorId: string | null;
+  /**
+   * The image hashes the installed document names, and the hosts whose
+   * requester has been recorded as a source for them. A mount on another
+   * host that skips this head still registers its host
+   * (`noteCloudDraftHeadHost`), as its own ingest did when every mount read
+   * every head: once the ingesting host's mirror is released its requester
+   * is closed, and without this the images have no live source.
+   */
+  readonly imageHashes: readonly string[];
+  readonly sourceHosts: ReadonlySet<string>;
 };
+/** What a decided head is remembered with. */
+type CloudDraftHeadSettlement = {
+  readonly mirrorId: string | null;
+  readonly imageHashes: readonly string[];
+  readonly sourceHost: string | null;
+};
+const SETTLED_WITHOUT_MIRROR: CloudDraftHeadSettlement = {
+  mirrorId: null,
+  imageHashes: [],
+  sourceHost: null,
+};
+const cloudDraftHeadAbandonListeners = new Set<
+  (summary: CloudChatSummary) => void
+>();
 /**
  * Process-wide on purpose. The ingest hook used to keep this guard on its own
  * instance, and it is mounted by the landing page and again by every tab, so
@@ -1424,7 +1448,7 @@ export async function ingestCloudDraftSummary(input: {
   // re-ran this. Settled for this head: the decision is about the KIND, so
   // nothing a later mount could read would change it.
   if (draftKindIsHostBound(input.document.kind)) {
-    settleCloudDraftHead(input.summary, null);
+    settleCloudDraftHead(input.summary, SETTLED_WITHOUT_MIRROR);
     return;
   }
   // The absence-sweep fence is reserved by `applyHostDocument` at its
@@ -1489,15 +1513,25 @@ export async function ingestCloudDraftSummary(input: {
   // the read, a dirty local row - is about this moment, not this head, so the
   // record is released and the next mount asks again, as it always did.
   if (installed) {
-    settleCloudDraftHead(
-      input.summary,
-      input.document.kind === "landing" ? input.summary.identity.chatId : null,
-    );
+    const imageHashes = imageHashesOfDocument(input.document);
+    settleCloudDraftHead(input.summary, {
+      mirrorId:
+        input.document.kind === "landing"
+          ? input.summary.identity.chatId
+          : null,
+      imageHashes,
+      // The host `recoverIngestedCloudDraftImages` recorded, when it did:
+      // it records only through a mounted session's requester.
+      sourceHost:
+        imageHashes.length > 0 && sessionClients.has(input.hostId)
+          ? input.hostId
+          : null,
+    });
   } else if (
     input.document.kind === "landing" &&
     landingDraftIsRetired(input.document.draftId)
   ) {
-    settleCloudDraftHead(input.summary, null);
+    settleCloudDraftHead(input.summary, SETTLED_WITHOUT_MIRROR);
   } else {
     releaseCloudDraftHeadRead(input.summary);
   }
@@ -1720,7 +1754,87 @@ export function beginCloudDraftHeadRead(summary: CloudChatSummary): void {
     headSha256: summary.headSha256,
     state: "reading",
     mirrorId: null,
+    imageHashes: [],
+    sourceHosts: new Set<string>(),
   });
+}
+
+/**
+ * The mount that was reading this head is gone (its tile closed, its host or
+ * scope changed) with the read undecided. The claim is released as
+ * {@link releaseCloudDraftHeadRead} does, and every mount still listening is
+ * told, so one of them picks the head up now rather than at its next
+ * directory delivery. Only teardown wakes: a read that gave up after its
+ * attempts, or an apply refused for the moment, would have met the same
+ * answer on the other mount, and waking it would trade the head between
+ * mounts at the retry ladder's pace.
+ */
+export function abandonCloudDraftHeadRead(summary: CloudChatSummary): void {
+  const key = cloudDraftIdentityKey(summary);
+  const record = cloudDraftHeads.get(key);
+  if (
+    record === undefined ||
+    record.state !== "reading" ||
+    record.headSha256 !== summary.headSha256
+  ) {
+    return;
+  }
+  cloudDraftHeads.delete(key);
+  for (const listener of [...cloudDraftHeadAbandonListeners]) {
+    listener(summary);
+  }
+}
+
+/** Hear every {@link abandonCloudDraftHeadRead}; returns the unsubscribe. */
+export function subscribeCloudDraftHeadAbandoned(
+  listener: (summary: CloudChatSummary) => void,
+): () => void {
+  cloudDraftHeadAbandonListeners.add(listener);
+  return () => {
+    cloudDraftHeadAbandonListeners.delete(listener);
+  };
+}
+
+/**
+ * A mount on `hostId` skipped this settled head: register that host's
+ * requester as a source for the head's images, once per host, if its mirror
+ * session is mounted. Before the coordinator held the record, that mount's
+ * own ingest did this; a window whose only mounted session is on another
+ * host than the one that ingested the head would otherwise have no live
+ * source for those images once the ingesting host's session is released.
+ */
+export function noteCloudDraftHeadHost(
+  summary: CloudChatSummary,
+  hostId: string,
+): void {
+  const key = cloudDraftIdentityKey(summary);
+  const record = cloudDraftHeads.get(key);
+  if (
+    record === undefined ||
+    record.state !== "settled" ||
+    record.headSha256 !== summary.headSha256 ||
+    record.imageHashes.length === 0 ||
+    record.sourceHosts.has(hostId)
+  ) {
+    return;
+  }
+  const client = sessionClients.get(hostId);
+  if (client === undefined) return;
+  recordCloudDraftImageSources({
+    identity: summary.identity,
+    hostId,
+    client,
+    hashes: record.imageHashes,
+  });
+  cloudDraftHeads.set(key, {
+    ...record,
+    sourceHosts: new Set([...record.sourceHosts, hostId]),
+  });
+}
+
+function imageHashesOfDocument(document: DraftDocument): readonly string[] {
+  if (document.kind !== "landing" && document.kind !== "new-chat") return [];
+  return blobHashesOfDocument(document);
 }
 
 /**
@@ -1751,17 +1865,34 @@ export function releaseCloudDraftHeadRead(summary: CloudChatSummary): void {
 export function settleCloudDraftHeadWithoutApply(
   summary: CloudChatSummary,
 ): void {
-  settleCloudDraftHead(summary, null);
+  settleCloudDraftHead(summary, SETTLED_WITHOUT_MIRROR);
 }
 
+/**
+ * Guarded by the head: a record for ANOTHER head of the row is left alone.
+ * Two host-scoped directories can list successive heads for one row at
+ * once, and a read of the older head that completes after the newer head
+ * was claimed or installed must not replace that record, or the next mount
+ * reads the newer head again. A row with no record is settled as asked.
+ */
 function settleCloudDraftHead(
   summary: CloudChatSummary,
-  mirrorId: string | null,
+  settlement: CloudDraftHeadSettlement,
 ): void {
-  cloudDraftHeads.set(cloudDraftIdentityKey(summary), {
+  const key = cloudDraftIdentityKey(summary);
+  const current = cloudDraftHeads.get(key);
+  if (current !== undefined && current.headSha256 !== summary.headSha256) {
+    return;
+  }
+  cloudDraftHeads.set(key, {
     headSha256: summary.headSha256,
     state: "settled",
-    mirrorId,
+    mirrorId: settlement.mirrorId,
+    imageHashes: settlement.imageHashes,
+    sourceHosts:
+      settlement.sourceHost === null
+        ? new Set<string>()
+        : new Set([settlement.sourceHost]),
   });
 }
 

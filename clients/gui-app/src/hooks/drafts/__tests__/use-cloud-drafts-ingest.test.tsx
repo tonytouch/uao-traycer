@@ -1,4 +1,4 @@
-import { renderHook } from "@testing-library/react";
+import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import type { DraftHeadReaderRecord } from "@traycer/protocol/persistence/draft/schemas";
@@ -55,19 +55,37 @@ const settledMock = vi.hoisted(() => ({
   settled: vi.fn<(summary: CloudChatSummary) => boolean>(),
 }));
 settledMock.settled.mockReturnValue(false);
-// Whether ANOTHER mount is reading the head right now (the coordinator's
-// "reading" record). Nobody is unless a test says so.
-const readingMock = vi.hoisted(() => ({
-  reading: vi.fn<(summary: CloudChatSummary) => boolean>(),
-}));
-readingMock.reading.mockReturnValue(false);
 // The coordinator's claim on a head: begun before a read, released when the
-// read ends without a decision, settled when it answers a terminal refusal.
+// read ends without a decision (out of attempts, an ambiguous identity),
+// abandoned when the mount holding it is torn down with the read undecided,
+// settled when it answers a terminal refusal.
 const claimMock = vi.hoisted(() => ({
   begin: vi.fn<(summary: CloudChatSummary) => void>(),
   release: vi.fn<(summary: CloudChatSummary) => void>(),
+  abandon: vi.fn<(summary: CloudChatSummary) => void>(),
   settleWithoutApply: vi.fn<(summary: CloudChatSummary) => void>(),
 }));
+// A skipped head's host is registered as an image source for it.
+const noteHostMock = vi.hoisted(() => ({
+  note: vi.fn<(summary: CloudChatSummary, hostId: string) => void>(),
+}));
+// The abandon subscription: the hook's listener is captured so a test can
+// deliver an abandon to it, and every subscribe hands back one shared
+// unsubscribe spy.
+const abandonSubscriptionMock = vi.hoisted(() => ({
+  subscribe:
+    vi.fn<(listener: (summary: CloudChatSummary) => void) => () => void>(),
+  unsubscribe: vi.fn<() => void>(),
+  listener: null as ((summary: CloudChatSummary) => void) | null,
+}));
+function installAbandonSubscription(): void {
+  abandonSubscriptionMock.listener = null;
+  abandonSubscriptionMock.subscribe.mockImplementation((listener) => {
+    abandonSubscriptionMock.listener = listener;
+    return abandonSubscriptionMock.unsubscribe;
+  });
+}
+installAbandonSubscription();
 
 vi.mock("@/hooks/drafts/use-cloud-drafts-directory", () => ({
   useCloudDraftsDirectory: () => ({
@@ -90,12 +108,17 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
     `${summary.ownerHostId}:${summary.identity.taskId}:${summary.identity.ownerUserId}:${summary.identity.chatId}:${summary.headSha256}`,
   cloudDraftHeadSettled: (summary: CloudChatSummary): boolean =>
     settledMock.settled(summary),
-  cloudDraftHeadReading: (summary: CloudChatSummary): boolean =>
-    readingMock.reading(summary),
   beginCloudDraftHeadRead: (summary: CloudChatSummary): void =>
     claimMock.begin(summary),
   releaseCloudDraftHeadRead: (summary: CloudChatSummary): void =>
     claimMock.release(summary),
+  abandonCloudDraftHeadRead: (summary: CloudChatSummary): void =>
+    claimMock.abandon(summary),
+  noteCloudDraftHeadHost: (summary: CloudChatSummary, hostId: string): void =>
+    noteHostMock.note(summary, hostId),
+  subscribeCloudDraftHeadAbandoned: (
+    listener: (summary: CloudChatSummary) => void,
+  ): (() => void) => abandonSubscriptionMock.subscribe(listener),
   settleCloudDraftHeadWithoutApply: (summary: CloudChatSummary): void =>
     claimMock.settleWithoutApply(summary),
   reserveCloudDraftIngestFence: (draftId: string): void =>
@@ -182,7 +205,17 @@ const HEAD: DraftHeadReaderRecord = {
 // goes through the mocked reader and coordinator.
 const CLIENT = { request: () => Promise.reject(new Error("unused")) };
 
+/** Delivers an abandon to the listener the mounted hook registered. */
+function deliverAbandon(abandoned: CloudChatSummary): void {
+  const listener = abandonSubscriptionMock.listener;
+  if (listener === null) throw new Error("the hook never subscribed");
+  listener(abandoned);
+}
+
 afterEach(() => {
+  // Unmount first, so a teardown's calls land before the mocks are reset
+  // rather than leaking into the next test's counts.
+  cleanup();
   directoryMock.chats = [];
   directoryMock.settled = true;
   directoryMock.snapshotSeq = 0;
@@ -196,11 +229,14 @@ afterEach(() => {
   flushMock.flush.mockReturnValue([]);
   settledMock.settled.mockReset();
   settledMock.settled.mockReturnValue(false);
-  readingMock.reading.mockReset();
-  readingMock.reading.mockReturnValue(false);
   claimMock.begin.mockReset();
   claimMock.release.mockReset();
+  claimMock.abandon.mockReset();
   claimMock.settleWithoutApply.mockReset();
+  noteHostMock.note.mockReset();
+  abandonSubscriptionMock.subscribe.mockReset();
+  abandonSubscriptionMock.unsubscribe.mockReset();
+  installAbandonSubscription();
   vi.useRealTimers();
 });
 
@@ -244,8 +280,8 @@ describe("useCloudDraftsIngest", () => {
     // The fence is reserved BEFORE the head read resolves - while the read
     // is still pending, the reserve has already happened but nothing has
     // ingested yet. It is reserved twice: once pre-sweep for every foreign
-    // row not yet guarded, and once more inside `attemptRead`, before its
-    // own read.
+    // row with a head, and once more inside `attemptRead`, before its own
+    // read.
     await vi.waitFor(() => {
       expect(reserveMock.reserve).toHaveBeenCalledTimes(2);
     });
@@ -311,9 +347,9 @@ describe("useCloudDraftsIngest", () => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
     });
     expect(readMock.read).toHaveBeenCalledTimes(2);
-    // Reserved once pre-sweep (the row was not yet guarded on the first
-    // effect run) plus once per attempt: the failed first read and the
-    // successful retry each reserve the fence again before their own read.
+    // Reserved once pre-sweep (every foreign row with a head is) plus once
+    // per attempt: the failed first read and the successful retry each
+    // reserve the fence again before their own read.
     expect(reserveMock.reserve).toHaveBeenCalledTimes(3);
   });
 
@@ -596,7 +632,7 @@ describe("useCloudDraftsIngest", () => {
     expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 
-  it("reserves the ingest fence for a not-yet-guarded foreign row before the settled sweep runs", async () => {
+  it("reserves the ingest fence for a foreign row with a head before the settled sweep runs", async () => {
     const order: string[] = [];
     reserveMock.reserve.mockImplementation(() => {
       order.push("reserve");
@@ -614,8 +650,8 @@ describe("useCloudDraftsIngest", () => {
     await vi.waitFor(() => {
       expect(sweepMock.sweep).toHaveBeenCalledTimes(1);
     });
-    // The pre-sweep reserve (over every foreign row not yet in the guard)
-    // happens before the settled sweep runs, on the first effect run.
+    // The pre-sweep reserve (over every foreign row with a head) happens
+    // before the settled sweep runs, on the first effect run.
     const firstReserve = order.indexOf("reserve");
     const firstSweep = order.indexOf("sweep");
     expect(firstReserve).toBeGreaterThanOrEqual(0);
@@ -623,7 +659,7 @@ describe("useCloudDraftsIngest", () => {
     expect(firstReserve).toBeLessThan(firstSweep);
   });
 
-  it("a fresh mount reads nothing for a head the coordinator has settled: no read, no fence, no ingest", async () => {
+  it("a fresh mount reads nothing for a head the coordinator has settled: no read, no claim, no ingest, but the head is still fenced", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
     settledMock.settled.mockReturnValue(true);
@@ -637,24 +673,26 @@ describe("useCloudDraftsIngest", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(settledMock.settled).toHaveBeenCalled();
     expect(readMock.read).not.toHaveBeenCalled();
-    expect(reserveMock.reserve).not.toHaveBeenCalled();
+    expect(claimMock.begin).not.toHaveBeenCalled();
     expect(ingestMock.ingest).not.toHaveBeenCalled();
+    // One pre-sweep reserve per mount: the fence is taken for a listed head
+    // whether or not this mount reads it.
+    expect(reserveMock.reserve).toHaveBeenCalledTimes(2);
+    expect(reserveMock.reserve).toHaveBeenCalledWith("draft-1");
   });
 
-  it("fences, without reading or claiming, a head another mount is reading right now", async () => {
+  it("fences a skipped head without reading or claiming it, so the reader's apply never meets a replica this mount's sweep dropped", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
-    // A head under read is settled as far as the guard is concerned (the
-    // coordinator answers true for both), and reading as well.
+    // A head under read by another mount is settled as far as the guard is
+    // concerned (the coordinator answers true for both).
     settledMock.settled.mockReturnValue(true);
-    readingMock.reading.mockReturnValue(true);
     directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    // Reserved once, pre-sweep: the reader's apply must not meet a replica
-    // this mount's absence sweep dropped. Nothing else is done with the row.
+    // Reserved once, pre-sweep. Nothing else is done with the row.
     expect(reserveMock.reserve).toHaveBeenCalledTimes(1);
     expect(reserveMock.reserve).toHaveBeenCalledWith("draft-1");
     expect(readMock.read).not.toHaveBeenCalled();
@@ -662,16 +700,31 @@ describe("useCloudDraftsIngest", () => {
     expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 
-  it("does not fence a settled head nobody is reading", async () => {
-    settledMock.settled.mockReturnValue(true);
-    readingMock.reading.mockReturnValue(false);
-    directoryMock.chats = [summary(DIGEST_ONE, null)];
+  it("registers this host as an image source for a skipped head, with the hook's host id, and not for a head it reads", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    const skipped = summary(DIGEST_ONE, null);
+    const read = summary(DIGEST_TWO, {
+      identity: {
+        taskId: "scp_1",
+        chatId: "draft-2",
+        ownerUserId: "user-1",
+      },
+    });
+    settledMock.settled.mockImplementation(
+      (candidate) => candidate === skipped,
+    );
+    directoryMock.chats = [skipped, read];
 
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(reserveMock.reserve).not.toHaveBeenCalled();
-    expect(readMock.read).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    expect(ingestMock.ingest.mock.calls[0][0].summary).toBe(read);
+    expect(noteHostMock.note).toHaveBeenCalledTimes(1);
+    expect(noteHostMock.note).toHaveBeenCalledWith(skipped, HOST_ID);
+    expect(noteHostMock.note.mock.calls[0][0]).toBe(skipped);
   });
 
   it("a settled head is still swept and nudged like any listed row; only the read is skipped", async () => {
@@ -790,6 +843,7 @@ describe("useCloudDraftsIngest", () => {
     expect(reserveMock.reserve).not.toHaveBeenCalled();
     expect(claimMock.begin).not.toHaveBeenCalled();
     expect(claimMock.release).not.toHaveBeenCalled();
+    expect(claimMock.abandon).not.toHaveBeenCalled();
     expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
     expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
@@ -864,7 +918,7 @@ describe("useCloudDraftsIngest", () => {
     expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
   });
 
-  it("releases the coordinator's claim when the effect is torn down with a read still pending", async () => {
+  it("abandons, rather than releases, the coordinator's claim when the effect is torn down with a read still pending, after unsubscribing", async () => {
     readMock.read.mockImplementation(() => new Promise(() => {}));
     const row = summary(DIGEST_ONE, null);
     directoryMock.chats = [row];
@@ -876,13 +930,179 @@ describe("useCloudDraftsIngest", () => {
       expect(readMock.read).toHaveBeenCalledTimes(1);
     });
     expect(claimMock.begin).toHaveBeenCalledWith(row);
-    expect(claimMock.release).not.toHaveBeenCalled();
+    expect(claimMock.abandon).not.toHaveBeenCalled();
+    expect(abandonSubscriptionMock.unsubscribe).not.toHaveBeenCalled();
 
     view.unmount();
 
-    expect(claimMock.release).toHaveBeenCalledTimes(1);
-    expect(claimMock.release).toHaveBeenCalledWith(row);
+    expect(claimMock.abandon).toHaveBeenCalledTimes(1);
+    expect(claimMock.abandon).toHaveBeenCalledWith(row);
+    expect(claimMock.release).not.toHaveBeenCalled();
     expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
+    // Unsubscribed FIRST: the abandon this teardown issues must not reach the
+    // listener of the very mount that is going away.
+    expect(abandonSubscriptionMock.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(
+      abandonSubscriptionMock.unsubscribe.mock.invocationCallOrder[0],
+    ).toBeLessThan(claimMock.abandon.mock.invocationCallOrder[0]);
+  });
+
+  it("does not abandon a head whose read already decided before the teardown", async () => {
+    readMock.read.mockResolvedValue({ kind: "unpublished", record: null });
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(claimMock.settleWithoutApply).toHaveBeenCalledTimes(1);
+    });
+
+    view.unmount();
+
+    expect(claimMock.abandon).not.toHaveBeenCalled();
+    expect(claimMock.release).not.toHaveBeenCalled();
+  });
+
+  it("subscribes to abandoned heads once per effect run and unsubscribes on every teardown", async () => {
+    settledMock.settled.mockReturnValue(true);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(abandonSubscriptionMock.subscribe).toHaveBeenCalledTimes(1);
+    });
+    expect(abandonSubscriptionMock.unsubscribe).not.toHaveBeenCalled();
+
+    // A new directory delivery re-runs the effect: the old subscription ends
+    // with the old run, and one new one replaces it.
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+    view.rerender();
+    expect(abandonSubscriptionMock.subscribe).toHaveBeenCalledTimes(2);
+    expect(abandonSubscriptionMock.unsubscribe).toHaveBeenCalledTimes(1);
+
+    view.unmount();
+    expect(abandonSubscriptionMock.unsubscribe).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts exactly one read for an abandoned head this mount skipped and the guard no longer holds", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    // Another mount holds the head, so this mount skips it at setup.
+    settledMock.settled.mockReturnValue(true);
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+    await vi.waitFor(() => {
+      expect(abandonSubscriptionMock.subscribe).toHaveBeenCalledTimes(1);
+    });
+    expect(readMock.read).not.toHaveBeenCalled();
+    expect(claimMock.begin).not.toHaveBeenCalled();
+
+    // The holder is torn down: the claim is gone, and the coordinator names
+    // the head. An equal-by-value copy, as the coordinator's own summary is a
+    // different object from this mount's directory row.
+    settledMock.settled.mockReturnValue(false);
+    deliverAbandon({ ...row });
+
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    // The row it reads is this mount's own listing, not the abandoned copy.
+    expect(claimMock.begin.mock.calls[0][0]).toBe(row);
+    expect(ingestMock.ingest.mock.calls[0][0].summary).toBe(row);
+
+    // The same abandon delivered again finds the key this mount now holds.
+    deliverAbandon({ ...row });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts no read for an abandoned head the directory does not list under the same key", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    settledMock.settled.mockReturnValue(true);
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+    await vi.waitFor(() => {
+      expect(abandonSubscriptionMock.subscribe).toHaveBeenCalledTimes(1);
+    });
+    settledMock.settled.mockReturnValue(false);
+
+    // Another row, another head of the same row, another owner of the same id.
+    deliverAbandon(
+      summary(DIGEST_ONE, {
+        identity: { taskId: "scp_1", chatId: "draft-9", ownerUserId: "user-1" },
+      }),
+    );
+    deliverAbandon(summary(DIGEST_TWO, null));
+    deliverAbandon(summary(DIGEST_ONE, { ownerHostId: "host-c" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(readMock.read).not.toHaveBeenCalled();
+    expect(claimMock.begin).not.toHaveBeenCalled();
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
+  });
+
+  it("starts no read for an abandoned head the guard still skips because something else holds it", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    settledMock.settled.mockReturnValue(true);
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+    await vi.waitFor(() => {
+      expect(abandonSubscriptionMock.subscribe).toHaveBeenCalledTimes(1);
+    });
+
+    // A third mount claimed the head first: the guard is asked again at the
+    // abandon, and still answers settled.
+    deliverAbandon({ ...row });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(readMock.read).not.toHaveBeenCalled();
+    expect(claimMock.begin).not.toHaveBeenCalled();
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
+  });
+
+  it("starts no read for an abandoned head once the mount is gone, even if the old listener is still invoked", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    settledMock.settled.mockReturnValue(true);
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(abandonSubscriptionMock.subscribe).toHaveBeenCalledTimes(1);
+    });
+    // The reference a coordinator that notified from a snapshot taken before
+    // the unsubscribe would still hold.
+    const staleListener = abandonSubscriptionMock.listener;
+    if (staleListener === null) throw new Error("the hook never subscribed");
+
+    view.unmount();
+    expect(abandonSubscriptionMock.unsubscribe).toHaveBeenCalledTimes(1);
+
+    settledMock.settled.mockReturnValue(false);
+    staleListener({ ...row });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(readMock.read).not.toHaveBeenCalled();
+    expect(claimMock.begin).not.toHaveBeenCalled();
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 
   it("releases the coordinator's claim once, at the end, when every attempt of a head read throws", async () => {
@@ -892,7 +1112,9 @@ describe("useCloudDraftsIngest", () => {
     const row = summary(DIGEST_ONE, null);
     directoryMock.chats = [row];
 
-    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
 
     // Attempt 0 fails and arms the first retry; the claim stands through it.
     await vi.waitFor(() => {
@@ -920,6 +1142,11 @@ describe("useCloudDraftsIngest", () => {
 
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
     expect(claimMock.release).toHaveBeenCalledTimes(1);
+    // Giving up is not a teardown: nothing wakes another mount, and the
+    // exhausted head is no longer this mount's to abandon when it goes.
+    expect(claimMock.abandon).not.toHaveBeenCalled();
+    view.unmount();
+    expect(claimMock.abandon).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 

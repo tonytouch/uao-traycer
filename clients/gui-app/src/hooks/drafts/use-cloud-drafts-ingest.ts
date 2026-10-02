@@ -17,15 +17,17 @@ import {
 import { appLogger, describeLogError } from "@/lib/logger";
 import { draftDocumentFromCloudHead } from "@/lib/drafts/cloud-draft-apply";
 import {
+  abandonCloudDraftHeadRead,
   beginCloudDraftHeadRead,
   cloudDraftHeadKey,
-  cloudDraftHeadReading,
   cloudDraftHeadSettled,
   flushAbsentOwnCloudDrafts,
   ingestCloudDraftSummary,
+  noteCloudDraftHeadHost,
   releaseCloudDraftHeadRead,
   reserveCloudDraftIngestFence,
   settleCloudDraftHeadWithoutApply,
+  subscribeCloudDraftHeadAbandoned,
   sweepAbsentCloudDraftMirrors,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { useCloudDraftsDirectory } from "./use-cloud-drafts-directory";
@@ -125,19 +127,20 @@ export function useCloudDraftsIngest(
     // set is EVERY listed row, not the foreign ones: a row this host owns
     // (forked here, or listed ahead of this window's hydration) is listed
     // under this host's ownership and is not absent.
-    // The heads this run will read, reserved BEFORE the sweep: a draft the
-    // directory lists under an owner other than the one a clean local
-    // replica names must be re-read, not dropped by the owner-aware absence
-    // check below and re-created by the ingest, reconciling away an open
-    // tab in between. Its summary is a new key, so it is always among these.
-    // A head ANOTHER mount is reading right now is reserved too: this mount
-    // would have read it itself before the coordinator held the claim, and
-    // the reader's apply must not meet a replica this run's sweep dropped.
-    const toReserve = foreign.filter(
-      (summary) =>
-        !guardMaySkip(ingestedKeys, summary) || cloudDraftHeadReading(summary),
-    );
-    for (const summary of toReserve) {
+    // Every listed head is reserved BEFORE the sweep, whether this run reads
+    // it or not. A draft the directory lists under an owner other than the
+    // one a clean local replica names must be re-read, not dropped by the
+    // owner-aware absence check below and re-created by the ingest,
+    // reconciling away an open tab in between. And a positive listing has to
+    // ORDER against older snapshots: with two host-scoped directories, a
+    // later-dispatched response that lists a row can run before an
+    // earlier-dispatched one that omits it, and the older sweep must find
+    // the row reserved past its own fence. Before the coordinator held the
+    // record, a mount's first walk reserved every head because it read every
+    // head; this keeps that ordering for the heads it now skips, at the cost
+    // of one map write per listed row per walk.
+    for (const summary of foreign) {
+      if (summary.headSha256 === null) continue;
       reserveCloudDraftIngestFence(summary.identity.chatId);
     }
     if (directory.settled) {
@@ -173,7 +176,7 @@ export function useCloudDraftsIngest(
         alreadyNudged.add(id);
       }
     }
-    for (const summary of foreign) {
+    const startRead = (summary: CloudChatSummary): void => {
       // The owner-led identity key plus the head. Both halves are
       // load-bearing. `headSha256` is there because the identity alone is
       // stable across publishes, so a newer head for the same draft used to
@@ -183,7 +186,6 @@ export function useCloudDraftsIngest(
       // directory lists under another owner than this mount last ingested
       // is not the head it recorded.
       const key = cloudDraftHeadKey(summary);
-      if (guardMaySkip(ingestedKeys, summary)) continue;
       ingestedKeys.set(key, summary.identity.chatId);
       unsettledKeys.set(key, summary);
       // Claimed process-wide BEFORE the read: a second mount walking the same
@@ -302,14 +304,44 @@ export function useCloudDraftsIngest(
         }
       };
       void attemptRead(0);
+    };
+    for (const summary of foreign) {
+      if (guardMaySkip(ingestedKeys, summary)) {
+        // Skipped, but this host still registers as a source for the head's
+        // images (once per host; a no-op for a head without any, or one this
+        // host already ingested).
+        noteCloudDraftHeadHost(summary, hostId);
+        continue;
+      }
+      startRead(summary);
     }
+    // A head this run skipped because another mount was reading it is picked
+    // up here if that mount is torn down before its read decides: the
+    // abandon releases the claim and names the head, and this mount reads it
+    // now instead of at its next directory delivery. Only a head this run's
+    // directory lists, and only when nothing has it (the guard is asked
+    // again: a third mount may have claimed it first).
+    const unsubscribeAbandoned = subscribeCloudDraftHeadAbandoned(
+      (abandoned) => {
+        if (tornDown()) return;
+        const abandonedKey = cloudDraftHeadKey(abandoned);
+        const listed = foreign.find(
+          (summary) => cloudDraftHeadKey(summary) === abandonedKey,
+        );
+        if (listed === undefined || guardMaySkip(ingestedKeys, listed)) return;
+        startRead(listed);
+      },
+    );
     return () => {
+      unsubscribeAbandoned();
       scope.abort();
       for (const timer of pendingTimers) clearTimeout(timer);
       pendingTimers.clear();
+      // Abandoned, not merely released: a surviving mount that skipped one of
+      // these heads is woken to read it.
       for (const [pendingKey, pendingSummary] of unsettledKeys) {
         ingestedKeys.delete(pendingKey);
-        releaseCloudDraftHeadRead(pendingSummary);
+        abandonCloudDraftHeadRead(pendingSummary);
       }
       unsettledKeys.clear();
     };

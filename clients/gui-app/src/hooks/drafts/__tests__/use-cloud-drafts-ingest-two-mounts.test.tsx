@@ -11,6 +11,7 @@ import {
   resetDraftMirrorCoordinatorForTests,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { resetLandingDraftRetirementsForTests } from "@/lib/drafts/landing-draft-retirement";
+import { appLogger } from "@/lib/logger";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
 
 // The real coordinator, the real hook, the real landing store. Only the read
@@ -23,6 +24,7 @@ const readMock = vi.hoisted(() => ({
   pending: [] as Array<{
     chatId: string;
     resolve: (outcome: CloudDraftReadOutcome) => void;
+    reject: (error: Error) => void;
   }>,
 }));
 
@@ -42,8 +44,12 @@ vi.mock("@/lib/drafts/cloud-draft-reader", () => ({
   readCloudDraft: (options: {
     identity: { chatId: string };
   }): Promise<CloudDraftReadOutcome> =>
-    new Promise((resolve) => {
-      readMock.pending.push({ chatId: options.identity.chatId, resolve });
+    new Promise((resolve, reject) => {
+      readMock.pending.push({
+        chatId: options.identity.chatId,
+        resolve,
+        reject,
+      });
     }),
 }));
 
@@ -53,6 +59,9 @@ const { useCloudDraftsIngest } =
 const HOST_ID = "host-a";
 const OWNER_HOST_ID = "host-b";
 const HEAD_SHA = "a".repeat(64);
+// Mirrors the retry constants in use-cloud-drafts-ingest.ts, which are not
+// exported: keep in sync if the production values change.
+const HEAD_READ_RETRY_BASE_MS = 2_000;
 
 const HEAD: DraftHeadReaderRecord = {
   dialect: DRAFT_HEAD_DIALECT,
@@ -110,6 +119,13 @@ function resolveAll(outcome: CloudDraftReadOutcome): void {
   for (const pending of readMock.pending) pending.resolve(outcome);
 }
 
+/** The reads issued for one draft so far, in the order they were issued. */
+function readsFor(
+  chatId: string,
+): readonly (typeof readMock.pending)[number][] {
+  return readMock.pending.filter((read) => read.chatId === chatId);
+}
+
 async function nextTick(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -117,6 +133,8 @@ async function nextTick(): Promise<void> {
 afterEach(() => {
   // Unmount first: teardown releases the claims it still holds.
   cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   readMock.pending.length = 0;
   directoryMock.chats = [];
   resetDraftMirrorCoordinatorForTests();
@@ -184,7 +202,7 @@ describe("useCloudDraftsIngest across mounts, on the real coordinator", () => {
     expect(readMock.pending).toHaveLength(3);
   });
 
-  it("fences a head another mount is reading, and releases the claim only when the reading mount unmounts", async () => {
+  it("fences a head another mount is reading, and abandons the claim when the reading mount unmounts with nobody left to wake", async () => {
     const pendingRow = row("draft-4");
     directoryMock.chats = [pendingRow];
 
@@ -209,6 +227,8 @@ describe("useCloudDraftsIngest across mounts, on the real coordinator", () => {
     reader.unmount();
     expect(cloudDraftHeadReading(pendingRow)).toBe(false);
     expect(cloudDraftHeadSettled(pendingRow)).toBe(false);
+    // Nobody was listening, so nothing read it in the meantime.
+    expect(readMock.pending).toHaveLength(1);
 
     // A read that lands after its mount went away installs nothing.
     resolveAll({ kind: "ok", record: HEAD });
@@ -221,5 +241,133 @@ describe("useCloudDraftsIngest across mounts, on the real coordinator", () => {
     await vi.waitFor(() => {
       expect(readMock.pending).toHaveLength(2);
     });
+  });
+
+  it("hands a head to the surviving mount when the mount reading it unmounts: one read from it, its claim standing, and the abandoned read installing nothing", async () => {
+    const pendingRow = row("draft-5");
+    directoryMock.chats = [pendingRow];
+
+    const reader = mount();
+    await vi.waitFor(() => {
+      expect(readsFor("draft-5")).toHaveLength(1);
+    });
+    const abandonedRead = readsFor("draft-5")[0];
+    mount();
+    await nextTick();
+    // The second mount skipped the head the first one holds.
+    expect(readsFor("draft-5")).toHaveLength(1);
+    expect(cloudDraftHeadReading(pendingRow)).toBe(true);
+
+    reader.unmount();
+
+    // The survivor read it at once, not at its next directory delivery: two
+    // reads over the head's lifetime, and the claim is the survivor's.
+    expect(readsFor("draft-5")).toHaveLength(2);
+    expect(cloudDraftHeadReading(pendingRow)).toBe(true);
+    await nextTick();
+    expect(readsFor("draft-5")).toHaveLength(2);
+
+    // The abandoned continuation resolves with a good head: it installs
+    // nothing and does not disturb the survivor's claim.
+    abandonedRead.resolve({ kind: "ok", record: HEAD });
+    await nextTick();
+    expect(landingIds()).toEqual([]);
+    expect(cloudDraftHeadReading(pendingRow)).toBe(true);
+    expect(cloudDraftHeadSettled(pendingRow)).toBe(true);
+
+    // The survivor's own read decides the head.
+    readsFor("draft-5")[1].resolve({ kind: "ok", record: HEAD });
+    await vi.waitFor(() => {
+      expect(landingIds()).toEqual(["draft-5"]);
+    });
+    expect(cloudDraftHeadReading(pendingRow)).toBe(false);
+    expect(cloudDraftHeadSettled(pendingRow)).toBe(true);
+    expect(readsFor("draft-5")).toHaveLength(2);
+  });
+
+  it("wakes every surviving mount that skipped the head but only one of them reads it", async () => {
+    const pendingRow = row("draft-6");
+    directoryMock.chats = [pendingRow];
+
+    const reader = mount();
+    await vi.waitFor(() => {
+      expect(readsFor("draft-6")).toHaveLength(1);
+    });
+    mount();
+    mount();
+    await nextTick();
+    expect(readsFor("draft-6")).toHaveLength(1);
+
+    reader.unmount();
+
+    // The first survivor claims the head; the second asks the guard again and
+    // finds it held.
+    expect(readsFor("draft-6")).toHaveLength(2);
+    await nextTick();
+    expect(readsFor("draft-6")).toHaveLength(2);
+    expect(cloudDraftHeadReading(pendingRow)).toBe(true);
+  });
+
+  it("does not wake a surviving mount for a head the reading mount decided before it unmounted", async () => {
+    const decidedRow = row("draft-7");
+    directoryMock.chats = [decidedRow];
+
+    const reader = mount();
+    await vi.waitFor(() => {
+      expect(readsFor("draft-7")).toHaveLength(1);
+    });
+    mount();
+    await nextTick();
+    readsFor("draft-7")[0].resolve({ kind: "unpublished" });
+    await vi.waitFor(() => {
+      expect(cloudDraftHeadSettled(decidedRow)).toBe(true);
+    });
+
+    reader.unmount();
+    await nextTick();
+
+    expect(readsFor("draft-7")).toHaveLength(1);
+    expect(cloudDraftHeadSettled(decidedRow)).toBe(true);
+  });
+
+  it("does not wake a surviving mount when the reading mount gives up after every attempt: no read from it, and the head is free for a later mount", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
+    const failingRow = row("draft-8");
+    directoryMock.chats = [failingRow];
+
+    mount();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readsFor("draft-8")).toHaveLength(1);
+    mount();
+    await vi.advanceTimersByTimeAsync(0);
+    // The second mount skipped the head, and is still mounted throughout.
+    expect(readsFor("draft-8")).toHaveLength(1);
+
+    // Attempt 0 fails; the retry is the reading mount's, at 2 s.
+    readsFor("draft-8")[0].reject(new Error("read failed"));
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
+    expect(readsFor("draft-8")).toHaveLength(2);
+    expect(cloudDraftHeadReading(failingRow)).toBe(true);
+
+    // Attempt 1 fails; the retry is at 4 s.
+    readsFor("draft-8")[1].reject(new Error("read failed"));
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 2);
+    expect(readsFor("draft-8")).toHaveLength(3);
+
+    // Attempt 2 is the last: the mount gives up and releases the claim. That
+    // is not a teardown, so the second mount is not woken.
+    readsFor("draft-8")[2].reject(new Error("read failed"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cloudDraftHeadReading(failingRow)).toBe(false);
+    expect(cloudDraftHeadSettled(failingRow)).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
+    expect(readsFor("draft-8")).toHaveLength(3);
+
+    // Released, not settled: a later mount asks again.
+    mount();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readsFor("draft-8")).toHaveLength(4);
   });
 });
