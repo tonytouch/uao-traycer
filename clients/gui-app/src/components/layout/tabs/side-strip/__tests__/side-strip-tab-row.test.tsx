@@ -6,9 +6,11 @@
  *
  * The pane is "panel" when the active tab is an epic tab on the strip's own
  * side and its sidebar is expanded, "rail" when that sidebar is collapsed,
- * and "canvas" for every other case - a non-epic tab, or an epic tab whose
- * sidebar sits on the OTHER edge, where the strip meets the content pane
- * instead.
+ * and "canvas" for an epic tab whose sidebar sits on the OTHER edge, where the
+ * strip meets the content pane instead. A non-epic tab never reads the
+ * sidebar: it takes the one ground its own surface paints
+ * (`surfaceJoinPane`), "surface" for a draft or Settings (both paint
+ * `--background`) and "canvas" for Home and History (they paint nothing).
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
@@ -97,6 +99,53 @@ const DRAFT_TAB: Extract<HeaderTab, { kind: "draft" }> = {
   canOpenInNewWindow: false,
   appearance: null,
 };
+
+const SETTINGS_TAB: Extract<HeaderTab, { kind: "settings" }> = {
+  kind: "settings",
+  id: "settings",
+  route: "/settings/general",
+  name: "Settings",
+  icon: null,
+  canDuplicate: false,
+  canOpenInNewWindow: false,
+  lastPath: null,
+};
+
+const HISTORY_TAB: Extract<HeaderTab, { kind: "history" }> = {
+  kind: "history",
+  id: "history",
+  route: "/epics",
+  name: "History",
+  icon: null,
+  canDuplicate: false,
+  canOpenInNewWindow: false,
+  lastPath: null,
+};
+
+const HOME_TAB: Extract<HeaderTab, { kind: "home" }> = {
+  kind: "home",
+  id: "home",
+  route: "/",
+  name: "Home",
+  icon: null,
+  canDuplicate: false,
+  canOpenInNewWindow: false,
+};
+
+/**
+ * What each non-epic surface paints along the edge its row runs into, so the
+ * pane the join takes: a draft and Settings paint `--background` ("surface"),
+ * Home and History paint nothing and show the sheet's canvas.
+ */
+const NON_EPIC_PANES: ReadonlyArray<{
+  readonly tab: HeaderTab;
+  readonly pane: "surface" | "canvas";
+}> = [
+  { tab: DRAFT_TAB, pane: "surface" },
+  { tab: SETTINGS_TAB, pane: "surface" },
+  { tab: HISTORY_TAB, pane: "canvas" },
+  { tab: HOME_TAB, pane: "canvas" },
+];
 
 /** The hook's own caller: a CHILD of the edge provider, as a real row is. */
 function Row(props: {
@@ -246,14 +295,25 @@ describe("useSideTabJoin", () => {
   });
 
   describe("pane", () => {
-    it("is canvas for a non-epic tab, even on the sidebar's own edge", () => {
-      act(() => {
-        useLayoutStore.setState({
-          arrangement: { ...DEFAULT_ARRANGEMENT, sidebarSide: "left" },
+    it.each(NON_EPIC_PANES)(
+      "a $tab.kind tab joins the $pane pane, even on the sidebar's own edge",
+      ({ tab, pane }) => {
+        act(() => {
+          useLayoutStore.setState({
+            arrangement: { ...DEFAULT_ARRANGEMENT, sidebarSide: "left" },
+          });
         });
-      });
 
-      render(<Harness edge="left" tab={DRAFT_TAB} />);
+        render(<Harness edge="left" tab={tab} />);
+
+        expect(joinedEdge()).toBe("left");
+        expect(joinedPane()).toBe(pane);
+        expect(bridge().getAttribute("data-join-pane")).toBe(pane);
+      },
+    );
+
+    it("is canvas for a row with no tab, as a split pair's empty member has none", () => {
+      render(<Harness edge="left" tab={null} />);
 
       expect(joinedEdge()).toBe("left");
       expect(joinedPane()).toBe("canvas");
@@ -345,22 +405,29 @@ describe("useSideTabJoin", () => {
       },
     );
 
-    it.each(EDGES)(
-      "a non-epic tab on the %s strip is on the canvas even beside a collapsed panel on its own edge",
-      (edge) => {
+    // The rail is the EPIC panel's collapsed state; a non-epic tab on the
+    // sidebar's own edge, panel collapsed, must not read it.
+    const NON_EPIC_BESIDE_COLLAPSED_PANEL = EDGES.flatMap((edge) =>
+      NON_EPIC_PANES.map((entry) => ({ edge, ...entry })),
+    );
+
+    it.each(NON_EPIC_BESIDE_COLLAPSED_PANEL)(
+      "a $tab.kind tab on the $edge strip joins the $pane pane even beside a collapsed panel on its own edge",
+      ({ edge, tab, pane }) => {
         act(() => {
           useLayoutStore.setState({
             arrangement: { ...DEFAULT_ARRANGEMENT, sidebarSide: edge },
           });
           useLeftPanelStore.setState({
-            mainCollapsedByTabId: { [DRAFT_TAB.id]: true },
+            mainCollapsedByTabId: { [tab.id]: true },
           });
         });
 
-        render(<Harness edge={edge} tab={DRAFT_TAB} />);
+        render(<Harness edge={edge} tab={tab} />);
 
         expect(joinedEdge()).toBe(edge);
-        expect(joinedPane()).toBe("canvas");
+        expect(joinedPane()).toBe(pane);
+        expect(bridge().getAttribute("data-join-pane")).toBe(pane);
       },
     );
   });

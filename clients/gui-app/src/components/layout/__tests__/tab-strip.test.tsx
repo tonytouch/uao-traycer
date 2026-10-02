@@ -785,6 +785,54 @@ function seedTwoEpicTabs(): { readonly alpha: TabRef; readonly beta: TabRef } {
   return { alpha, beta };
 }
 
+// The pane an active tab joins is the ground its own surface paints along
+// the top edge (`surfaceJoinPane`): a task, a draft and Settings paint
+// `--background`, so their tab takes it; History paints nothing and shows
+// the sheet's canvas. The bridge under the tab paints that same fill onto
+// the sheet, so it must name the box's pane - a canvas bridge under a
+// background tab (or the reverse) would be the two-colour seam this fixes.
+interface ActiveTabCase {
+  readonly kind: string;
+  readonly pane: "surface" | "canvas";
+  /** Opens the tab the way the app does and says where to land and what to click. */
+  readonly open: () => { readonly path: string; readonly testId: string };
+}
+const ACTIVE_TAB_CASES: ReadonlyArray<ActiveTabCase> = [
+  {
+    kind: "epic",
+    pane: "surface",
+    open: () => {
+      seedTwoEpicTabs();
+      return { path: "/epics/e-a/e-a", testId: "tab-epic-e-a" };
+    },
+  },
+  {
+    kind: "draft",
+    pane: "surface",
+    open: () => {
+      seedTwoEpicTabs();
+      const draftId = useLandingDraftStore.getState().createDraft(null);
+      return { path: "/epics/e-a/e-a", testId: `tab-draft-${draftId}` };
+    },
+  },
+  {
+    kind: "settings",
+    pane: "surface",
+    open: () => {
+      ensureSettingsTab({ subSection: null, resetToGeneral: true });
+      return { path: "/settings/general", testId: "tab-settings-settings" };
+    },
+  },
+  {
+    kind: "history",
+    pane: "canvas",
+    open: () => {
+      ensureHistoryTab();
+      return { path: "/epics", testId: "tab-history-history" };
+    },
+  },
+];
+
 // Reconciliation install is owned by `WindowsBridgeProvider` in
 // production. Test mounts skip the provider, so install once here.
 installTabSyncCoordinator({ readyPromise: Promise.resolve() });
@@ -848,7 +896,7 @@ describe("<TabStrip />", () => {
     render(
       <TabChrome
         isActive
-        joined={false}
+        joined={null}
         concealed={false}
         color="#12ab34"
         session={false}
@@ -866,7 +914,7 @@ describe("<TabStrip />", () => {
     const { container } = render(
       <TabChrome
         isActive={false}
-        joined={false}
+        joined={null}
         concealed={false}
         color="#12ab34"
         session={false}
@@ -882,7 +930,7 @@ describe("<TabStrip />", () => {
     const { rerender } = render(
       <TabChrome
         isActive={false}
-        joined={false}
+        joined={null}
         concealed={false}
         color="#12ab34"
         session={false}
@@ -897,7 +945,7 @@ describe("<TabStrip />", () => {
     rerender(
       <TabChrome
         isActive
-        joined={false}
+        joined={null}
         concealed={false}
         color="#12ab34"
         session={false}
@@ -924,7 +972,7 @@ describe("<TabStrip />", () => {
     render(
       <TabChrome
         isActive
-        joined={false}
+        joined={null}
         concealed={false}
         color="var(--warning-foreground)"
         session
@@ -949,7 +997,7 @@ describe("<TabStrip />", () => {
     render(
       <TabChrome
         isActive={false}
-        joined={false}
+        joined={null}
         concealed={false}
         color="var(--warning-foreground)"
         session
@@ -957,6 +1005,62 @@ describe("<TabStrip />", () => {
     );
 
     expect(screen.queryByTestId("tab-color-edge-line")).toBeNull();
+  });
+
+  /**
+   * `joined` names the pane the active tab runs into, and `TabChrome` writes
+   * it beside the join marker so the CSS can pick that pane's fill
+   * (`[data-join-pane]` in `index.css`). Unjoined, it writes neither.
+   */
+  it.each(["surface", "canvas"] as const)(
+    "writes the %s pane it is handed beside the join marker, and neither when unjoined",
+    (pane) => {
+      const { rerender } = render(
+        <TabChrome
+          isActive
+          joined={pane}
+          concealed={false}
+          color={null}
+          session={false}
+        />,
+      );
+      const box = screen.getByTestId("tab-chrome-box");
+      expect(box.getAttribute("data-sheet-joined")).toBe("top");
+      expect(box.getAttribute("data-join-pane")).toBe(pane);
+
+      rerender(
+        <TabChrome
+          isActive
+          joined={null}
+          concealed={false}
+          color={null}
+          session={false}
+        />,
+      );
+      expect(box.hasAttribute("data-sheet-joined")).toBe(false);
+      expect(box.hasAttribute("data-join-pane")).toBe(false);
+    },
+  );
+
+  /**
+   * The editor's own tab is a mode, not a place: whatever pane `TabChrome` is
+   * handed, a session tab keeps its coloured box and never joins the sheet, so
+   * neither the join marker nor a pane reaches it.
+   */
+  it("never joins the editor's own tab, whichever pane it is handed", () => {
+    render(
+      <TabChrome
+        isActive
+        joined="surface"
+        concealed={false}
+        color="var(--warning-foreground)"
+        session
+      />,
+    );
+
+    const box = screen.getByTestId("tab-chrome-box");
+    expect(box.hasAttribute("data-sheet-joined")).toBe(false);
+    expect(box.hasAttribute("data-join-pane")).toBe(false);
   });
 
   /**
@@ -1164,6 +1268,29 @@ describe("<TabStrip />", () => {
       expect(within(inactiveTab).queryByTestId("tab-chrome-box")).toBeNull();
     });
 
+    it.each(ACTIVE_TAB_CASES)(
+      "joins the active $kind tab and the bridge under it to the $pane pane",
+      async ({ pane, open }) => {
+        const { path, testId } = open();
+        const router = buildRouter(path);
+        render(<RouterProvider router={router} />);
+
+        fireEvent.click(await screen.findByTestId(testId));
+        await flushNav();
+
+        const box = await within(screen.getByTestId(testId)).findByTestId(
+          "tab-chrome-box",
+        );
+        expect(box.getAttribute("data-sheet-joined")).toBe("top");
+        expect(box.getAttribute("data-join-pane")).toBe(pane);
+        expect(
+          document
+            .querySelector('[data-sheet-join-bridge="top"]')
+            ?.getAttribute("data-join-pane"),
+        ).toBe(pane);
+      },
+    );
+
     it("keeps the active tab joined while another tab is dragged", async () => {
       const { beta } = seedTwoEpicTabs();
       const router = buildRouter("/epics/e-a/e-a");
@@ -1255,15 +1382,15 @@ describe("<TabStrip />", () => {
       expect(bridge.style.getPropertyValue("--join-outline")).toBe("#12ab34");
     });
 
-    it("joins the active Home tab", () => {
+    it("joins the active Home tab, on the canvas pane: Home paints no ground of its own", () => {
       render(
         <TooltipProvider>
           <TabStripHomeItemView isActive onActivate={() => undefined} />
         </TooltipProvider>,
       );
-      expect(
-        screen.getByTestId("tab-chrome-box").getAttribute("data-sheet-joined"),
-      ).toBe("top");
+      const box = screen.getByTestId("tab-chrome-box");
+      expect(box.getAttribute("data-sheet-joined")).toBe("top");
+      expect(box.getAttribute("data-join-pane")).toBe("canvas");
     });
 
     // The active overlay DOES join during a real drag - `HeaderTabDragOverlay`
@@ -1310,6 +1437,12 @@ describe("<TabStrip />", () => {
           .getByTestId("split-tab-joined-split-a")
           .getAttribute("data-sheet-joined"),
       ).toBe("top");
+      // A pair always holds a surface that paints `--background`.
+      expect(
+        screen
+          .getByTestId("split-tab-joined-split-a")
+          .getAttribute("data-join-pane"),
+      ).toBe("surface");
 
       rerender(
         <SplitTabLayout

@@ -1,6 +1,6 @@
 import type { Ref } from "react";
 import { usePublishSheetJoin } from "./sheet-join-context";
-import { useSelectionTravelling } from "./strip-selection-travel";
+import { useTravellingJoinPane } from "./strip-selection-travel";
 
 /**
  * The stand-in selected box that slides between tabs; see
@@ -12,17 +12,19 @@ export function StripSelectionTraveller({
 }: {
   readonly ref: Ref<HTMLSpanElement>;
 }) {
-  const travelling = useSelectionTravelling();
-  usePublishSheetJoin(travelling ? "canvas" : null, null);
+  const pane = useTravellingJoinPane();
+  usePublishSheetJoin(pane, null);
   return (
     <span
       ref={ref}
       aria-hidden
       data-testid="tab-selection-traveller"
-      hidden={!travelling}
+      hidden={pane === null}
       // The join rule in `index.css` paints it exactly like a joined tab box:
-      // the canvas fill, the sheet's border, open at the bottom.
-      {...(travelling ? { "data-sheet-joined": "top" } : {})}
+      // its destination's fill, the sheet's border, open at the bottom.
+      {...(pane === null
+        ? {}
+        : { "data-sheet-joined": "top", "data-join-pane": pane })}
       className="pointer-events-none absolute top-0 left-0 rounded-xl border"
     />
   );

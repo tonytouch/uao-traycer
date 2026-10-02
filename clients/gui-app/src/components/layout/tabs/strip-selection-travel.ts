@@ -13,6 +13,8 @@ import {
   takeReopenGlow,
 } from "@/stores/tabs/strip-motion";
 import { playJoinGlow, stopJoinGlow } from "./join-glow";
+import type { SheetJoinPane } from "./side-strip/side-tab-join";
+import { stripItemJoinPane } from "./surface-join-pane";
 
 /**
  * The selected tab's sheet slides from the tab you left to the tab you chose.
@@ -48,10 +50,16 @@ const SETTLED_VELOCITY = 8;
 interface TravelState {
   /** The strip item whose own selected box is hidden while the traveller flies to it. */
   readonly concealedItemId: string | null;
+  /**
+   * The pane that item joins, so the traveller wears the fill its box will
+   * and the two swap on landing without a change of colour. `null` at rest.
+   */
+  readonly pane: SheetJoinPane | null;
 }
 
 const useStripTravelStore = create<TravelState>()(() => ({
   concealedItemId: null,
+  pane: null,
 }));
 
 export function useConcealedForTravel(stripItemId: string | null): boolean {
@@ -60,8 +68,9 @@ export function useConcealedForTravel(stripItemId: string | null): boolean {
   );
 }
 
-export function useSelectionTravelling(): boolean {
-  return useStripTravelStore((state) => state.concealedItemId !== null);
+/** The pane the traveller's destination joins, or `null` while nothing slides. */
+export function useTravellingJoinPane(): SheetJoinPane | null {
+  return useStripTravelStore((state) => state.pane);
 }
 
 interface BoxRect {
@@ -208,7 +217,7 @@ function flightBox(flight: Flight, height: BoxRect): BoxRect {
 
 function land(flight: Flight | null, owesGlow: boolean): void {
   if (flight !== null) cancelAnimationFrame(flight.frame);
-  useStripTravelStore.setState({ concealedItemId: null });
+  useStripTravelStore.setState({ concealedItemId: null, pane: null });
   if (owesGlow) playJoinGlow();
 }
 
@@ -398,7 +407,10 @@ export function useSelectionTravel(input: {
       land(flight, owesGlow);
       return;
     }
-    useStripTravelStore.setState({ concealedItemId: route.itemId });
+    useStripTravelStore.setState({
+      concealedItemId: route.itemId,
+      pane: stripItemJoinPane(destination),
+    });
     if (flight !== null) {
       // Retarget mid-flight, keeping the momentum the eye is following.
       flight.itemId = route.itemId;

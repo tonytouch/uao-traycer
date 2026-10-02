@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { usePublishSheetJoin } from "./sheet-join-context";
 import { cn } from "@/lib/utils";
+import { SPLIT_PAIR_JOIN_PANE } from "./surface-join-pane";
 import { TabChromeBackground, TabColorEdgeLine } from "./tab-chrome-background";
 import { TAB_BOX_CLASS } from "./tab-chrome-tokens";
 import { useWhollyInTabStrip } from "./use-wholly-in-tab-strip";
@@ -26,7 +27,8 @@ interface SplitTabLayoutProps {
 export function SplitTabLayout(props: SplitTabLayoutProps): ReactNode {
   const [node, setNode] = useState<HTMLSpanElement | null>(null);
   const inStrip = useWhollyInTabStrip(node, props.joined);
-  usePublishSheetJoin(props.joined && inStrip ? "canvas" : null, null);
+  const pane = props.joined && inStrip ? SPLIT_PAIR_JOIN_PANE : null;
+  usePublishSheetJoin(pane, null);
   return (
     <div className="relative flex w-full min-w-0 items-end">
       <div
@@ -40,7 +42,9 @@ export function SplitTabLayout(props: SplitTabLayoutProps): ReactNode {
             aria-hidden
             data-testid={`split-tab-joined-${props.splitId}`}
             ref={setNode}
-            data-sheet-joined={inStrip ? "top" : undefined}
+            {...(pane === null
+              ? {}
+              : { "data-sheet-joined": "top", "data-join-pane": pane })}
             className={cn(TAB_BOX_CLASS, "border border-transparent")}
           />
         ) : null}
@@ -134,7 +138,7 @@ export function SplitMemberChrome(props: {
       <TabChromeBackground
         fill="var(--color-background)"
         borderColor={props.color ?? "var(--color-primary)"}
-        joined={false}
+        joined={null}
         className={undefined}
       />
     );

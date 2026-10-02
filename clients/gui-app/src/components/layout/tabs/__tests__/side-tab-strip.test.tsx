@@ -1216,6 +1216,29 @@ describe("<SideTabStrip />", () => {
       expect(history.getAttribute("data-sheet-joined")).toBe("left");
     });
 
+    // History paints no ground of its own, so its row takes the canvas's fill
+    // whichever side the sidebar is on - never the sidebar panel's, which is
+    // an epic's pane (`surfaceJoinPane`).
+    it.each(["left", "right"] as const)(
+      "joins an active History row to the canvas pane, with the sidebar on the %s",
+      async (sidebar) => {
+        setSidebarSide(sidebar);
+        openHistoryTab();
+        await renderStrip("/elsewhere", LEFT_STRIP);
+
+        expect(
+          screen
+            .getByTestId("tab-history-history")
+            .getAttribute("data-join-pane"),
+        ).toBe("canvas");
+        expect(
+          document
+            .querySelector('[data-sheet-join-bridge="left"]')
+            ?.getAttribute("data-join-pane"),
+        ).toBe("canvas");
+      },
+    );
+
     it("keeps the join on the collapsed tile", async () => {
       setSidebarSide("left");
       openEpicTabs(["Alpha"]);

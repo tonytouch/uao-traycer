@@ -6,14 +6,15 @@ import type { EdgeSide } from "@/lib/layout/layout-arrangement";
 import { useArrangementValue } from "@/lib/layout-overrides";
 import { useMainPanelCollapsed } from "@/stores/epics/left-panel-store";
 import type { SideRowFrame } from "./side-tab-row";
+import { surfaceJoinPane } from "../surface-join-pane";
 import { useWhollyInTabStrip } from "../use-wholly-in-tab-strip";
 
 /**
- * Which pane of the task sheet the strip meets, so the join takes that pane's
- * fill: the epic sidebar panel when it sits on the strip's side, its collapsed
- * rail, or the canvas (every other surface, and the panel on the far side).
+ * Which pane of its sheet the tab meets, so the join takes that pane's fill:
+ * the epic sidebar panel when it sits on the strip's side, its collapsed rail,
+ * a surface's own ground (`surfaceJoinPane`), or the canvas.
  */
-export type SheetJoinPane = "panel" | "rail" | "canvas";
+export type SheetJoinPane = "panel" | "rail" | "surface" | "canvas";
 
 export interface SheetJoin {
   readonly edge: EdgeSide;
@@ -44,7 +45,13 @@ export function useSideTabJoin(
   const inList = useWhollyInTabStrip(node, joins);
   let pane: SheetJoinPane | null = null;
   if (joins && inList) {
-    pane = "canvas";
+    // A task shows the strip the pane on its side: the panel, its rail, or
+    // (the panel on the far side) the canvas. Every other surface shows the
+    // one ground it paints.
+    pane =
+      tab === null || tab.kind === "epic"
+        ? "canvas"
+        : surfaceJoinPane(tab.kind);
     if (tab?.kind === "epic" && sidebarSide === edge) {
       pane = collapsed ? "rail" : "panel";
     }

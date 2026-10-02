@@ -8,6 +8,10 @@
  * "inactive dragged tab" is momentary in production; this file proves the
  * overlay renders correctly for that instant regardless of how briefly it
  * lasts, which the fake row's lack of that effect doesn't undermine.)
+ *
+ * A joined overlay also names the pane it runs into (`surfaceJoinPane`), and
+ * the top bridge it owns must name the same one: a task or a split pair joins
+ * "surface", History "canvas".
  */
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -55,6 +59,10 @@ vi.mock("@/hooks/notifications/use-host-notification-indicators-query", () => ({
 
 const ACTIVE: TabRef = { kind: "epic", id: "tab-active" };
 const INACTIVE: TabRef = { kind: "epic", id: "tab-inactive" };
+const HISTORY: TabRef = { kind: "history", id: "history" };
+const PAIR_LEFT: TabRef = { kind: "epic", id: "tab-pair-left" };
+const PAIR_RIGHT: TabRef = { kind: "epic", id: "tab-pair-right" };
+const SPLIT_ID = "split-pair";
 
 function itemIdOf(ref: TabRef): string {
   return `tab:${ref.kind}:${ref.id}`;
@@ -73,25 +81,36 @@ function withRouter(harness: () => ReactNode) {
   });
 }
 
+/**
+ * A bare draggable standing in for a strip item's row. `stripItemId` is the
+ * item it stands for: the tab's own, or its split pair's (a pair is one drag
+ * source, carried by one of its members).
+ */
 function StripRow(props: {
   readonly tabRef: TabRef;
+  readonly stripItemId: string;
   readonly index: number;
 }): ReactNode {
   const data: HeaderTabDragData = {
     kind: HEADER_TAB_DND_TYPE,
-    stripItemId: itemIdOf(props.tabRef),
-    tabKind: "epic",
+    stripItemId: props.stripItemId,
+    tabKind: props.tabRef.kind,
     tabId: props.tabRef.id,
     index: props.index,
   };
   const { listeners, setNodeRef } = useDraggable({
-    id: getHeaderTabDragId("epic", props.tabRef.id),
+    id: getHeaderTabDragId(
+      props.tabRef.kind,
+      props.stripItemId === itemIdOf(props.tabRef)
+        ? props.tabRef.id
+        : `${props.stripItemId}:${props.tabRef.id}`,
+    ),
     data,
   });
   return (
     <button
       ref={setNodeRef}
-      data-strip-item-id={itemIdOf(props.tabRef)}
+      data-strip-item-id={props.stripItemId}
       data-strip-item-mergeable="true"
       data-testid={`row-${props.tabRef.id}`}
       {...listeners}
@@ -101,18 +120,24 @@ function StripRow(props: {
   );
 }
 
-function TopStrip(): ReactNode {
+function TopStrip(props: { readonly rows: ReactNode }): ReactNode {
   return (
     <div
       data-testid={HEADER_STRIP_SCROLL_TEST_ID}
       data-strip-axis="x"
       data-strip-edge="top"
     >
-      <StripRow tabRef={ACTIVE} index={0} />
-      <StripRow tabRef={INACTIVE} index={1} />
+      {props.rows}
     </div>
   );
 }
+
+const EPIC_ROWS: ReactNode = (
+  <>
+    <StripRow tabRef={ACTIVE} stripItemId={itemIdOf(ACTIVE)} index={0} />
+    <StripRow tabRef={INACTIVE} stripItemId={itemIdOf(INACTIVE)} index={1} />
+  </>
+);
 
 function seedTwoTabs(): void {
   act(() => {
@@ -135,11 +160,51 @@ function seedTwoTabs(): void {
   });
 }
 
-async function mountTopStrip(): Promise<void> {
+/** The History system tab, opened and made the active item. */
+function seedActiveHistory(): void {
+  act(() => {
+    useTabsStore.getState().openSystemTab({
+      kind: "history",
+      name: "History",
+      lastPath: "/epics",
+    });
+    useTabsStore.setState({ activeItemId: itemIdOf(HISTORY) });
+  });
+}
+
+/** One split pair of two tasks, active, and nothing else in the strip. */
+function seedActiveSplit(): void {
+  act(() => {
+    for (const ref of [PAIR_LEFT, PAIR_RIGHT]) {
+      useEpicCanvasStore
+        .getState()
+        .openEpicTabWithId(ref.id, `${ref.id}-epic`, ref.id);
+    }
+    useTabsStore.setState({
+      version: 2,
+      items: [
+        {
+          kind: "split",
+          id: SPLIT_ID,
+          left: { kind: "tab", ref: PAIR_LEFT },
+          right: { kind: "tab", ref: PAIR_RIGHT },
+          focusedSide: "left",
+          routeBackingSide: "left",
+          leftRatio: 0.5,
+        },
+      ],
+      activeItemId: SPLIT_ID,
+      stripOrder: [PAIR_LEFT, PAIR_RIGHT],
+      systemTabs: { history: null, settings: null },
+    });
+  });
+}
+
+async function mountTopStrip(rows: ReactNode): Promise<void> {
   const router = withRouter(() => (
     <QueryClientProvider client={new QueryClient()}>
       <RootDndProvider>
-        <TopStrip />
+        <TopStrip rows={rows} />
         <SheetJoinBridge edge="top" />
       </RootDndProvider>
     </QueryClientProvider>
@@ -210,7 +275,7 @@ describe("top strip drag overlay: active/inactive chrome and sheet join", () => 
   });
 
   it("keeps an inactive dragged tab's inactive appearance on the overlay - no chrome box, no join", async () => {
-    await mountTopStrip();
+    await mountTopStrip(EPIC_ROWS);
     const row = screen.getByTestId(`row-${INACTIVE.id}`);
     const drag = pressAndActivate(row, 1);
 
@@ -225,7 +290,7 @@ describe("top strip drag overlay: active/inactive chrome and sheet join", () => 
   });
 
   it("draws the active dragged tab's overlay joined to the sheet", async () => {
-    await mountTopStrip();
+    await mountTopStrip(EPIC_ROWS);
     const row = screen.getByTestId(`row-${ACTIVE.id}`);
     const drag = pressAndActivate(row, 2);
 
@@ -237,6 +302,57 @@ describe("top strip drag overlay: active/inactive chrome and sheet join", () => 
     ).toBe("top");
     // The joined overlay is the one publisher, so it owns the bridge.
     expect(topBridge().hasAttribute("data-join-active")).toBe(true);
+
+    releaseAt(drag);
+  });
+
+  // The pane is the fill the join takes (`index.css`), and the bridge paints
+  // the same fill onto the sheet, so the two must name one pane. A task paints
+  // `--background` along its top edge, so its tab joins "surface" - not the
+  // canvas, which would leave the tab and the row under it two colours.
+  it("joins the active dragged task's overlay to the surface pane, and the bridge with it", async () => {
+    await mountTopStrip(EPIC_ROWS);
+    const row = screen.getByTestId(`row-${ACTIVE.id}`);
+    const drag = pressAndActivate(row, 3);
+
+    expect(
+      within(overlayContainer())
+        .getByTestId("tab-chrome-box")
+        .getAttribute("data-join-pane"),
+    ).toBe("surface");
+    expect(topBridge().getAttribute("data-join-pane")).toBe("surface");
+
+    releaseAt(drag);
+  });
+
+  it("joins the active dragged History tab's overlay to the canvas pane, and the bridge with it", async () => {
+    seedActiveHistory();
+    await mountTopStrip(
+      <StripRow tabRef={HISTORY} stripItemId={itemIdOf(HISTORY)} index={0} />,
+    );
+    const drag = pressAndActivate(screen.getByTestId(`row-${HISTORY.id}`), 4);
+
+    const box = within(overlayContainer()).getByTestId("tab-chrome-box");
+    expect(box.getAttribute("data-sheet-joined")).toBe("top");
+    expect(box.getAttribute("data-join-pane")).toBe("canvas");
+    expect(topBridge().getAttribute("data-join-pane")).toBe("canvas");
+
+    releaseAt(drag);
+  });
+
+  it("joins the active dragged split pair's one box to the surface pane, and the bridge with it", async () => {
+    seedActiveSplit();
+    await mountTopStrip(
+      <StripRow tabRef={PAIR_LEFT} stripItemId={SPLIT_ID} index={0} />,
+    );
+    const drag = pressAndActivate(screen.getByTestId(`row-${PAIR_LEFT.id}`), 5);
+
+    const box = within(overlayContainer()).getByTestId(
+      `split-tab-joined-${SPLIT_ID}`,
+    );
+    expect(box.getAttribute("data-sheet-joined")).toBe("top");
+    expect(box.getAttribute("data-join-pane")).toBe("surface");
+    expect(topBridge().getAttribute("data-join-pane")).toBe("surface");
 
     releaseAt(drag);
   });
