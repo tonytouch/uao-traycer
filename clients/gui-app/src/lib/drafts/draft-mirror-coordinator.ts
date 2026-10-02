@@ -1519,6 +1519,13 @@ export async function ingestCloudDraftSummary(input: {
     releaseCloudDraftHeadRead(input.summary);
     return;
   }
+  // A newer head of the row claimed or installed while this read was in
+  // flight (two host-scoped directory caches list successive heads at once).
+  // The settle below would leave that record alone, but the apply has to be
+  // refused too: a cloud document carries a synthetic revision, so the store
+  // would take the older head over the newer one and the row would show it
+  // for as long as the newer record stands.
+  if (!cloudDraftHeadClaimStands(input.summary)) return;
   const installed = await applyHostDocument(input.document, stashImages);
   // What the guard remembers about this head. An installed landing head is
   // remembered WITH its mirror's id, so the record ends when that mirror
@@ -1531,25 +1538,10 @@ export async function ingestCloudDraftSummary(input: {
   // the read, a dirty local row - is about this moment, not this head, so the
   // record is released and the next mount asks again, as it always did.
   if (installed) {
-    const imageHashes = imageHashesOfDocument(input.document);
-    settleCloudDraftHead(input.summary, {
-      mirrorId:
-        input.document.kind === "landing"
-          ? input.summary.identity.chatId
-          : null,
-      imageHashes,
-      // The host `recoverIngestedCloudDraftImages` is about to record, and
-      // only when it will: through a mounted session's requester, and for
-      // the account still being served (the owner re-check below returns
-      // before it registers anything, and a host marked without a source
-      // would never be repaired by `noteCloudDraftHeadHost`).
-      sourceHost:
-        imageHashes.length > 0 &&
-        sessionClients.has(input.hostId) &&
-        currentDraftBlobOwnerId() === ingestOwner
-          ? input.hostId
-          : null,
-    });
+    settleCloudDraftHead(
+      input.summary,
+      installedHeadSettlement(input, ingestOwner),
+    );
   } else if (
     input.document.kind === "landing" &&
     landingDraftIsRetired(input.document.draftId)
@@ -2006,6 +1998,48 @@ export function settleCloudDraftHeadWithoutApply(
   summary: CloudChatSummary,
 ): void {
   settleCloudDraftHead(summary, SETTLED_WITHOUT_MIRROR);
+}
+
+/**
+ * What an INSTALLED head is remembered with: a landing head with its mirror's
+ * id (the record ends when that mirror leaves the store), and the host
+ * `recoverIngestedCloudDraftImages` is about to record as an image source,
+ * only when it will: through a mounted session's requester, and for the
+ * account still being served (the owner re-check in the ingest returns
+ * before it registers anything, and a host marked without a source would
+ * never be repaired by `noteCloudDraftHeadHost`).
+ */
+function installedHeadSettlement(
+  input: {
+    readonly hostId: string;
+    readonly summary: CloudChatSummary;
+    readonly document: DraftDocument;
+  },
+  ingestOwner: string | null,
+): CloudDraftHeadSettlement {
+  const imageHashes = imageHashesOfDocument(input.document);
+  return {
+    mirrorId:
+      input.document.kind === "landing" ? input.summary.identity.chatId : null,
+    imageHashes,
+    sourceHost:
+      imageHashes.length > 0 &&
+      sessionClients.has(input.hostId) &&
+      currentDraftBlobOwnerId() === ingestOwner
+        ? input.hostId
+        : null,
+  };
+}
+
+/**
+ * Whether this read's head is still the one the row's record names: no
+ * record (released or abandoned, and nothing newer claimed), or a record for
+ * this very digest. A record for another digest means a newer head was
+ * claimed or installed since this read began.
+ */
+function cloudDraftHeadClaimStands(summary: CloudChatSummary): boolean {
+  const record = cloudDraftHeads.get(cloudDraftIdentityKey(summary));
+  return record === undefined || record.headSha256 === summary.headSha256;
 }
 
 /**

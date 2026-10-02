@@ -697,6 +697,78 @@ describe("a listing older than the record", () => {
   });
 });
 
+describe("a read whose head was displaced while in flight", () => {
+  it("does not apply an older head once a newer head of the row has been claimed, and leaves the newer claim standing", async () => {
+    const older = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    const newer = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      9,
+    );
+    beginCloudDraftHeadRead(older);
+    // The newer head's read starts (a second host-scoped directory listed
+    // it) while the older read is still in flight.
+    beginCloudDraftHeadRead(newer);
+
+    await ingest(
+      HOST_ID,
+      older,
+      cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+    );
+
+    expect(landingIds()).toEqual([]);
+    expect(cloudDraftHeadReading(newer)).toBe(true);
+    expect(cloudDraftHeadSettled(older)).toBe(true);
+  });
+
+  it("does not apply an older head over a newer head already installed", async () => {
+    const older = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    const newer = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      9,
+    );
+    beginCloudDraftHeadRead(older);
+    beginCloudDraftHeadRead(newer);
+    await ingest(
+      HOST_ID,
+      newer,
+      cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+    );
+    const installed = useLandingDraftStore.getState().drafts;
+    expect(installed).toHaveLength(1);
+
+    await ingest(
+      HOST_ID,
+      older,
+      cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+    );
+
+    expect(useLandingDraftStore.getState().drafts).toBe(installed);
+    expect(cloudDraftHeadSettled(newer)).toBe(true);
+    expect(cloudDraftHeadSettled(older)).toBe(true);
+  });
+
+  it("still applies a head whose claim was released and never re-claimed", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    beginCloudDraftHeadRead(summary);
+    releaseCloudDraftHeadRead(summary);
+
+    await ingest(
+      HOST_ID,
+      summary,
+      cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+    );
+
+    expect(landingIds()).toEqual([DRAFT_ID]);
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+  });
+});
+
 describe("cloudDraftHeadReading", () => {
   it("is true while a head is being read, for the same sha only", () => {
     const reading = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
