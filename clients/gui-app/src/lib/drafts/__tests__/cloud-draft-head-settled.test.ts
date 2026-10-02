@@ -529,6 +529,77 @@ describe("a listing older than the record", () => {
     expect(cloudDraftHeadReading(settled)).toBe(false);
   });
 
+  it("advances the record's stamp when the same digest is listed again later, so an intermediate head delivered late is stale", () => {
+    // The row published A (5), then B (7), then byte-identical A again (9).
+    // This renderer saw A first and sees the republication next; B arrives
+    // last, from another host's cache.
+    const first = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    const republished = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      9,
+    );
+    const intermediate = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      7,
+    );
+    settleCloudDraftHeadWithoutApply(first);
+
+    expect(cloudDraftHeadSettled(republished)).toBe(true);
+    expect(cloudDraftHeadSettled(intermediate)).toBe(true);
+    beginCloudDraftHeadRead(intermediate);
+    expect(cloudDraftHeadReading(intermediate)).toBe(false);
+    expect(cloudDraftHeadSettled(first)).toBe(true);
+  });
+
+  it("advances the stamp of a head still being read, and the stamp never moves back when that read settles or restarts", () => {
+    const first = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    const republished = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      9,
+    );
+    const intermediate = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      7,
+    );
+    beginCloudDraftHeadRead(first);
+    expect(cloudDraftHeadSettled(republished)).toBe(true);
+    expect(cloudDraftHeadReading(republished)).toBe(true);
+
+    // The read that started from the publishedAt-5 listing settles.
+    settleCloudDraftHeadWithoutApply(first);
+    expect(cloudDraftHeadSettled(intermediate)).toBe(true);
+
+    // A later read of the same digest from the old listing keeps the stamp.
+    beginCloudDraftHeadRead(first);
+    expect(cloudDraftHeadSettled(intermediate)).toBe(true);
+    expect(cloudDraftHeadReading(first)).toBe(true);
+  });
+
+  it("does not move the stamp back when the same digest is listed again earlier", () => {
+    const later = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      9,
+    );
+    const earlierListing = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    const between = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      7,
+    );
+    settleCloudDraftHeadWithoutApply(later);
+
+    expect(cloudDraftHeadSettled(earlierListing)).toBe(true);
+    expect(cloudDraftHeadSettled(between)).toBe(true);
+  });
+
   it("orders by publishedAt and not by throughRecordSeq: an earlier publication with a HIGHER sequence is stale", () => {
     const settled = withThroughRecordSeq(
       withPublishedAt(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 8),

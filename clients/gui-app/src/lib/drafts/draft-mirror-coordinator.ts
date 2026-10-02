@@ -1739,13 +1739,47 @@ export function cloudDraftHeadSettled(summary: CloudChatSummary): boolean {
     // nothing to read, and the record stands.
     return listingIsOlderThanRecord(record, summary);
   }
-  if (record.state === "reading" || record.mirrorId === null) return true;
+  if (record.state === "reading" || record.mirrorId === null) {
+    advanceCloudDraftHeadStamp(key, record, summary);
+    return true;
+  }
   const mirrorId = record.mirrorId;
   const present = useLandingDraftStore
     .getState()
     .drafts.some((draft) => draft.id === mirrorId);
-  if (!present) cloudDraftHeads.delete(key);
-  return present;
+  if (!present) {
+    cloudDraftHeads.delete(key);
+    return false;
+  }
+  advanceCloudDraftHeadStamp(key, record, summary);
+  return true;
+}
+
+/**
+ * The same digest listed again at a later publication time: a row that
+ * published A, then B, then byte-identical A again. The content is settled,
+ * but the record's order stamp must move to the republication, or a stale
+ * cache delivering B afterwards reads as newer than the record and rolls
+ * the mirror back to it.
+ */
+function advanceCloudDraftHeadStamp(
+  key: string,
+  record: CloudDraftHeadRecord,
+  summary: CloudChatSummary,
+): void {
+  const publishedAt = laterPublication(record.publishedAt, summary.publishedAt);
+  if (publishedAt === record.publishedAt) return;
+  cloudDraftHeads.set(key, { ...record, publishedAt });
+}
+
+/** The later of two publication times; an unknown side yields the other. */
+function laterPublication(
+  current: number | null,
+  listed: number | null,
+): number | null {
+  if (current === null) return listed;
+  if (listed === null) return current;
+  return listed > current ? listed : current;
 }
 
 /**
@@ -1778,7 +1812,13 @@ export function beginCloudDraftHeadRead(summary: CloudChatSummary): void {
   }
   cloudDraftHeads.set(key, {
     headSha256: summary.headSha256,
-    publishedAt: summary.publishedAt,
+    // A record of the SAME digest may already carry a later republication
+    // stamp than the listing this read starts from; the stamp never moves
+    // back.
+    publishedAt:
+      current !== undefined && current.headSha256 === summary.headSha256
+        ? laterPublication(current.publishedAt, summary.publishedAt)
+        : summary.publishedAt,
     state: "reading",
     mirrorId: null,
     imageHashes: [],
@@ -1936,7 +1976,12 @@ function settleCloudDraftHead(
   }
   cloudDraftHeads.set(key, {
     headSha256: summary.headSha256,
-    publishedAt: summary.publishedAt,
+    // The read may have started from an earlier listing of a digest whose
+    // record was since advanced to a republication; keep the later stamp.
+    publishedAt:
+      current === undefined
+        ? summary.publishedAt
+        : laterPublication(current.publishedAt, summary.publishedAt),
     state: "settled",
     mirrorId: settlement.mirrorId,
     imageHashes: settlement.imageHashes,
