@@ -402,6 +402,7 @@ function sessionTabVisualProps(isActive: boolean) {
     trailingControl: null,
     leaderVisible: false,
     enabled: true,
+    pairPreview: null,
   };
 }
 

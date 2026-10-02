@@ -55,12 +55,41 @@ interface TravelState {
    * and the two swap on landing without a change of colour. `null` at rest.
    */
   readonly pane: SheetJoinPane | null;
+  /**
+   * The colour that hidden box draws its outline in, which the traveller
+   * wears from its first frame; `null` for the sheets' own border.
+   */
+  readonly outline: string | null;
 }
 
 const useStripTravelStore = create<TravelState>()(() => ({
   concealedItemId: null,
   pane: null,
+  outline: null,
 }));
+
+/** The outline colour the traveller wears: its destination's. */
+export function useTravelOutline(): string | null {
+  return useStripTravelStore((state) => state.outline);
+}
+
+/**
+ * Hands a concealed destination's outline colour to the traveller standing in
+ * for it. A layout effect in the same flush that conceals it, so the
+ * traveller's first painted frame is already in the destination's colour.
+ */
+export function usePublishTravelOutline(
+  concealed: boolean,
+  color: string | null,
+): void {
+  useLayoutEffect(() => {
+    if (!concealed) return;
+    useStripTravelStore.setState({ outline: color });
+    return () => {
+      useStripTravelStore.setState({ outline: null });
+    };
+  }, [concealed, color]);
+}
 
 export function useConcealedForTravel(stripItemId: string | null): boolean {
   return useStripTravelStore(
