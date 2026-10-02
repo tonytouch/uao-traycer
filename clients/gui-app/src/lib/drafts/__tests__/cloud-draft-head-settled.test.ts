@@ -1625,6 +1625,73 @@ describe("noteCloudDraftHeadHost", () => {
       });
     }
 
+    it("registers the host that ingested one head for a later head's images when another host installs it", async () => {
+      const LATER_IMAGE_HASH = "12".repeat(32);
+      const headA = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+        9,
+      );
+      const headB = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        12,
+      );
+      await mountBothSessions();
+      const sources = countSourceChanges();
+
+      // The first host ingests A: it is a host of the row from then on, though
+      // nothing ever skipped a head on it.
+      beginCloudDraftHeadRead(headA);
+      await ingestWithHashes(HOST_ID, headA, [IMAGE_HASH]);
+      expect(cloudDraftHeadSettled(headA)).toBe(true);
+      expect(
+        cloudDraftImageSourcesRecorded(headA.identity, HOST_ID, [IMAGE_HASH]),
+      ).toBe(true);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, HOST_ID, [
+          LATER_IMAGE_HASH,
+        ]),
+      ).toBe(false);
+
+      // B is read and installed through the SECOND host, naming other images.
+      beginCloudDraftHeadRead(headB);
+      await ingestWithHashes(SECOND_HOST_ID, headB, [LATER_IMAGE_HASH]);
+
+      expect(cloudDraftHeadSettled(headB)).toBe(true);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, HOST_ID, [
+          LATER_IMAGE_HASH,
+        ]),
+      ).toBe(true);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, SECOND_HOST_ID, [
+          LATER_IMAGE_HASH,
+        ]),
+      ).toBe(true);
+
+      // Both hosts are held for B's hashes now: a repeat note adds nothing.
+      const changesAfterSettle = sources.count();
+      noteCloudDraftHeadHost(headB, HOST_ID);
+
+      expect(sources.count()).toBe(changesAfterSettle);
+    });
+
+    it("does not re-register the ingesting host for the head it ingested", async () => {
+      const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      beginCloudDraftHeadRead(summary);
+
+      await ingestWithImage(HOST_ID, summary);
+
+      // The same single source change the control above asserts: the note the
+      // settle makes for the ingesting host added no second registration.
+      expect(cloudDraftHeadSettled(summary)).toBe(true);
+      expect(sources.count()).toBe(1);
+      expect(
+        cloudDraftImageSourcesRecorded(summary.identity, HOST_ID, [IMAGE_HASH]),
+      ).toBe(true);
+    });
+
     it("registers a host skipped during one head's read again for a later head's images once that head settles", async () => {
       const HEAD_THREE = "34".repeat(32);
       const LATER_IMAGE_HASH = "12".repeat(32);

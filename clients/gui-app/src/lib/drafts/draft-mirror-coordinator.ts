@@ -1612,8 +1612,16 @@ export async function ingestCloudDraftSummary(input: {
   // candidate list and can evict the address of the account that IS being
   // served. `applyHostDocument` swallows its own abandonment, so the condition
   // is re-derived here rather than returned from it.
-  if (currentDraftBlobOwnerId() !== ingestOwner) return;
-  recoverIngestedCloudDraftImages(input);
+  if (currentDraftBlobOwnerId() === ingestOwner) {
+    recoverIngestedCloudDraftImages(input);
+  }
+  // The ingesting host is a host of the ROW too: a later head of the row
+  // installed through another host registers it for that head's images when
+  // its directory is still cached at this one. Noted AFTER its own sources
+  // are recorded above, so the note's registration for this head is the
+  // registry's no-op; when the account moved and recovery was skipped, the
+  // note still marks the host on the row and registers nothing.
+  noteCloudDraftHeadHost(input.summary, input.hostId);
 }
 
 /**
@@ -1710,6 +1718,14 @@ function recoverIngestedCloudDraftImages(input: {
   // every site that runs the cloud ingest acquires this mirror alongside it.
   const client = sessionClients.get(input.hostId);
   if (client === undefined) return;
+  // Already recorded when this host was on the row's host set at the settle
+  // just above (it ingested an earlier head of the row); one record per host
+  // per head, whichever path reaches the registry first.
+  if (
+    cloudDraftImageSourcesRecorded(input.summary.identity, input.hostId, hashes)
+  ) {
+    return;
+  }
   recordCloudDraftImageSources({
     identity: input.summary.identity,
     hostId: input.hostId,
