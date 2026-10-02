@@ -607,10 +607,11 @@ describe("a listing older than the record", () => {
     expect(cloudDraftHeadReading(settled)).toBe(false);
   });
 
-  it("advances the record's stamp when the same digest is listed again later, so an intermediate head delivered late is stale", () => {
+  it("advances an installed head's stamp when the same digest is listed again later, so an intermediate head delivered late is stale", async () => {
     // The row published A (5), then B (7), then byte-identical A again (9).
-    // This renderer saw A first and sees the republication next; B arrives
-    // last, from another host's cache.
+    // This renderer installed A first and sees the republication next; B
+    // arrives last, from another host's cache. Identical bytes need no
+    // re-read: the record only moves its stamp.
     const first = withPublishedAt(
       summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
       5,
@@ -623,13 +624,57 @@ describe("a listing older than the record", () => {
       summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
       7,
     );
-    settleCloudDraftHeadWithoutApply(first);
+    await ingest(
+      HOST_ID,
+      first,
+      cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+    );
+    expect(landingIds()).toEqual([DRAFT_ID]);
 
     expect(cloudDraftHeadSettled(republished)).toBe(true);
     expect(cloudDraftHeadSettled(intermediate)).toBe(true);
     beginCloudDraftHeadRead(intermediate);
     expect(cloudDraftHeadReading(intermediate)).toBe(false);
     expect(cloudDraftHeadSettled(first)).toBe(true);
+  });
+
+  it("reads a head settled WITHOUT a mirror again when the same digest is listed at a later publication time: the retraction the read met has been undone", () => {
+    // The read answered `unpublished` for A (5) because the owner retracted
+    // the row before the resolve; the owner then republished the same
+    // content (9). The settlement is for the earlier publication only.
+    const retracted = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    const republished = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      9,
+    );
+    settleCloudDraftHeadWithoutApply(retracted);
+    expect(cloudDraftHeadSettled(retracted)).toBe(true);
+
+    expect(cloudDraftHeadSettled(republished)).toBe(false);
+    // The record is gone: the earlier listing is not settled either now, and
+    // a read of the republication claims the row.
+    expect(cloudDraftHeadSettled(retracted)).toBe(false);
+    beginCloudDraftHeadRead(republished);
+    expect(cloudDraftHeadReading(republished)).toBe(true);
+  });
+
+  it("keeps a head settled without a mirror for the same or an earlier publication time", () => {
+    const settled = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      9,
+    );
+    const earlierListing = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
+    settleCloudDraftHeadWithoutApply(settled);
+
+    expect(cloudDraftHeadSettled(settled)).toBe(true);
+    expect(cloudDraftHeadSettled(earlierListing)).toBe(true);
+    expect(cloudDraftHeadSettled(withPublishedAt(settled, null))).toBe(true);
   });
 
   it("advances the stamp of a head still being read, and the stamp never moves back when that read settles or restarts", () => {

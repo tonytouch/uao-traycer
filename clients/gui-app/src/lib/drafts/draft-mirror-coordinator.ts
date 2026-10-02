@@ -1778,8 +1778,22 @@ export function cloudDraftHeadSettled(summary: CloudChatSummary): boolean {
     // nothing to read, and the record stands.
     return listingIsOlderThanRecord(record, summary);
   }
-  if (record.state === "reading" || record.mirrorId === null) {
+  if (record.state === "reading") {
     advanceCloudDraftHeadStamp(key, record, summary);
+    return true;
+  }
+  if (record.mirrorId === null) {
+    // Settled WITHOUT a mirror: a terminal read refusal, a host-bound kind,
+    // an installed new-chat or stash document. A later publication of the
+    // same digest is a new fact about the row - the read's `unpublished` or
+    // `missing` answer was a retraction the owner has since undone with the
+    // same content - so the settlement does not carry over it: the head is
+    // read again. An installed landing head below needs no re-read for
+    // identical bytes; it only advances its stamp.
+    if (listingIsLaterThanRecord(record, summary)) {
+      cloudDraftHeads.delete(key);
+      return false;
+    }
     return true;
   }
   const mirrorId = record.mirrorId;
@@ -1817,6 +1831,22 @@ function advanceCloudDraftHeadStamp(
   const publishedAt = laterPublication(record.publishedAt, summary.publishedAt);
   if (publishedAt === record.publishedAt) return;
   cloudDraftHeads.set(key, { ...record, publishedAt });
+}
+
+/**
+ * Whether `summary` is a LATER publication of the same digest than the
+ * record holds. Unknown on either side compares as not later.
+ */
+function listingIsLaterThanRecord(
+  record: CloudDraftHeadRecord,
+  summary: CloudChatSummary,
+): boolean {
+  return (
+    record.headSha256 === summary.headSha256 &&
+    record.publishedAt !== null &&
+    summary.publishedAt !== null &&
+    summary.publishedAt > record.publishedAt
+  );
 }
 
 /** The later of two publication times; an unknown side yields the other. */
