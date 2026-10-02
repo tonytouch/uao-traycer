@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftDocument } from "@traycer/protocol/host";
 import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import {
+  type CloudDraftHeadAbandonCause,
   abandonCloudDraftHeadRead,
   acquireDraftMirrorSession,
   applyIncomingDraftDocument,
@@ -32,6 +33,11 @@ import {
 } from "@/lib/drafts/landing-draft-retirement";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
 import { useAuthStore } from "@/stores/auth/auth-store";
+
+type AbandonListener = (
+  abandoned: CloudChatSummary,
+  cause: CloudDraftHeadAbandonCause,
+) => void;
 
 const HOST_ID = "host-a";
 const OWNER_HOST_ID = "host-b";
@@ -334,7 +340,7 @@ describe("cloudDraftHeadSettled", () => {
     beginCloudDraftHeadRead(early);
     // Reading: the later listing of the same digest advances the stamp.
     expect(cloudDraftHeadSettled(later)).toBe(true);
-    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const listener = vi.fn<AbandonListener>();
     const unsubscribe = subscribeCloudDraftHeadAbandoned(listener);
 
     settleCloudDraftHeadWithoutApply(early);
@@ -342,6 +348,9 @@ describe("cloudDraftHeadSettled", () => {
 
     expect(listener).toHaveBeenCalledTimes(1);
     expect(listener.mock.calls[0][0]).toBe(early);
+    // The refusal of a publication the record had moved past gives the head
+    // back for a reason about the moment, not an exhausted read.
+    expect(listener.mock.calls[0][1]).toBe("released");
     // Ask with the earlier listing first: asking with the later one deletes
     // the record.
     expect(cloudDraftHeadSettled(early)).toBe(true);
@@ -353,7 +362,7 @@ describe("cloudDraftHeadSettled", () => {
       summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
       5,
     );
-    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const listener = vi.fn<AbandonListener>();
     const unsubscribe = subscribeCloudDraftHeadAbandoned(listener);
     beginCloudDraftHeadRead(early);
 
@@ -372,8 +381,8 @@ describe("cloudDraftHeadSettled", () => {
       5,
     );
     const later = withPublishedAt(early, 9);
-    const gone = vi.fn<(abandoned: CloudChatSummary) => void>();
-    const kept = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const gone = vi.fn<AbandonListener>();
+    const kept = vi.fn<AbandonListener>();
     const unsubscribeGone = subscribeCloudDraftHeadAbandoned(gone);
     const unsubscribeKept = subscribeCloudDraftHeadAbandoned(kept);
     unsubscribeGone();
@@ -386,6 +395,7 @@ describe("cloudDraftHeadSettled", () => {
     expect(gone).not.toHaveBeenCalled();
     expect(kept).toHaveBeenCalledTimes(1);
     expect(kept.mock.calls[0][0]).toBe(early);
+    expect(kept.mock.calls[0][1]).toBe("released");
   });
 
   it("a refusal for a row whose record names another head leaves that record alone and wakes nobody", () => {
@@ -397,7 +407,7 @@ describe("cloudDraftHeadSettled", () => {
       summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
       5,
     );
-    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const listener = vi.fn<AbandonListener>();
     const unsubscribe = subscribeCloudDraftHeadAbandoned(listener);
     beginCloudDraftHeadRead(reading);
 
@@ -414,7 +424,7 @@ describe("cloudDraftHeadSettled", () => {
       summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
       null,
     );
-    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const listener = vi.fn<AbandonListener>();
     const unsubscribe = subscribeCloudDraftHeadAbandoned(listener);
     beginCloudDraftHeadRead(unpublished);
     // Advances the record's stamp from null to 9.
@@ -1065,13 +1075,13 @@ describe("a settle is guarded by the head", () => {
 describe("abandonCloudDraftHeadRead", () => {
   it("clears a read in flight and tells every subscriber which head, once", () => {
     const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
-    const first = vi.fn<(abandoned: CloudChatSummary) => void>();
-    const second = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const first = vi.fn<AbandonListener>();
+    const second = vi.fn<AbandonListener>();
     subscribeCloudDraftHeadAbandoned(first);
     subscribeCloudDraftHeadAbandoned(second);
     beginCloudDraftHeadRead(summary);
 
-    abandonCloudDraftHeadRead(summary);
+    abandonCloudDraftHeadRead(summary, "exhausted");
 
     expect(first).toHaveBeenCalledTimes(1);
     expect(first.mock.calls[0][0]).toBe(summary);
@@ -1079,6 +1089,27 @@ describe("abandonCloudDraftHeadRead", () => {
     expect(second.mock.calls[0][0]).toBe(summary);
     expect(cloudDraftHeadReading(summary)).toBe(false);
     expect(cloudDraftHeadSettled(summary)).toBe(false);
+  });
+
+  it("tells every subscriber why the head was let go: the cause it was abandoned with", () => {
+    const exhaustedHead = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const releasedHead = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO);
+    const first = vi.fn<AbandonListener>();
+    const second = vi.fn<AbandonListener>();
+    subscribeCloudDraftHeadAbandoned(first);
+    subscribeCloudDraftHeadAbandoned(second);
+
+    beginCloudDraftHeadRead(exhaustedHead);
+    abandonCloudDraftHeadRead(exhaustedHead, "exhausted");
+    expect(first).toHaveBeenLastCalledWith(exhaustedHead, "exhausted");
+    expect(second).toHaveBeenLastCalledWith(exhaustedHead, "exhausted");
+
+    beginCloudDraftHeadRead(releasedHead);
+    abandonCloudDraftHeadRead(releasedHead, "released");
+    expect(first).toHaveBeenLastCalledWith(releasedHead, "released");
+    expect(second).toHaveBeenLastCalledWith(releasedHead, "released");
+    expect(first).toHaveBeenCalledTimes(2);
+    expect(second).toHaveBeenCalledTimes(2);
   });
 
   it("has already cleared the claim when a subscriber hears of it, so a woken mount can claim the head", () => {
@@ -1090,7 +1121,7 @@ describe("abandonCloudDraftHeadRead", () => {
     });
     beginCloudDraftHeadRead(summary);
 
-    abandonCloudDraftHeadRead(summary);
+    abandonCloudDraftHeadRead(summary, "released");
 
     expect(seenSettled).toEqual([false]);
     expect(cloudDraftHeadReading(summary)).toBe(true);
@@ -1098,12 +1129,12 @@ describe("abandonCloudDraftHeadRead", () => {
 
   it("notifies nobody and keeps the record when the head is already settled", () => {
     const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
-    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const listener = vi.fn<AbandonListener>();
     subscribeCloudDraftHeadAbandoned(listener);
     beginCloudDraftHeadRead(summary);
     settleCloudDraftHeadWithoutApply(summary);
 
-    abandonCloudDraftHeadRead(summary);
+    abandonCloudDraftHeadRead(summary, "released");
 
     expect(listener).not.toHaveBeenCalled();
     expect(cloudDraftHeadSettled(summary)).toBe(true);
@@ -1112,35 +1143,38 @@ describe("abandonCloudDraftHeadRead", () => {
   it("notifies nobody and keeps the claim when it names another head of the row", () => {
     const reading = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
     const other = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO);
-    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const listener = vi.fn<AbandonListener>();
     subscribeCloudDraftHeadAbandoned(listener);
     beginCloudDraftHeadRead(reading);
 
-    abandonCloudDraftHeadRead(other);
+    abandonCloudDraftHeadRead(other, "released");
 
     expect(listener).not.toHaveBeenCalled();
     expect(cloudDraftHeadReading(reading)).toBe(true);
   });
 
   it("notifies nobody when the row has no record", () => {
-    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const listener = vi.fn<AbandonListener>();
     subscribeCloudDraftHeadAbandoned(listener);
 
-    abandonCloudDraftHeadRead(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE));
+    abandonCloudDraftHeadRead(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      "released",
+    );
 
     expect(listener).not.toHaveBeenCalled();
   });
 
   it("stops notifying a subscriber once it unsubscribes, and only that one", () => {
     const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
-    const gone = vi.fn<(abandoned: CloudChatSummary) => void>();
-    const kept = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const gone = vi.fn<AbandonListener>();
+    const kept = vi.fn<AbandonListener>();
     const unsubscribeGone = subscribeCloudDraftHeadAbandoned(gone);
     subscribeCloudDraftHeadAbandoned(kept);
     unsubscribeGone();
     beginCloudDraftHeadRead(summary);
 
-    abandonCloudDraftHeadRead(summary);
+    abandonCloudDraftHeadRead(summary, "released");
 
     expect(gone).not.toHaveBeenCalled();
     expect(kept).toHaveBeenCalledTimes(1);
@@ -1150,12 +1184,12 @@ describe("abandonCloudDraftHeadRead", () => {
     // The record, not the subscription, is what an abandon needs: with no
     // read in flight there is nothing to hand over.
     const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
-    const listener = vi.fn<(abandoned: CloudChatSummary) => void>();
+    const listener = vi.fn<AbandonListener>();
     subscribeCloudDraftHeadAbandoned(listener);
     beginCloudDraftHeadRead(summary);
     resetDraftMirrorCoordinatorForTests();
 
-    abandonCloudDraftHeadRead(summary);
+    abandonCloudDraftHeadRead(summary, "released");
 
     expect(listener).not.toHaveBeenCalled();
   });
@@ -1971,7 +2005,7 @@ describe("noteCloudDraftHeadHost", () => {
       beginCloudDraftHeadRead(headB);
       noteCloudDraftHeadHost(headB, SECOND_HOST_ID);
 
-      abandonCloudDraftHeadRead(headB);
+      abandonCloudDraftHeadRead(headB, "released");
 
       expect(cloudDraftHeadReading(headB)).toBe(false);
       expect(sources.count()).toBe(0);

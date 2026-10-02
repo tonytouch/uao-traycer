@@ -138,20 +138,28 @@ export function useCloudDraftsIngest(
     // In both cases the key sits in `ingestedKeys`, so the next run of this
     // effect would skip the row as already handled. Releasing only at settle
     // time is too late: the next setup has already walked the list by then.
-    // So teardown clears the timers AND releases every key still unsettled -
-    // here and in the coordinator, whose process-wide "reading" record is
-    // what keeps the other mounts off the head - and the chains themselves
-    // return without touching the set once aborted.
+    // So teardown clears the timers AND gives back every key still unsettled
+    // - here, and in the coordinator (an abandon, which wakes the mounts that
+    // skipped the head) whose process-wide "reading" record is what keeps the
+    // other mounts off the head - and the chains themselves return without
+    // touching the set once aborted.
     const pendingTimers = new Set<TimerHandle>();
     const unsettledKeys = new Map<string, CloudChatSummary>();
     // Heads whose read this run gave up on. Giving up abandons the claim so
     // a mount on another host reads the head through its own pipe; this set
-    // keeps the wake from restarting the read that just failed, here, until
-    // the next directory delivery re-runs this effect.
-    // Keyed by head AND publication: the wake to ignore is the one this
-    // run's own exhaustion sends, and a later republication of the same
-    // digest abandoned by another mount is a different publication, whose
-    // wake this mount must take or nobody holds the head.
+    // keeps an EXHAUSTION wake from restarting the read that just failed,
+    // here, until the next directory delivery re-runs this effect: this
+    // run's own, and a sibling's that ran out of attempts on the same
+    // publication after taking it over, or two failing mounts would trade
+    // the head at the ladder's pace for as long as the refusals last. A
+    // RELEASE wake for the same publication is taken: the sibling that took
+    // the head over was torn down with it undecided, and nothing says the
+    // read would fail now. Keyed by head AND publication, and looked up by
+    // THIS run's listing of the head, not the abandoning mount's: a later
+    // republication of the same digest is a different publication, which
+    // this run lists only once a delivery has re-run it with a fresh set,
+    // and a sibling listing the republication while this run still lists
+    // the earlier one must not trade the head with it.
     const exhaustedKeys = new Set<string>();
     const exhaustedKeyOf = (summary: CloudChatSummary): string =>
       `${cloudDraftHeadKey(summary)}@${summary.publishedAt ?? "unpublished"}`;
@@ -166,24 +174,37 @@ export function useCloudDraftsIngest(
     // (forked here, or listed ahead of this window's hydration) is listed
     // under this host's ownership and is not absent.
     // Every listed head is reserved BEFORE the sweep, whether this run reads
-    // it or not. A draft the directory lists under an owner other than the
-    // one a clean local replica names must be re-read, not dropped by the
-    // owner-aware absence check below and re-created by the ingest,
-    // reconciling away an open tab in between. And a positive listing has to
-    // ORDER against older snapshots: with two host-scoped directories, a
-    // later-dispatched response that lists a row can run before an
-    // earlier-dispatched one that omits it, and the older sweep must find
-    // the row reserved past its own fence. Before the coordinator held the
-    // record, a mount's first walk reserved every head because it read every
-    // head; this keeps that ordering for the heads it now skips, at the cost
-    // of one map write per listed row per walk. The SWEEP fence, not the
-    // ingest fence: the ingest fence is also the apply's supersession check,
-    // and a walk that merely lists a row must not abandon the apply another
-    // mount has in flight for it. A head this run reads reserves the ingest
-    // fence itself, before its read.
-    for (const summary of foreign) {
+    // it or not, and whichever host owns it. A draft the directory lists
+    // under an owner other than the one a clean local replica names must be
+    // re-read, not dropped by the owner-aware absence check below and
+    // re-created by the ingest, reconciling away an open tab in between. And
+    // a positive listing has to ORDER against older snapshots: with two
+    // host-scoped directories, a later-dispatched response that lists a row
+    // can run before an earlier-dispatched one that omits it, and the older
+    // sweep must find the row reserved past its own fence. That holds for a
+    // row this mount's host owns too: the other host's directory lists it as
+    // foreign, and its older absence sweep judges the row's mirror by the
+    // same fence, so a positive listing here that left no fence would let
+    // that sweep drop a published row whose owning session had since
+    // unmounted. Before the coordinator held the record, a mount's first
+    // walk reserved every head because it read every head; this keeps that
+    // ordering for the heads it now skips, at the cost of one map write per
+    // listed row per walk. The SWEEP fence, not the ingest fence: the ingest
+    // fence is also the apply's supersession check, and a walk that merely
+    // lists a row must not abandon the apply another mount has in flight
+    // for it. A head this run reads reserves the ingest fence itself,
+    // before its read.
+    // Stamped at this directory's dispatch position, not at the walk: a walk
+    // of a cached snapshot can run after a newer request left, and a stamp
+    // taken now would outrank that response's absence.
+    const listedAtSeq = snapshotIngestSeq();
+    for (const summary of directory.chats) {
       if (summary.headSha256 === null) continue;
-      reserveCloudDraftSweepFence(summary.identity.chatId, summary.ownerHostId);
+      reserveCloudDraftSweepFence(
+        summary.identity.chatId,
+        summary.ownerHostId,
+        listedAtSeq,
+      );
     }
     if (directory.settled) {
       // Every listed row, keyed by id with the owners it is listed under:
@@ -237,9 +258,10 @@ export function useCloudDraftsIngest(
       // directory in the same tick (N tabs restored into one Task) skips the
       // head instead of reading it too. The coordinator settles or releases
       // the claim when the read decides; the two exhausted-attempt exits and
-      // teardown below release it themselves, and a retry that finds the
-      // claim displaced by a newer head stops without releasing, because the
-      // claim is not its own any more.
+      // teardown below abandon it themselves (waking the mounts that skipped
+      // the head), an ambiguous identity releases it, and a retry that finds
+      // the claim displaced by a newer head stops without releasing, because
+      // the claim is not its own any more.
       beginCloudDraftHeadRead(summary);
       const settle = (): void => {
         unsettledKeys.delete(key);
@@ -297,7 +319,7 @@ export function useCloudDraftsIngest(
             settle();
             ingestedKeys.delete(key);
             exhaustedKeys.add(exhaustedKeyOf(summary));
-            abandonCloudDraftHeadRead(summary);
+            abandonCloudDraftHeadRead(summary, "exhausted");
             appLogger.warn("[cloud-drafts] head read failed", {
               attempts: nextAttempt,
               error: describeLogError(error),
@@ -324,10 +346,17 @@ export function useCloudDraftsIngest(
         // fan-out over again. One kind is NOT about the head: an ambiguous
         // identity is the server's precedence among rows for the viewer,
         // which can change under the same sha, so that claim is released
-        // and the next mount asks again, as every mount did before.
+        // and every mount asks again at its next directory delivery, this
+        // one included (its key goes with the claim). Released, not
+        // abandoned: a mount woken now would ask the same precedence
+        // milliseconds later and spend its one ask on the same answer, and
+        // the change that resolves the precedence - a row of the viewer's
+        // published, retracted or re-owned - is itself a directory change,
+        // so the delivery that carries it is the right time to ask.
         if (outcome.kind !== "ok") {
           if (outcome.kind === "ambiguous-identity") {
             releaseCloudDraftHeadRead(summary);
+            ingestedKeys.delete(key);
           } else {
             settleCloudDraftHeadWithoutApply(summary);
           }
@@ -359,7 +388,7 @@ export function useCloudDraftsIngest(
             settle();
             ingestedKeys.delete(key);
             exhaustedKeys.add(exhaustedKeyOf(summary));
-            abandonCloudDraftHeadRead(summary);
+            abandonCloudDraftHeadRead(summary, "exhausted");
             appLogger.warn("[cloud-drafts] head apply failed", {
               attempts: nextAttempt,
               error: describeLogError(error),
@@ -392,15 +421,23 @@ export function useCloudDraftsIngest(
     // up here if that mount is torn down before its read decides, or gives
     // the read up: the abandon releases the claim and names the head, and
     // this mount reads it now instead of at its next directory delivery.
-    // Only a head this run's directory lists, never one this run gave up on
-    // itself, and only when nothing has it (the guard is asked again: a
-    // third mount may have claimed it first).
+    // Only a head this run's directory lists, never an exhaustion of a
+    // publication this run gave up on itself (`exhaustedKeys`), and only
+    // when nothing has it (the guard is asked again: a third mount may have
+    // claimed it first).
     const unsubscribeAbandoned = subscribeCloudDraftHeadAbandoned(
-      (abandoned) => {
+      (abandoned, cause) => {
         if (tornDown()) return;
         const abandonedKey = cloudDraftHeadKey(abandoned);
-        const abandonedExhaustedKey = exhaustedKeyOf(abandoned);
-        if (exhaustedKeys.has(abandonedExhaustedKey)) return;
+        // What THIS run lists under the head's key, which is what it would
+        // read, and whose publication is what it may have exhausted.
+        const listed = foreign.find(
+          (summary) => cloudDraftHeadKey(summary) === abandonedKey,
+        );
+        if (listed === undefined) return;
+        const ignored = (): boolean =>
+          cause === "exhausted" && exhaustedKeys.has(exhaustedKeyOf(listed));
+        if (ignored()) return;
         // Deferred past the commit that abandoned the head. When a directory
         // delivery re-runs EVERY mount at once (a refetch moves the fence
         // sequence this effect depends on), React runs every cleanup before
@@ -414,11 +451,7 @@ export function useCloudDraftsIngest(
         // walk and read each once. A mount torn down alone (a tab closed)
         // still wakes the survivors, one microtask later.
         queueMicrotask(() => {
-          if (tornDown() || exhaustedKeys.has(abandonedExhaustedKey)) return;
-          const listed = foreign.find(
-            (summary) => cloudDraftHeadKey(summary) === abandonedKey,
-          );
-          if (listed === undefined || guardMaySkip(ingestedKeys, listed)) {
+          if (tornDown() || ignored() || guardMaySkip(ingestedKeys, listed)) {
             return;
           }
           startRead(listed);
@@ -434,7 +467,7 @@ export function useCloudDraftsIngest(
       // these heads is woken to read it.
       for (const [pendingKey, pendingSummary] of unsettledKeys) {
         ingestedKeys.delete(pendingKey);
-        abandonCloudDraftHeadRead(pendingSummary);
+        abandonCloudDraftHeadRead(pendingSummary, "released");
       }
       unsettledKeys.clear();
     };

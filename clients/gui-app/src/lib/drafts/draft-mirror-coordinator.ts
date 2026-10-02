@@ -205,21 +205,25 @@ let landingAdoptionHostId: string | null = null;
  * Ordering fence for the cloud-directory absence sweep: every landing
  * document apply - a cloud-head ingest or a host session's live echo -
  * takes the next sequence number when it STARTS, and a directory snapshot
- * records the sequence current when its request was DISPATCHED. A row
- * applied after that (by another mount, through another host) is not
- * absent from that snapshot in any sense the snapshot can attest to.
+ * takes the next one when its request is DISPATCHED. A row applied after
+ * that (by another mount, through another host) is not absent from that
+ * snapshot in any sense the snapshot can attest to.
  */
 let cloudIngestSeq = 0;
 const cloudIngestSeqByDraft = new Map<string, number>();
 /**
- * The same ordering fence, reserved for a row a directory LISTS but that the
- * walking mount will not apply (another mount is reading the head, or it is
- * settled). Kept apart from `cloudIngestSeqByDraft` because that map is
- * also the apply's supersession check: an apply abandons itself when the
- * row's sequence moved under its blob reads, which is right for a newer
- * apply or a newer head's read and wrong for a mount that merely walked a
- * directory listing the row. The sweep and the flush read the later of the
- * two.
+ * The same ordering fence, reserved for every headed row a directory LISTS,
+ * whichever host owns it and whether or not the walking mount applies it
+ * (another mount is reading the head, it is settled, or it is this host's
+ * own row, which another host's directory lists as foreign). Stamped at the
+ * listing snapshot's DISPATCH position, never at the walk: a walk of a
+ * cached snapshot can run after a newer request was dispatched, and a stamp
+ * taken then would outrank that newer response's absence. Kept apart from
+ * `cloudIngestSeqByDraft` because that map is also the apply's supersession
+ * check: an apply abandons itself when the row's sequence moved under its
+ * blob reads, which is right for a newer apply or a newer head's read and
+ * wrong for a mount that merely walked a directory listing the row. The
+ * sweep and the flush read the later of the two.
  */
 const cloudSweepFenceByRow = new Map<string, number>();
 
@@ -301,7 +305,7 @@ const SETTLED_WITHOUT_MIRROR: CloudDraftHeadSettlement = {
   imageHashes: [],
 };
 const cloudDraftHeadAbandonListeners = new Set<
-  (summary: CloudChatSummary) => void
+  (summary: CloudChatSummary, cause: CloudDraftHeadAbandonCause) => void
 >();
 /**
  * Process-wide on purpose. The ingest hook used to keep this guard on its own
@@ -1788,8 +1792,14 @@ export function deleteLandingDraftThroughHost(
     });
 }
 
-/** The current ingest sequence; a directory captures it at dispatch. */
+/**
+ * A directory request's position in the ingest sequence, taken at its
+ * dispatch. Fresh for every request, so two snapshots never share one: the
+ * sweep fence a walk of the older snapshot reserves at that snapshot's
+ * position must outrank only the requests dispatched before it.
+ */
 export function cloudDraftIngestSeq(): number {
+  cloudIngestSeq += 1;
   return cloudIngestSeq;
 }
 
@@ -1983,13 +1993,21 @@ function listingIsOlderThanRecord(
  * than at its next directory delivery. A read that gave up wakes the others
  * because its failure is its host's: two mounts bound to different hosts read
  * through different byte pipes, and the directory has no polling interval to
- * bring the healthy one back on its own. The mount that gave up ignores its
- * own wake for that head (the hook keeps the keys it exhausted this run), so
- * the head is not traded between mounts at the ladder's pace. An apply
- * refused for the moment still releases silently: the other mount would meet
- * the same answer.
+ * bring the healthy one back on its own. The wake names its cause: a mount
+ * that ran out of attempts on a publication ignores `exhausted` wakes for the
+ * head while its run still lists that publication, until its next delivery
+ * (its own wake, and a sibling's that met the same answer), so the head is
+ * not traded between failing mounts at the ladder's pace, and takes a
+ * `released` one (a sibling torn down with the head undecided),
+ * because that sibling's leaving says nothing about whether the read would
+ * succeed now. A read refused for the moment, or answered an ambiguous
+ * identity, still releases silently ({@link releaseCloudDraftHeadRead}): the
+ * other mount would meet the same answer.
  */
-export function abandonCloudDraftHeadRead(summary: CloudChatSummary): void {
+export function abandonCloudDraftHeadRead(
+  summary: CloudChatSummary,
+  cause: CloudDraftHeadAbandonCause,
+): void {
   const key = cloudDraftIdentityKey(summary);
   const record = cloudDraftHeads.get(key);
   if (
@@ -2000,22 +2018,37 @@ export function abandonCloudDraftHeadRead(summary: CloudChatSummary): void {
     return;
   }
   cloudDraftHeads.delete(key);
-  notifyCloudDraftHeadAbandoned(summary);
+  notifyCloudDraftHeadAbandoned(summary, cause);
 }
 
 /**
- * Tell every listening mount a head needs a reader now. Each one reads what
- * its own directory lists under the head's key, after asking the guard.
+ * Why a head's reader let it go: `exhausted` when its read ran out of
+ * attempts, `released` when the mount was torn down with the read undecided
+ * or its refusal answered for a publication the record had moved past
+ * ({@link settleCloudDraftHeadWithoutApply}).
  */
-function notifyCloudDraftHeadAbandoned(summary: CloudChatSummary): void {
+export type CloudDraftHeadAbandonCause = "exhausted" | "released";
+
+/**
+ * Tell every listening mount a head needs a reader now, and why its last
+ * reader let it go. Each one reads what its own directory lists under the
+ * head's key, after asking the guard.
+ */
+function notifyCloudDraftHeadAbandoned(
+  summary: CloudChatSummary,
+  cause: CloudDraftHeadAbandonCause,
+): void {
   for (const listener of [...cloudDraftHeadAbandonListeners]) {
-    listener(summary);
+    listener(summary, cause);
   }
 }
 
 /** Hear every {@link abandonCloudDraftHeadRead}; returns the unsubscribe. */
 export function subscribeCloudDraftHeadAbandoned(
-  listener: (summary: CloudChatSummary) => void,
+  listener: (
+    summary: CloudChatSummary,
+    cause: CloudDraftHeadAbandonCause,
+  ) => void,
 ): () => void {
   cloudDraftHeadAbandonListeners.add(listener);
   return () => {
@@ -2104,9 +2137,13 @@ function imageHashesOfDocument(document: DraftDocument): readonly string[] {
 }
 
 /**
- * The read of this head ended without a decision - torn down with its mount,
- * out of attempts, or refused for a reason about the moment rather than the
- * head. Only a record still READING this head is dropped: a decision another
+ * The read of this head ended without a decision and without a wake: an
+ * apply refused for a reason about the moment, or an ambiguous identity,
+ * which another mount asking now would meet too; the mounts that skipped the
+ * head hold neither a record nor a key for it and ask again at their next
+ * directory delivery. A reader torn down or out of attempts goes through
+ * {@link abandonCloudDraftHeadRead} instead.
+ * Only a record still READING this head is dropped: a decision another
  * mount reached in the meantime, or a newer head's read, stays. The claim is
  * identified by row and digest, not by the mount that made it, so a release
  * from a torn-down continuation can drop another mount's live read of the
@@ -2161,7 +2198,7 @@ export function settleCloudDraftHeadWithoutApply(
       mirrorId: null,
       imageHashes: [],
     });
-    notifyCloudDraftHeadAbandoned(summary);
+    notifyCloudDraftHeadAbandoned(summary, "released");
     return;
   }
   settleCloudDraftHead(summary, SETTLED_WITHOUT_MIRROR);
@@ -2273,31 +2310,34 @@ export function reserveCloudDraftIngestFence(draftId: string): void {
 }
 
 /**
- * Reserve the absence-sweep fence for a row a directory lists that this
- * mount will NOT read or apply: it is another mount's head, or a settled
- * one. A positive listing still has to order against older snapshots (a
+ * Reserve the absence-sweep fence for a headed row a directory lists, at
+ * that directory's dispatch position (`listedAtSeq`, the snapshot's
+ * `fenceSeq`). A positive listing has to order against older snapshots (a
  * later-dispatched response that lists the row can run before an
- * earlier-dispatched one that omits it), but this reservation must not
- * supersede an apply of the row that another mount has in flight, which
- * {@link reserveCloudDraftIngestFence} would: it keeps its own map, keyed by
- * the row (owner plus id), so one owner's listing protects only its own
- * mirror.
+ * earlier-dispatched one that omits it) and must NOT outrank a newer one (a
+ * walk of a cached snapshot can run after a newer request was dispatched,
+ * and that response's absence is the later fact), so the stamp is the
+ * listing's own position, never the walk's, and never moves back. This
+ * reservation must not supersede an apply of the row that another mount has
+ * in flight, which {@link reserveCloudDraftIngestFence} would: it keeps its
+ * own map, keyed by the row (owner plus id), so one owner's listing protects
+ * only its own mirror.
  */
 export function reserveCloudDraftSweepFence(
   draftId: string,
   ownerHostId: string,
+  listedAtSeq: number,
 ): void {
-  cloudIngestSeq += 1;
-  cloudSweepFenceByRow.set(
-    cloudSweepFenceKey(draftId, ownerHostId),
-    cloudIngestSeq,
-  );
+  const key = cloudSweepFenceKey(draftId, ownerHostId);
+  const current = cloudSweepFenceByRow.get(key) ?? 0;
+  if (listedAtSeq > current) cloudSweepFenceByRow.set(key, listedAtSeq);
 }
 
 /**
  * Drop local mirrors of cloud rows a settled directory no longer lists.
- * `fenceSeq` is the ingest sequence at that directory's fetch start: a row
- * ingested since is kept. A replica qualifies once clean. An OWN row
+ * `fenceSeq` is the position that directory's request took when it was
+ * dispatched: a row ingested, or listed by a later-dispatched directory,
+ * since then is kept. A replica qualifies once clean. An OWN row
  * adopted on another host qualifies only when it was published (an
  * unpublished own row is never listed) and that host has no mirror
  * session here (a mounted session delivers its own tombstones, and its

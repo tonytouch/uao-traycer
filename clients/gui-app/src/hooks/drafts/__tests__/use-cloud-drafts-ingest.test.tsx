@@ -4,6 +4,7 @@ import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import type { DraftHeadReaderRecord } from "@traycer/protocol/persistence/draft/schemas";
 import { DRAFT_HEAD_DIALECT } from "@traycer/protocol/persistence/draft/version";
 import { appLogger } from "@/lib/logger";
+import type { CloudDraftHeadAbandonCause } from "@/lib/drafts/draft-mirror-coordinator";
 
 const directoryMock = vi.hoisted(() => ({
   chats: [] as ReadonlyArray<CloudChatSummary>,
@@ -18,10 +19,14 @@ const readMock = vi.hoisted(() => ({
 const reserveMock = vi.hoisted(() => ({
   reserve: vi.fn<(draftId: string) => void>(),
 }));
-// The SWEEP fence: reserved for every listed foreign head on each walk, read
-// or skipped, and never supersedes an apply.
+// The SWEEP fence: reserved for every listed head (whichever host owns it) on
+// each walk, read or skipped, at the directory snapshot's dispatch position,
+// and never supersedes an apply.
 const sweepFenceMock = vi.hoisted(() => ({
-  reserve: vi.fn<(draftId: string, ownerHostId: string) => void>(),
+  reserve:
+    vi.fn<
+      (draftId: string, ownerHostId: string, listedAtSeq: number) => void
+    >(),
 }));
 const ingestMock = vi.hoisted(() => ({
   ingest:
@@ -69,14 +74,18 @@ const readingMock = vi.hoisted(() => ({
   reading: vi.fn<(summary: CloudChatSummary) => boolean>(),
 }));
 readingMock.reading.mockReturnValue(true);
-// The coordinator's claim on a head: begun before a read, released when the
-// read ends without a decision (out of attempts, an ambiguous identity),
-// abandoned when the mount holding it is torn down with the read undecided,
+// The coordinator's claim on a head: begun before a read; released silently
+// on an ambiguous identity (the mount's own key goes with it); abandoned with
+// a cause when the read ends without a decision - out of attempts
+// (`exhausted`), or torn down with the read undecided (`released`) - and
 // settled when it answers a terminal refusal.
 const claimMock = vi.hoisted(() => ({
   begin: vi.fn<(summary: CloudChatSummary) => void>(),
   release: vi.fn<(summary: CloudChatSummary) => void>(),
-  abandon: vi.fn<(summary: CloudChatSummary) => void>(),
+  abandon:
+    vi.fn<
+      (summary: CloudChatSummary, cause: CloudDraftHeadAbandonCause) => void
+    >(),
   settleWithoutApply: vi.fn<(summary: CloudChatSummary) => void>(),
 }));
 // A skipped head's host is registered as an image source for it.
@@ -88,9 +97,18 @@ const noteHostMock = vi.hoisted(() => ({
 // unsubscribe spy.
 const abandonSubscriptionMock = vi.hoisted(() => ({
   subscribe:
-    vi.fn<(listener: (summary: CloudChatSummary) => void) => () => void>(),
+    vi.fn<
+      (
+        listener: (
+          summary: CloudChatSummary,
+          cause: CloudDraftHeadAbandonCause,
+        ) => void,
+      ) => () => void
+    >(),
   unsubscribe: vi.fn<() => void>(),
-  listener: null as ((summary: CloudChatSummary) => void) | null,
+  listener: null as
+    | ((summary: CloudChatSummary, cause: CloudDraftHeadAbandonCause) => void)
+    | null,
 }));
 function installAbandonSubscription(): void {
   abandonSubscriptionMock.listener = null;
@@ -136,19 +154,27 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", async (importOriginal) => {
       claimMock.begin(summary),
     releaseCloudDraftHeadRead: (summary: CloudChatSummary): void =>
       claimMock.release(summary),
-    abandonCloudDraftHeadRead: (summary: CloudChatSummary): void =>
-      claimMock.abandon(summary),
+    abandonCloudDraftHeadRead: (
+      summary: CloudChatSummary,
+      cause: CloudDraftHeadAbandonCause,
+    ): void => claimMock.abandon(summary, cause),
     noteCloudDraftHeadHost: (summary: CloudChatSummary, hostId: string): void =>
       noteHostMock.note(summary, hostId),
     subscribeCloudDraftHeadAbandoned: (
-      listener: (summary: CloudChatSummary) => void,
+      listener: (
+        summary: CloudChatSummary,
+        cause: CloudDraftHeadAbandonCause,
+      ) => void,
     ): (() => void) => abandonSubscriptionMock.subscribe(listener),
     settleCloudDraftHeadWithoutApply: (summary: CloudChatSummary): void =>
       claimMock.settleWithoutApply(summary),
     reserveCloudDraftIngestFence: (draftId: string): void =>
       reserveMock.reserve(draftId),
-    reserveCloudDraftSweepFence: (draftId: string, ownerHostId: string): void =>
-      sweepFenceMock.reserve(draftId, ownerHostId),
+    reserveCloudDraftSweepFence: (
+      draftId: string,
+      ownerHostId: string,
+      listedAtSeq: number,
+    ): void => sweepFenceMock.reserve(draftId, ownerHostId, listedAtSeq),
     ingestCloudDraftSummary: (args: {
       hostId: string;
       summary: CloudChatSummary;
@@ -233,10 +259,13 @@ const HEAD: DraftHeadReaderRecord = {
 const CLIENT = { request: () => Promise.reject(new Error("unused")) };
 
 /** Delivers an abandon to the listener the mounted hook registered. */
-function deliverAbandon(abandoned: CloudChatSummary): void {
+function deliverAbandon(
+  abandoned: CloudChatSummary,
+  cause: CloudDraftHeadAbandonCause,
+): void {
   const listener = abandonSubscriptionMock.listener;
   if (listener === null) throw new Error("the hook never subscribed");
-  listener(abandoned);
+  listener(abandoned, cause);
 }
 
 afterEach(() => {
@@ -303,6 +332,7 @@ describe("useCloudDraftsIngest", () => {
         }),
     );
     ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.snapshotSeq = 5;
     directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
@@ -316,9 +346,11 @@ describe("useCloudDraftsIngest", () => {
     });
     expect(reserveMock.reserve).toHaveBeenNthCalledWith(1, "draft-1");
     expect(sweepFenceMock.reserve).toHaveBeenCalledTimes(1);
+    // At the directory snapshot's dispatch position, not at the walk.
     expect(sweepFenceMock.reserve).toHaveBeenCalledWith(
       "draft-1",
       OWNER_HOST_ID,
+      5,
     );
     expect(readMock.read).toHaveBeenCalledTimes(1);
     expect(ingestMock.ingest).not.toHaveBeenCalled();
@@ -899,10 +931,45 @@ describe("useCloudDraftsIngest", () => {
     expect(sweepFenceMock.reserve).toHaveBeenCalledTimes(1);
   });
 
+  it("reserves the sweep fence for an own-host row with a head too, without reading, claiming or ingesting it", async () => {
+    const order: string[] = [];
+    sweepFenceMock.reserve.mockImplementation(() => {
+      order.push("sweep-fence");
+    });
+    sweepMock.sweep.mockImplementation(() => {
+      order.push("sweep");
+      return [];
+    });
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    // The row this mount's own host owns: never read through this mount's
+    // pipe, but listed here, so another host's older absence sweep must find
+    // it fenced.
+    directoryMock.snapshotSeq = 6;
+    directoryMock.chats = [summary(DIGEST_ONE, { ownerHostId: HOST_ID })];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(sweepMock.sweep).toHaveBeenCalledTimes(1);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sweepFenceMock.reserve).toHaveBeenCalledTimes(1);
+    expect(sweepFenceMock.reserve).toHaveBeenCalledWith("draft-1", HOST_ID, 6);
+    // Fenced before the settled sweep, as a foreign row is.
+    expect(order).toEqual(["sweep-fence", "sweep"]);
+    // Fenced, not read: no ingest fence, no claim, no read, no ingest.
+    expect(reserveMock.reserve).not.toHaveBeenCalled();
+    expect(claimMock.begin).not.toHaveBeenCalled();
+    expect(readMock.read).not.toHaveBeenCalled();
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
+  });
+
   it("a fresh mount reads nothing for a head the coordinator has settled: no read, no claim, no ingest, but the head is still sweep-fenced and never ingest-fenced", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
     settledMock.settled.mockReturnValue(true);
+    directoryMock.snapshotSeq = 4;
     directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     // A second mount of the hook (a new tab) starts with an empty per-mount
@@ -923,6 +990,7 @@ describe("useCloudDraftsIngest", () => {
     expect(sweepFenceMock.reserve).toHaveBeenCalledWith(
       "draft-1",
       OWNER_HOST_ID,
+      4,
     );
     expect(reserveMock.reserve).not.toHaveBeenCalled();
   });
@@ -933,6 +1001,7 @@ describe("useCloudDraftsIngest", () => {
     // A head under read by another mount is settled as far as the guard is
     // concerned (the coordinator answers true for both).
     settledMock.settled.mockReturnValue(true);
+    directoryMock.snapshotSeq = 3;
     directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
@@ -945,6 +1014,7 @@ describe("useCloudDraftsIngest", () => {
     expect(sweepFenceMock.reserve).toHaveBeenCalledWith(
       "draft-1",
       OWNER_HOST_ID,
+      3,
     );
     expect(reserveMock.reserve).not.toHaveBeenCalled();
     expect(readMock.read).not.toHaveBeenCalled();
@@ -1084,10 +1154,12 @@ describe("useCloudDraftsIngest", () => {
     expect(sweepFenceMock.reserve).not.toHaveBeenCalledWith(
       "draft-1",
       OWNER_HOST_ID,
+      expect.any(Number),
     );
     expect(sweepFenceMock.reserve).toHaveBeenCalledWith(
       "draft-2",
       OWNER_HOST_ID,
+      0,
     );
     expect(ingestMock.ingest.mock.calls[0][0].summary).toBe(published);
   });
@@ -1154,7 +1226,7 @@ describe("useCloudDraftsIngest", () => {
     expect(claimMock.release).not.toHaveBeenCalled();
   });
 
-  it("releases, and does not settle, a head whose read answers an ambiguous identity, without a retry or an ingest", async () => {
+  it("releases silently, and does not settle or abandon, a head whose read answers an ambiguous identity, then asks again at the next delivery", async () => {
     vi.useFakeTimers();
     readMock.read.mockResolvedValue({
       kind: "ambiguous-identity",
@@ -1163,12 +1235,17 @@ describe("useCloudDraftsIngest", () => {
     const row = summary(DIGEST_ONE, null);
     directoryMock.chats = [row];
 
-    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
 
     await vi.waitFor(() => {
       expect(claimMock.release).toHaveBeenCalledTimes(1);
     });
+    // Released silently: no abandon (so no wake of the mounts that skipped
+    // the head), no settle, no retry, no ingest.
     expect(claimMock.release).toHaveBeenCalledWith(row);
+    expect(claimMock.abandon).not.toHaveBeenCalled();
     expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
 
@@ -1176,7 +1253,25 @@ describe("useCloudDraftsIngest", () => {
     expect(readMock.read).toHaveBeenCalledTimes(1);
     expect(ingestMock.ingest).not.toHaveBeenCalled();
     expect(claimMock.release).toHaveBeenCalledTimes(1);
+    expect(claimMock.abandon).not.toHaveBeenCalled();
     expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
+
+    // The mount's own key went with the claim: the next delivery of the
+    // directory re-runs the effect, and this mount reads the head AGAIN
+    // (the guard no longer holds it).
+    directoryMock.snapshotSeq = 1;
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+    view.rerender();
+    await vi.waitFor(() => {
+      expect(readMock.read).toHaveBeenCalledTimes(2);
+    });
+    expect(claimMock.begin).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => {
+      expect(claimMock.release).toHaveBeenCalledTimes(2);
+    });
+    expect(claimMock.abandon).not.toHaveBeenCalled();
+    expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 
   it("abandons, rather than releases, the coordinator's claim when the effect is torn down with a read still pending, after unsubscribing", async () => {
@@ -1197,7 +1292,7 @@ describe("useCloudDraftsIngest", () => {
     view.unmount();
 
     expect(claimMock.abandon).toHaveBeenCalledTimes(1);
-    expect(claimMock.abandon).toHaveBeenCalledWith(row);
+    expect(claimMock.abandon).toHaveBeenCalledWith(row, "released");
     expect(claimMock.release).not.toHaveBeenCalled();
     expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
     // Unsubscribed FIRST: the abandon this teardown issues must not reach the
@@ -1268,7 +1363,7 @@ describe("useCloudDraftsIngest", () => {
     // the head. An equal-by-value copy, as the coordinator's own summary is a
     // different object from this mount's directory row.
     settledMock.settled.mockReturnValue(false);
-    deliverAbandon({ ...row });
+    deliverAbandon({ ...row }, "released");
 
     await vi.waitFor(() => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
@@ -1280,7 +1375,7 @@ describe("useCloudDraftsIngest", () => {
     expect(ingestMock.ingest.mock.calls[0][0].summary).toBe(row);
 
     // The same abandon delivered again finds the key this mount now holds.
-    deliverAbandon({ ...row });
+    deliverAbandon({ ...row }, "released");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(readMock.read).toHaveBeenCalledTimes(1);
     expect(claimMock.begin).toHaveBeenCalledTimes(1);
@@ -1304,9 +1399,10 @@ describe("useCloudDraftsIngest", () => {
       summary(DIGEST_ONE, {
         identity: { taskId: "scp_1", chatId: "draft-9", ownerUserId: "user-1" },
       }),
+      "released",
     );
-    deliverAbandon(summary(DIGEST_TWO, null));
-    deliverAbandon(summary(DIGEST_ONE, { ownerHostId: "host-c" }));
+    deliverAbandon(summary(DIGEST_TWO, null), "released");
+    deliverAbandon(summary(DIGEST_ONE, { ownerHostId: "host-c" }), "released");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(readMock.read).not.toHaveBeenCalled();
@@ -1328,7 +1424,7 @@ describe("useCloudDraftsIngest", () => {
 
     // A third mount claimed the head first: the guard is asked again at the
     // abandon, and still answers settled.
-    deliverAbandon({ ...row });
+    deliverAbandon({ ...row }, "released");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(readMock.read).not.toHaveBeenCalled();
@@ -1358,7 +1454,7 @@ describe("useCloudDraftsIngest", () => {
     expect(abandonSubscriptionMock.unsubscribe).toHaveBeenCalledTimes(1);
 
     settledMock.settled.mockReturnValue(false);
-    staleListener({ ...row });
+    staleListener({ ...row }, "released");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(readMock.read).not.toHaveBeenCalled();
@@ -1376,8 +1472,8 @@ describe("useCloudDraftsIngest", () => {
     // answers "not held" once the claim is gone (the default of the settled
     // mock): without the hook's own exhausted-key check this wake would start
     // a fourth read.
-    claimMock.abandon.mockImplementation((abandoned) => {
-      deliverAbandon({ ...abandoned });
+    claimMock.abandon.mockImplementation((abandoned, cause) => {
+      deliverAbandon({ ...abandoned }, cause);
     });
 
     const view = renderHook(() =>
@@ -1404,7 +1500,7 @@ describe("useCloudDraftsIngest", () => {
       expect(claimMock.abandon).toHaveBeenCalledTimes(1);
     });
     expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
-    expect(claimMock.abandon).toHaveBeenCalledWith(row);
+    expect(claimMock.abandon).toHaveBeenCalledWith(row, "exhausted");
     expect(claimMock.release).not.toHaveBeenCalled();
     expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -1431,8 +1527,8 @@ describe("useCloudDraftsIngest", () => {
     ingestMock.ingest.mockRejectedValue(new Error("persistent apply failure"));
     const row = summary(DIGEST_ONE, null);
     directoryMock.chats = [row];
-    claimMock.abandon.mockImplementation((abandoned) => {
-      deliverAbandon({ ...abandoned });
+    claimMock.abandon.mockImplementation((abandoned, cause) => {
+      deliverAbandon({ ...abandoned }, cause);
     });
 
     const view = renderHook(() =>
@@ -1454,7 +1550,7 @@ describe("useCloudDraftsIngest", () => {
       expect(claimMock.abandon).toHaveBeenCalledTimes(1);
     });
     expect(ingestMock.ingest).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
-    expect(claimMock.abandon).toHaveBeenCalledWith(row);
+    expect(claimMock.abandon).toHaveBeenCalledWith(row, "exhausted");
     expect(claimMock.release).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledTimes(1);
 
@@ -1505,12 +1601,12 @@ describe("useCloudDraftsIngest", () => {
 
     // The exhausted head's wake is ignored; the skipped head's is not.
     settledMock.settled.mockReturnValue(false);
-    deliverAbandon({ ...exhausted });
+    deliverAbandon({ ...exhausted }, "exhausted");
     await vi.advanceTimersByTimeAsync(0);
     expect(claimMock.begin).toHaveBeenCalledTimes(1);
     expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
 
-    deliverAbandon({ ...skipped });
+    deliverAbandon({ ...skipped }, "exhausted");
     await vi.advanceTimersByTimeAsync(0);
     expect(claimMock.begin).toHaveBeenCalledTimes(2);
     expect(claimMock.begin.mock.calls[1][0]).toBe(skipped);
@@ -1518,7 +1614,72 @@ describe("useCloudDraftsIngest", () => {
     warnSpy.mockRestore();
   });
 
-  it("takes the abandon wake for the same digest at a later publication after exhausting the earlier one, and still ignores its own", async () => {
+  it("ignores an exhausted wake for a later publication while it lists the earlier one it exhausted, takes it once a delivery lists the later one, and still ignores its own", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
+    readMock.read.mockRejectedValue(new Error("persistent read failure"));
+    const exhausted = summary(DIGEST_ONE, { publishedAt: 5 });
+    directoryMock.chats = [exhausted];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 2);
+    await vi.waitFor(() => {
+      expect(claimMock.abandon).toHaveBeenCalledTimes(1);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+
+    // The coordinator answers: not held, not being read. The wake for the
+    // publication this run exhausted is ignored.
+    settledMock.settled.mockReturnValue(false);
+    deliverAbandon({ ...exhausted }, "exhausted");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+
+    // (1) Another mount abandons the same digest at a LATER publication, but
+    // this run still lists the earlier one (5) and has exhausted it: the wake
+    // is looked up by THIS run's listing, so it is ignored. Two mounts that
+    // list different publications of one digest must not trade the head.
+    deliverAbandon({ ...exhausted, publishedAt: 9 }, "exhausted");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+
+    // (2) A delivery now lists the later publication. The effect re-runs
+    // with a fresh `exhaustedKeys`; another mount holds the head, so this
+    // run skips it.
+    settledMock.settled.mockReturnValue(true);
+    const later = summary(DIGEST_ONE, { publishedAt: 9 });
+    directoryMock.snapshotSeq = 1;
+    directoryMock.chats = [later];
+    view.rerender();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+
+    // That mount then gives the head up as exhausted: the wake is taken, and
+    // exactly one read starts, on this run's own listing of the later
+    // publication.
+    settledMock.settled.mockReturnValue(false);
+    deliverAbandon({ ...later }, "exhausted");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimMock.begin).toHaveBeenCalledTimes(2);
+    expect(claimMock.begin.mock.calls[1][0]).toBe(later);
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS + 1);
+    warnSpy.mockRestore();
+  });
+
+  it("takes a released wake for a publication it exhausted, and still ignores an exhausted one", async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
     readMock.read.mockRejectedValue(new Error("persistent read failure"));
@@ -1537,24 +1698,34 @@ describe("useCloudDraftsIngest", () => {
     await vi.waitFor(() => {
       expect(claimMock.abandon).toHaveBeenCalledTimes(1);
     });
+    expect(claimMock.abandon).toHaveBeenCalledWith(exhausted, "exhausted");
     expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
     expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
 
-    // The coordinator answers: not held, not being read. The wake for the
-    // publication this run exhausted is still ignored.
+    // The coordinator answers: not held, not being read. An exhaustion wake
+    // for the very publication this run gave up on (a sibling that ran out of
+    // attempts on it too) starts nothing, so two failing mounts do not trade
+    // the head at the ladder's pace.
     settledMock.settled.mockReturnValue(false);
-    deliverAbandon({ ...exhausted });
+    deliverAbandon({ ...exhausted }, "exhausted");
     await vi.advanceTimersByTimeAsync(0);
     expect(claimMock.begin).toHaveBeenCalledTimes(1);
     expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
 
-    // The same digest abandoned at a LATER publication by another mount is a
-    // different publication: this mount takes it, and reads the row it lists
-    // (the run's own listing is the one at 5; the wake carries the 9).
-    deliverAbandon({ ...exhausted, publishedAt: 9 });
+    // A RELEASE wake for the same publication is taken: the sibling that took
+    // the head over was torn down with it undecided. Exactly one read starts,
+    // on this mount's own listing, and the same wake again finds it held.
+    deliverAbandon({ ...exhausted }, "released");
     await vi.advanceTimersByTimeAsync(0);
     expect(claimMock.begin).toHaveBeenCalledTimes(2);
     expect(claimMock.begin.mock.calls[1][0]).toBe(exhausted);
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS + 1);
+
+    settledMock.settled.mockReturnValue(true);
+    deliverAbandon({ ...exhausted }, "released");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimMock.begin).toHaveBeenCalledTimes(2);
     expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS + 1);
     warnSpy.mockRestore();
   });
