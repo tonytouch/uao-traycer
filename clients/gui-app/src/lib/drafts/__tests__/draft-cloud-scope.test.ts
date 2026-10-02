@@ -227,8 +227,15 @@ function publishedOwnRow(
  * order a positive listing (or an apply) against the sweep and the flush; only
  * the ingest fence is also an apply's supersession check.
  */
-const RESERVERS: ReadonlyArray<readonly [string, (draftId: string) => void]> = [
-  ["ingest fence", reserveCloudDraftIngestFence],
+const RESERVERS: ReadonlyArray<
+  readonly [string, (draftId: string, ownerHostId: string) => void]
+> = [
+  [
+    "ingest fence",
+    (draftId: string): void => {
+      reserveCloudDraftIngestFence(draftId);
+    },
+  ],
   ["sweep fence", reserveCloudDraftSweepFence],
 ];
 
@@ -324,7 +331,7 @@ describe("flushAbsentOwnCloudDrafts", () => {
       });
       // Reserved after the snapshot's fence (0): newer than the directory.
       // `stale-own` is the control: the same row, never reserved.
-      reserve("fresh-own");
+      reserve("fresh-own", HOST_ID);
 
       expect(flushAbsentOwnCloudDrafts(new Map(), 0, new Set())).toEqual([
         "stale-own",
@@ -337,6 +344,41 @@ describe("flushAbsentOwnCloudDrafts", () => {
       releaseDraftMirrorSession(HOST_ID);
     },
   );
+
+  it("honours a sweep fence only under the row's own owner: another owner's listing of the same id does not hold the nudge", async () => {
+    const stream = streamHarness();
+    acquireDraftMirrorSession({
+      hostId: HOST_ID,
+      client: listNullClient() as never,
+      streamClient: stream.client as never,
+      timing: undefined,
+    });
+    await vi.waitFor(() => {
+      expect(stream.subscribeCalls.count).toBe(1);
+    });
+    useLandingDraftStore.setState({
+      drafts: [publishedOwnRow("shared-id", {})],
+      activeDraftId: null,
+    });
+    // Reserved after the snapshot's fence (0), but under ANOTHER owner: the
+    // id collides across owners, the row does not. The own row is still absent
+    // from the snapshot and is nudged.
+    reserveCloudDraftSweepFence("shared-id", "host-other");
+    expect(flushAbsentOwnCloudDrafts(new Map(), 0, new Set())).toEqual([
+      "shared-id",
+    ]);
+
+    // The same reservation under the row's own owner holds the nudge.
+    reserveCloudDraftSweepFence("shared-id", HOST_ID);
+    expect(flushAbsentOwnCloudDrafts(new Map(), 0, new Set())).toEqual([]);
+
+    await vi.waitFor(() => {
+      expect(stream.sentFrames).toEqual([
+        { kind: "flush", hasBinaryPayload: false, draftIds: ["shared-id"] },
+      ]);
+    });
+    releaseDraftMirrorSession(HOST_ID);
+  });
 });
 
 describe("sweepAbsentCloudDraftMirrors: fences", () => {
@@ -354,7 +396,7 @@ describe("sweepAbsentCloudDraftMirrors: fences", () => {
         activeDraftId: null,
       });
       // Reserved after the snapshot's fence (0): newer than the directory.
-      reserve("reserved-replica");
+      reserve("reserved-replica", "host-other");
 
       const dropped = sweepAbsentCloudDraftMirrors(
         "host-ingesting",
@@ -368,6 +410,40 @@ describe("sweepAbsentCloudDraftMirrors: fences", () => {
       ]);
     },
   );
+
+  it("honours a sweep fence only under the mirror's own owner: another owner's listing of the same id does not keep an absent replica", () => {
+    const replicaOf = (ownerHostId: string): LandingDraftTab =>
+      publishedOwnRow("shared-id", {
+        origin: "replica",
+        ownerHostId,
+        adoption: { state: "adopted", hostId: ownerHostId },
+      });
+
+    // Owner A listed the id after the snapshot's fence (0); owner B's replica
+    // under the same id is absent from the listing and must still be swept.
+    useLandingDraftStore.setState({
+      drafts: [replicaOf("host-b")],
+      activeDraftId: null,
+    });
+    reserveCloudDraftSweepFence("shared-id", "host-a");
+    expect(
+      sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), 0),
+    ).toEqual(["shared-id"]);
+    expect(useLandingDraftStore.getState().drafts).toEqual([]);
+
+    // The same reservation under B's own owner keeps B's replica.
+    useLandingDraftStore.setState({
+      drafts: [replicaOf("host-b")],
+      activeDraftId: null,
+    });
+    reserveCloudDraftSweepFence("shared-id", "host-b");
+    expect(
+      sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), 0),
+    ).toEqual([]);
+    expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toEqual([
+      "shared-id",
+    ]);
+  });
 });
 
 describe("a fence reservation while a landing apply awaits its blob read", () => {
@@ -500,7 +576,7 @@ describe("a fence reservation while a landing apply awaits its blob read", () =>
 
     // Another mount's walk lists the row and orders it against older
     // snapshots; it must not supersede the apply this mount has in flight.
-    reserveCloudDraftSweepFence(DRAFT_ID);
+    reserveCloudDraftSweepFence(DRAFT_ID, OWNER_HOST_ID);
     inFlight.releaseBlobRead();
     await inFlight.ingest;
 

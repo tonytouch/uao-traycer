@@ -154,7 +154,7 @@ export function useCloudDraftsIngest(
     // fence itself, before its read.
     for (const summary of foreign) {
       if (summary.headSha256 === null) continue;
-      reserveCloudDraftSweepFence(summary.identity.chatId);
+      reserveCloudDraftSweepFence(summary.identity.chatId, summary.ownerHostId);
     }
     if (directory.settled) {
       // Every listed row, keyed by id with the owners it is listed under:

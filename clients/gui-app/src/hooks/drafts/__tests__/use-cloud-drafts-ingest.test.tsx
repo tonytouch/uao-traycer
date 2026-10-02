@@ -21,7 +21,7 @@ const reserveMock = vi.hoisted(() => ({
 // The SWEEP fence: reserved for every listed foreign head on each walk, read
 // or skipped, and never supersedes an apply.
 const sweepFenceMock = vi.hoisted(() => ({
-  reserve: vi.fn<(draftId: string) => void>(),
+  reserve: vi.fn<(draftId: string, ownerHostId: string) => void>(),
 }));
 const ingestMock = vi.hoisted(() => ({
   ingest:
@@ -130,8 +130,8 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
     claimMock.settleWithoutApply(summary),
   reserveCloudDraftIngestFence: (draftId: string): void =>
     reserveMock.reserve(draftId),
-  reserveCloudDraftSweepFence: (draftId: string): void =>
-    sweepFenceMock.reserve(draftId),
+  reserveCloudDraftSweepFence: (draftId: string, ownerHostId: string): void =>
+    sweepFenceMock.reserve(draftId, ownerHostId),
   ingestCloudDraftSummary: (args: {
     hostId: string;
     summary: CloudChatSummary;
@@ -296,7 +296,10 @@ describe("useCloudDraftsIngest", () => {
     });
     expect(reserveMock.reserve).toHaveBeenNthCalledWith(1, "draft-1");
     expect(sweepFenceMock.reserve).toHaveBeenCalledTimes(1);
-    expect(sweepFenceMock.reserve).toHaveBeenCalledWith("draft-1");
+    expect(sweepFenceMock.reserve).toHaveBeenCalledWith(
+      "draft-1",
+      OWNER_HOST_ID,
+    );
     expect(readMock.read).toHaveBeenCalledTimes(1);
     expect(ingestMock.ingest).not.toHaveBeenCalled();
 
@@ -701,7 +704,10 @@ describe("useCloudDraftsIngest", () => {
     // the apply's supersession check, so a head this mount does not read
     // never takes it - that would abandon another mount's apply of the row.
     expect(sweepFenceMock.reserve).toHaveBeenCalledTimes(2);
-    expect(sweepFenceMock.reserve).toHaveBeenCalledWith("draft-1");
+    expect(sweepFenceMock.reserve).toHaveBeenCalledWith(
+      "draft-1",
+      OWNER_HOST_ID,
+    );
     expect(reserveMock.reserve).not.toHaveBeenCalled();
   });
 
@@ -720,7 +726,10 @@ describe("useCloudDraftsIngest", () => {
     // particular a skipped head never reserves the INGEST fence, which is
     // also the apply's supersession check.
     expect(sweepFenceMock.reserve).toHaveBeenCalledTimes(1);
-    expect(sweepFenceMock.reserve).toHaveBeenCalledWith("draft-1");
+    expect(sweepFenceMock.reserve).toHaveBeenCalledWith(
+      "draft-1",
+      OWNER_HOST_ID,
+    );
     expect(reserveMock.reserve).not.toHaveBeenCalled();
     expect(readMock.read).not.toHaveBeenCalled();
     expect(claimMock.begin).not.toHaveBeenCalled();
@@ -856,8 +865,14 @@ describe("useCloudDraftsIngest", () => {
     expect(claimMock.begin).not.toHaveBeenCalledWith(headless);
     expect(reserveMock.reserve).not.toHaveBeenCalledWith("draft-1");
     expect(reserveMock.reserve).toHaveBeenCalledWith("draft-2");
-    expect(sweepFenceMock.reserve).not.toHaveBeenCalledWith("draft-1");
-    expect(sweepFenceMock.reserve).toHaveBeenCalledWith("draft-2");
+    expect(sweepFenceMock.reserve).not.toHaveBeenCalledWith(
+      "draft-1",
+      OWNER_HOST_ID,
+    );
+    expect(sweepFenceMock.reserve).toHaveBeenCalledWith(
+      "draft-2",
+      OWNER_HOST_ID,
+    );
     expect(ingestMock.ingest.mock.calls[0][0].summary).toBe(published);
   });
 

@@ -221,12 +221,34 @@ const cloudIngestSeqByDraft = new Map<string, number>();
  * directory listing the row. The sweep and the flush read the later of the
  * two.
  */
-const cloudSweepFenceByDraft = new Map<string, number>();
+const cloudSweepFenceByRow = new Map<string, number>();
 
-function cloudDraftFenceSeq(draftId: string): number {
+/**
+ * The sweep fence is keyed by the ROW (owner plus id), not the bare id: cloud
+ * ids are host-minted, so two owners can list the same id, and owner A's
+ * listing must not keep owner B's absent mirror from being swept. The ingest
+ * fence stays keyed by id because an apply is for whichever row the mirror
+ * under that id is.
+ */
+function cloudSweepFenceKey(draftId: string, ownerHostId: string): string {
+  return `${ownerHostId}\u0000${draftId}`;
+}
+
+/**
+ * The later of the row's two fences for a mirror. A mirror with no owner has
+ * no sweep fence: it is treated as listed under any owner by the absence
+ * predicate, so the fence never decides for it.
+ */
+function cloudDraftFenceSeq(
+  draftId: string,
+  ownerHostId: string | null,
+): number {
   return Math.max(
     cloudIngestSeqByDraft.get(draftId) ?? 0,
-    cloudSweepFenceByDraft.get(draftId) ?? 0,
+    ownerHostId === null
+      ? 0
+      : (cloudSweepFenceByRow.get(cloudSweepFenceKey(draftId, ownerHostId)) ??
+          0),
   );
 }
 /**
@@ -1366,7 +1388,7 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   landingAdoptionHostId = null;
   cloudIngestSeq = 0;
   cloudIngestSeqByDraft.clear();
-  cloudSweepFenceByDraft.clear();
+  cloudSweepFenceByRow.clear();
   cloudDraftHeads.clear();
   cloudDraftHeadAbandonListeners.clear();
   inheritableLandingTabs.clear();
@@ -2112,11 +2134,19 @@ export function reserveCloudDraftIngestFence(draftId: string): void {
  * later-dispatched response that lists the row can run before an
  * earlier-dispatched one that omits it), but this reservation must not
  * supersede an apply of the row that another mount has in flight, which
- * {@link reserveCloudDraftIngestFence} would: it keeps its own map.
+ * {@link reserveCloudDraftIngestFence} would: it keeps its own map, keyed by
+ * the row (owner plus id), so one owner's listing protects only its own
+ * mirror.
  */
-export function reserveCloudDraftSweepFence(draftId: string): void {
+export function reserveCloudDraftSweepFence(
+  draftId: string,
+  ownerHostId: string,
+): void {
   cloudIngestSeq += 1;
-  cloudSweepFenceByDraft.set(draftId, cloudIngestSeq);
+  cloudSweepFenceByRow.set(
+    cloudSweepFenceKey(draftId, ownerHostId),
+    cloudIngestSeq,
+  );
 }
 
 /**
@@ -2134,7 +2164,9 @@ export function sweepAbsentCloudDraftMirrors(
   fenceSeq: number,
 ): readonly string[] {
   const dropped = dropForeignLandingMirrorsAbsent(hostId, listed, (draft) => {
-    if (cloudDraftFenceSeq(draft.id) > fenceSeq) return false;
+    if (cloudDraftFenceSeq(draft.id, draft.ownerHostId) > fenceSeq) {
+      return false;
+    }
     if (draft.origin === "replica") return true;
     // A row with no recorded publication state is treated as unpublished.
     return (
@@ -2177,7 +2209,7 @@ export function flushAbsentOwnCloudDrafts(
     ) {
       continue;
     }
-    if (cloudDraftFenceSeq(draft.id) > fenceSeq) continue;
+    if (cloudDraftFenceSeq(draft.id, draft.ownerHostId) > fenceSeq) continue;
     const owners = listed.get(draft.id);
     if (
       owners !== undefined &&
