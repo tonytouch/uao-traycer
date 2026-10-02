@@ -223,14 +223,15 @@ const cloudIngestSeqByDraft = new Map<string, number>();
 type CloudDraftHeadRecord = {
   readonly headSha256: string | null;
   /**
-   * The listing's `throughRecordSeq` for that head: the row's staleness
-   * projection, used here for the one thing it is for. Two host-scoped
-   * directory caches can list successive heads of one row at once, and a
-   * mount walking the older cache must neither read the older head nor
-   * replace the record of the newer one. Never an authority decision: the
-   * apply still refuses by revision.
+   * The listing's `publishedAt` for that head: the server's publication
+   * order for the row, which is the one ordering fact a listing carries
+   * (`throughRecordSeq` is not one: a fork or a rewrite renumbers). Two
+   * host-scoped directory caches can list successive heads of one row at
+   * once, and a mount walking the older cache must neither read the older
+   * head nor replace the record of the newer one. Never an authority
+   * decision: the apply still refuses by revision.
    */
-  readonly throughRecordSeq: number | null;
+  readonly publishedAt: number | null;
   /** `reading`: a mount has the head read in flight; `settled`: decided. */
   readonly state: "reading" | "settled";
   readonly mirrorId: string | null;
@@ -1529,10 +1530,15 @@ export async function ingestCloudDraftSummary(input: {
           ? input.summary.identity.chatId
           : null,
       imageHashes,
-      // The host `recoverIngestedCloudDraftImages` recorded, when it did:
-      // it records only through a mounted session's requester.
+      // The host `recoverIngestedCloudDraftImages` is about to record, and
+      // only when it will: through a mounted session's requester, and for
+      // the account still being served (the owner re-check below returns
+      // before it registers anything, and a host marked without a source
+      // would never be repaired by `noteCloudDraftHeadHost`).
       sourceHost:
-        imageHashes.length > 0 && sessionClients.has(input.hostId)
+        imageHashes.length > 0 &&
+        sessionClients.has(input.hostId) &&
+        currentDraftBlobOwnerId() === ingestOwner
           ? input.hostId
           : null,
     });
@@ -1772,7 +1778,7 @@ export function beginCloudDraftHeadRead(summary: CloudChatSummary): void {
   }
   cloudDraftHeads.set(key, {
     headSha256: summary.headSha256,
-    throughRecordSeq: summary.throughRecordSeq,
+    publishedAt: summary.publishedAt,
     state: "reading",
     mirrorId: null,
     imageHashes: [],
@@ -1782,9 +1788,9 @@ export function beginCloudDraftHeadRead(summary: CloudChatSummary): void {
 
 /**
  * Whether `summary` lists an OLDER head of the row than `record` holds: a
- * different digest pinned at a lower sequence. Unknown on either side (an
- * unpublished row, or a record from before the field) compares as not older,
- * which is the pre-existing behaviour: a different digest is read.
+ * different digest published earlier. Unknown on either side (an unpublished
+ * row) compares as not older, which is the pre-existing behaviour: a
+ * different digest is read.
  */
 function listingIsOlderThanRecord(
   record: CloudDraftHeadRecord,
@@ -1792,9 +1798,9 @@ function listingIsOlderThanRecord(
 ): boolean {
   return (
     record.headSha256 !== summary.headSha256 &&
-    record.throughRecordSeq !== null &&
-    summary.throughRecordSeq !== null &&
-    summary.throughRecordSeq < record.throughRecordSeq
+    record.publishedAt !== null &&
+    summary.publishedAt !== null &&
+    summary.publishedAt < record.publishedAt
   );
 }
 
@@ -1930,7 +1936,7 @@ function settleCloudDraftHead(
   }
   cloudDraftHeads.set(key, {
     headSha256: summary.headSha256,
-    throughRecordSeq: summary.throughRecordSeq,
+    publishedAt: summary.publishedAt,
     state: "settled",
     mirrorId: settlement.mirrorId,
     imageHashes: settlement.imageHashes,

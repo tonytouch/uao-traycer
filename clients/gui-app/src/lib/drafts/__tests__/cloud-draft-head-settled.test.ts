@@ -73,8 +73,16 @@ function summaryFor(
   };
 }
 
-/** The same listing row pinned at another sequence (`null` is an unpublished row). */
-function withSeq(
+/** The same listing row pinned at another publication time (`null` is an unpublished row). */
+function withPublishedAt(
+  summary: CloudChatSummary,
+  publishedAt: number | null,
+): CloudChatSummary {
+  return { ...summary, publishedAt };
+}
+
+/** The same listing row pinned at another record sequence. */
+function withThroughRecordSeq(
   summary: CloudChatSummary,
   throughRecordSeq: number | null,
 ): CloudChatSummary {
@@ -388,8 +396,14 @@ describe("a listing older than the record", () => {
   const HEAD_THREE = "12".repeat(32);
 
   it("is settled, and a read of it leaves a settled newer head in place", () => {
-    const newer = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 9);
-    const stale = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), 5);
+    const newer = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      9,
+    );
+    const stale = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
     settleCloudDraftHeadWithoutApply(newer);
 
     expect(cloudDraftHeadSettled(stale)).toBe(true);
@@ -401,8 +415,14 @@ describe("a listing older than the record", () => {
   });
 
   it("is settled, and a read of it leaves a newer head still being read in place", () => {
-    const newer = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 9);
-    const stale = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), 5);
+    const newer = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      9,
+    );
+    const stale = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
     beginCloudDraftHeadRead(newer);
 
     expect(cloudDraftHeadSettled(stale)).toBe(true);
@@ -414,8 +434,14 @@ describe("a listing older than the record", () => {
   });
 
   it("is settled after a newer head was installed through an ingest", async () => {
-    const newer = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 9);
-    const stale = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), 5);
+    const newer = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      9,
+    );
+    const stale = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
     await ingest(
       HOST_ID,
       newer,
@@ -426,9 +452,15 @@ describe("a listing older than the record", () => {
     expect(cloudDraftHeadSettled(stale)).toBe(true);
   });
 
-  it("is not settled when the listing carries a higher sequence, and its read replaces the record", () => {
-    const settled = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 9);
-    const newer = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_THREE), 12);
+  it("is not settled when the listing carries a later publication time, and its read replaces the record", () => {
+    const settled = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      9,
+    );
+    const newer = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_THREE),
+      12,
+    );
     settleCloudDraftHeadWithoutApply(settled);
 
     expect(cloudDraftHeadSettled(newer)).toBe(false);
@@ -436,14 +468,17 @@ describe("a listing older than the record", () => {
 
     expect(cloudDraftHeadReading(newer)).toBe(true);
     expect(cloudDraftHeadReading(settled)).toBe(false);
-    // The record now names the sequence-12 head, so the old one is the stale
+    // The record now names the publishedAt-12 head, so the old one is the stale
     // listing and is settled by that rule, not by holding the record.
     expect(cloudDraftHeadSettled(settled)).toBe(true);
   });
 
-  it("keeps the old behaviour when the listing has no sequence", () => {
-    const settled = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 9);
-    const unknown = withSeq(
+  it("keeps the old behaviour when the listing has no publication time", () => {
+    const settled = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      9,
+    );
+    const unknown = withPublishedAt(
       summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
       null,
     );
@@ -456,12 +491,15 @@ describe("a listing older than the record", () => {
     expect(cloudDraftHeadSettled(settled)).toBe(false);
   });
 
-  it("keeps the old behaviour when the record has no sequence", () => {
-    const settled = withSeq(
+  it("keeps the old behaviour when the record has no publication time", () => {
+    const settled = withPublishedAt(
       summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
       null,
     );
-    const other = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), 5);
+    const other = withPublishedAt(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      5,
+    );
     settleCloudDraftHeadWithoutApply(settled);
 
     expect(cloudDraftHeadSettled(other)).toBe(false);
@@ -469,6 +507,44 @@ describe("a listing older than the record", () => {
 
     expect(cloudDraftHeadReading(other)).toBe(true);
     expect(cloudDraftHeadSettled(settled)).toBe(false);
+  });
+
+  it("orders by publishedAt and not by throughRecordSeq: a later publication with a LOWER sequence is a new head", () => {
+    // A fork or a rewrite renumbers the sequence, so the later head can carry
+    // the smaller number.
+    const settled = withThroughRecordSeq(
+      withPublishedAt(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 5),
+      9,
+    );
+    const later = withThroughRecordSeq(
+      withPublishedAt(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_THREE), 8),
+      3,
+    );
+    settleCloudDraftHeadWithoutApply(settled);
+
+    expect(cloudDraftHeadSettled(later)).toBe(false);
+    beginCloudDraftHeadRead(later);
+
+    expect(cloudDraftHeadReading(later)).toBe(true);
+    expect(cloudDraftHeadReading(settled)).toBe(false);
+  });
+
+  it("orders by publishedAt and not by throughRecordSeq: an earlier publication with a HIGHER sequence is stale", () => {
+    const settled = withThroughRecordSeq(
+      withPublishedAt(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 8),
+      3,
+    );
+    const earlier = withThroughRecordSeq(
+      withPublishedAt(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), 5),
+      9,
+    );
+    settleCloudDraftHeadWithoutApply(settled);
+
+    expect(cloudDraftHeadSettled(earlier)).toBe(true);
+    beginCloudDraftHeadRead(earlier);
+
+    expect(cloudDraftHeadSettled(settled)).toBe(true);
+    expect(cloudDraftHeadReading(earlier)).toBe(false);
   });
 });
 
@@ -900,5 +976,34 @@ describe("noteCloudDraftHeadHost", () => {
     );
 
     expect(sources.count()).toBe(0);
+  });
+
+  it("does not mark the ingesting host when the account moves between the apply and its settlement, so the account's return still registers it", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    mountSession(HOST_ID);
+    await Promise.resolve();
+    // The apply's own owner check passes (it runs right before the store
+    // write); the switch happens inside the store write, so the ingest's
+    // continuation is the first thing to see another account.
+    const stopSwitching = useLandingDraftStore.subscribe(() => {
+      useAuthStore.setState({
+        contextMetadata: { userId: "user-2", username: "user-2" },
+      });
+    });
+    await ingestWithImage(HOST_ID, summary);
+    stopSwitching();
+    useAuthStore.setState({
+      contextMetadata: { userId: OWNER_USER_ID, username: OWNER_USER_ID },
+    });
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+    const sources = countSourceChanges();
+    const versionBefore = cloudDraftImageSourceVersion();
+
+    // The ingest recorded no source (the owner check returned before it), and
+    // it must not have marked HOST_ID as one either: this skip registers it.
+    noteCloudDraftHeadHost(summary, HOST_ID);
+
+    expect(sources.count()).toBe(1);
+    expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 1);
   });
 });
