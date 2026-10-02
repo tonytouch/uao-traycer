@@ -62,6 +62,13 @@ const settledMock = vi.hoisted(() => ({
   settled: vi.fn<(summary: CloudChatSummary) => boolean>(),
 }));
 settledMock.settled.mockReturnValue(false);
+// Whether the coordinator's record for a head is still `reading` this very
+// digest: what a retry checks before it reserves the ingest fence. The claim
+// stands unless a test says a newer head's read displaced it.
+const readingMock = vi.hoisted(() => ({
+  reading: vi.fn<(summary: CloudChatSummary) => boolean>(),
+}));
+readingMock.reading.mockReturnValue(true);
 // The coordinator's claim on a head: begun before a read, released when the
 // read ends without a decision (out of attempts, an ambiguous identity),
 // abandoned when the mount holding it is torn down with the read undecided,
@@ -123,6 +130,8 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", async (importOriginal) => {
       `${summary.ownerHostId}:${summary.identity.taskId}:${summary.identity.ownerUserId}:${summary.identity.chatId}:${summary.headSha256}`,
     cloudDraftHeadSettled: (summary: CloudChatSummary): boolean =>
       settledMock.settled(summary),
+    cloudDraftHeadReading: (summary: CloudChatSummary): boolean =>
+      readingMock.reading(summary),
     beginCloudDraftHeadRead: (summary: CloudChatSummary): void =>
       claimMock.begin(summary),
     releaseCloudDraftHeadRead: (summary: CloudChatSummary): void =>
@@ -248,6 +257,8 @@ afterEach(() => {
   flushMock.flush.mockReturnValue([]);
   settledMock.settled.mockReset();
   settledMock.settled.mockReturnValue(false);
+  readingMock.reading.mockReset();
+  readingMock.reading.mockReturnValue(true);
   claimMock.begin.mockReset();
   claimMock.release.mockReset();
   claimMock.abandon.mockReset();
@@ -408,6 +419,121 @@ describe("useCloudDraftsIngest", () => {
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
     expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
     expect(ingestMock.ingest).not.toHaveBeenCalled();
+  });
+
+  it("a retry whose claim a newer head displaced stops before the ingest fence: no reserve, no read, no release, and the key is given back", async () => {
+    vi.useFakeTimers();
+    readMock.read.mockRejectedValueOnce(new Error("transient read failure"));
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+
+    // The first attempt fails and arms the retry. The claim is not asked about
+    // on the first attempt: it holds the claim it just made.
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(reserveMock.reserve).toHaveBeenCalledTimes(1);
+    expect(readingMock.reading).not.toHaveBeenCalled();
+
+    // A newer head's read displaced the claim while the timer ran.
+    readingMock.reading.mockReturnValue(false);
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
+
+    expect(readingMock.reading).toHaveBeenCalledTimes(1);
+    expect(readingMock.reading).toHaveBeenCalledWith(row);
+    expect(reserveMock.reserve).toHaveBeenCalledTimes(1);
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(claimMock.release).not.toHaveBeenCalled();
+    expect(claimMock.abandon).not.toHaveBeenCalled();
+    expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+
+    // The key was given back: with nothing holding the head, the same listing
+    // delivered again is read, claimed again, instead of skipped as handled.
+    readingMock.reading.mockReturnValue(true);
+    settledMock.settled.mockReturnValue(false);
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+    view.rerender();
+
+    await vi.waitFor(() => {
+      expect(claimMock.begin).toHaveBeenCalledTimes(2);
+    });
+    expect(claimMock.begin).toHaveBeenNthCalledWith(2, row);
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(2);
+    expect(claimMock.abandon).not.toHaveBeenCalled();
+  });
+
+  it("a retry of a failed apply whose claim was displaced stops the same way", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockRejectedValueOnce(
+      new Error("transient apply failure"),
+    );
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(reserveMock.reserve).toHaveBeenCalledTimes(1);
+    expect(readingMock.reading).not.toHaveBeenCalled();
+
+    readingMock.reading.mockReturnValue(false);
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
+
+    expect(readingMock.reading).toHaveBeenCalledTimes(1);
+    expect(reserveMock.reserve).toHaveBeenCalledTimes(1);
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    expect(claimMock.release).not.toHaveBeenCalled();
+    expect(claimMock.abandon).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("a retry whose claim still stands reserves the fence and reads again", async () => {
+    vi.useFakeTimers();
+    readMock.read
+      .mockRejectedValueOnce(new Error("transient read failure"))
+      .mockResolvedValueOnce({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    const row = summary(DIGEST_ONE, null);
+    directoryMock.chats = [row];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    expect(reserveMock.reserve).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
+
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    expect(readingMock.reading).toHaveBeenCalledTimes(1);
+    expect(readingMock.reading).toHaveBeenCalledWith(row);
+    expect(reserveMock.reserve).toHaveBeenCalledTimes(2);
+    expect(readMock.read).toHaveBeenCalledTimes(2);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(claimMock.abandon).not.toHaveBeenCalled();
   });
 
   it("calls sweepAbsentCloudDraftMirrors once with every directory row's ids - foreign and own-host - and the directory's snapshot seq, when the directory is settled, and only head-ingests the foreign row", async () => {

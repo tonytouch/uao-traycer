@@ -20,6 +20,7 @@ import {
   abandonCloudDraftHeadRead,
   beginCloudDraftHeadRead,
   cloudDraftHeadKey,
+  cloudDraftHeadReading,
   cloudDraftHeadSettled,
   flushAbsentOwnCloudDrafts,
   ingestCloudDraftSummary,
@@ -236,6 +237,18 @@ export function useCloudDraftsIngest(
         unsettledKeys.delete(key);
       };
       const attemptRead = async (attempt: number): Promise<void> => {
+        // A retry runs on a timer, and the claim it is retrying may be gone
+        // by then: a newer head's read displaced it and is applying. Such a
+        // retry must not advance the ingest fence below, because that fence
+        // is also the apply's supersession check, and advancing it would
+        // abandon the newer head's apply and then install this older one
+        // over it. The claim is checked before anything is reserved; the
+        // first attempt holds the claim it just made.
+        if (attempt > 0 && !cloudDraftHeadReading(summary)) {
+          settle();
+          ingestedKeys.delete(key);
+          return;
+        }
         // Reserved BEFORE the head read: another mount's older directory
         // snapshot settling during the read must not sweep the mirror this
         // head is about to refresh (and clear its active surface with it).
