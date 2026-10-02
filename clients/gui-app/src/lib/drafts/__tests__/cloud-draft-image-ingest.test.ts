@@ -28,6 +28,7 @@ import { resolveDraftImageBytes } from "@/lib/drafts/resolve-draft-image-bytes";
 const INGESTING_HOST = "host-a";
 const OWNER_HOST = "host-b"; // never mirrored on this window
 const OTHER_MOUNTED_HOST = "host-c"; // mirrored here, and lists the same row
+const SECOND_OTHER_MOUNTED_HOST = "host-d"; // mirrored here, remembered after host-c
 const EMPTY_DOC = {
   type: "doc" as const,
   content: [{ type: "paragraph" }],
@@ -661,6 +662,163 @@ describe("ingestCloudDraftSummary - cloud image recovery", () => {
       expect(drafts).toHaveLength(1);
       expect(JSON.stringify(drafts[0]?.content)).toContain(hash);
       expect(await getImageBytes(hash)).toBeUndefined();
+    });
+
+    interface PayloadAsk {
+      readonly hostId: string;
+      readonly hash: string;
+    }
+
+    /**
+     * Mounts `hostId` so that it serves exactly the payloads in `holds` and
+     * reports every other hash as unavailable, recording each ask.
+     */
+    function mountHoldingHost(
+      hostId: string,
+      holds: ReadonlyMap<string, Uint8Array<ArrayBuffer>>,
+      asks: PayloadAsk[],
+    ): RecordedCall[] {
+      return mountHostSession(hostId, (method, params) => {
+        if (method !== "epic.readCloudChatPayload") {
+          throw new Error(`unexpected ${String(method)}`);
+        }
+        const hash = cloudPayloadImageHash(params);
+        if (hash === null) throw new Error("payload read without a hash");
+        asks.push({ hostId, hash });
+        const held = holds.get(hash);
+        if (held === undefined) {
+          return Promise.resolve({
+            outcome: { status: "unavailable" as const },
+          });
+        }
+        return Promise.resolve({
+          outcome: {
+            status: "ok" as const,
+            bytesBase64: toBase64(held),
+            byteLength: held.byteLength,
+          },
+        });
+      });
+    }
+
+    function hostsAsked(asks: readonly PayloadAsk[]): string[] {
+      return [...new Set(asks.map((ask) => ask.hostId))];
+    }
+
+    function hashesAskedOf(
+      asks: readonly PayloadAsk[],
+      hostId: string,
+    ): string[] {
+      return asks
+        .filter((ask) => ask.hostId === hostId)
+        .map((ask) => ask.hash)
+        .sort();
+    }
+
+    it("asks each remembered host only for the hashes still missing, until every image is recovered", async () => {
+      // Two images, three hosts: the ingesting host holds neither, the first
+      // remembered host holds only the first, the second holds the second. The
+      // pass must not stop at one fallback host (the second image would be lost
+      // when the conversion retires the row), and must not ask the second
+      // fallback host for the image the first already served.
+      const firstBytes = pngBytesWithTail(150);
+      const secondBytes = pngBytesWithTail(152);
+      const firstHash = await sha256HexOf(firstBytes);
+      const secondHash = await sha256HexOf(secondBytes);
+      const asks: PayloadAsk[] = [];
+
+      mountHoldingHost(INGESTING_HOST, new Map(), asks);
+      mountHoldingHost(
+        OTHER_MOUNTED_HOST,
+        new Map([[firstHash, firstBytes]]),
+        asks,
+      );
+      mountHoldingHost(
+        SECOND_OTHER_MOUNTED_HOST,
+        new Map([[secondHash, secondBytes]]),
+        asks,
+      );
+      await Promise.resolve();
+
+      const cloudSummary = summary();
+      noteCloudDraftHeadHost(cloudSummary, OTHER_MOUNTED_HOST);
+      noteCloudDraftHeadHost(cloudSummary, SECOND_OTHER_MOUNTED_HOST);
+      await ingestCloudDraftSummary({
+        hostId: INGESTING_HOST,
+        readOwner: OWNER,
+        summary: cloudSummary,
+        document: stashDocument(
+          cloudSummary,
+          [firstHash, secondHash],
+          "image/png",
+          firstBytes.byteLength,
+        ),
+      });
+
+      // Hosts are asked in the order they were remembered, the reading host
+      // first.
+      expect(hostsAsked(asks)).toEqual([
+        INGESTING_HOST,
+        OTHER_MOUNTED_HOST,
+        SECOND_OTHER_MOUNTED_HOST,
+      ]);
+      // The reading host was asked for both. (Its address stays behind the
+      // newer ones on each hash's recorded list, so a later host's walk may ask
+      // it again for a hash that host missed; the contract here is who was
+      // asked for what, not how many times the older address was retried.)
+      expect([...new Set(hashesAskedOf(asks, INGESTING_HOST))]).toEqual(
+        [firstHash, secondHash].sort(),
+      );
+      // The first fallback host was asked for both, once each.
+      expect(hashesAskedOf(asks, OTHER_MOUNTED_HOST)).toEqual(
+        [firstHash, secondHash].sort(),
+      );
+      // Only the hash still missing after the first fallback host.
+      expect(hashesAskedOf(asks, SECOND_OTHER_MOUNTED_HOST)).toEqual([
+        secondHash,
+      ]);
+      const drafts = useLandingDraftStore.getState().drafts;
+      expect(drafts).toHaveLength(1);
+      expect(JSON.stringify(drafts[0]?.content)).toContain("imageAttachment");
+      expect(await getImageBytes(firstHash)).toEqual(firstBytes);
+      expect(await getImageBytes(secondHash)).toEqual(secondBytes);
+    });
+
+    it("never asks a later remembered host once an earlier one served everything missing", async () => {
+      const bytes = pngBytesWithTail(154);
+      const hash = await sha256HexOf(bytes);
+      const asks: PayloadAsk[] = [];
+
+      mountHoldingHost(INGESTING_HOST, new Map(), asks);
+      mountHoldingHost(OTHER_MOUNTED_HOST, new Map([[hash, bytes]]), asks);
+      const laterCalls = mountHoldingHost(
+        SECOND_OTHER_MOUNTED_HOST,
+        new Map([[hash, bytes]]),
+        asks,
+      );
+      await Promise.resolve();
+
+      const cloudSummary = summary();
+      noteCloudDraftHeadHost(cloudSummary, OTHER_MOUNTED_HOST);
+      noteCloudDraftHeadHost(cloudSummary, SECOND_OTHER_MOUNTED_HOST);
+      await ingestCloudDraftSummary({
+        hostId: INGESTING_HOST,
+        readOwner: OWNER,
+        summary: cloudSummary,
+        document: stashDocument(
+          cloudSummary,
+          [hash],
+          "image/png",
+          bytes.byteLength,
+        ),
+      });
+
+      expect(asks).toEqual([
+        { hostId: INGESTING_HOST, hash },
+        { hostId: OTHER_MOUNTED_HOST, hash },
+      ]);
+      expect(payloadReadCount(laterCalls)).toBe(0);
+      expect(await getImageBytes(hash)).toEqual(bytes);
     });
   });
 

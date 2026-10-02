@@ -1725,13 +1725,21 @@ async function recoverCloudStashImages(input: {
   // settlement keeps no image hashes, so the hosts whose mounts skipped
   // this head (`noteCloudDraftHeadHost` remembers them on the row) would
   // otherwise never be a source for it - and the conversion retires the
-  // source row, so the miss would be for good. Only for the hashes still
-  // missing, and one host: the registry keeps three addresses per hash,
-  // and recording a wider set here would push out the one an earlier draft
-  // published the same bytes under.
-  const missing = hashes.filter((hash) => !recovered.has(hash));
-  const fallback = missing.length === 0 ? null : stashImageFallbackHost(input);
-  if (fallback !== null) {
+  // source row, so the miss would be for good. One host at a time, each
+  // asked only for the hashes still missing, until nothing is missing or
+  // the row's hosts are exhausted. A hash NO host of the row can serve ends
+  // with the row's addresses recorded over an earlier draft's for the same
+  // bytes (the registry keeps three per hash): accepted, since it takes
+  // three mounted hosts, a shared hash, and that earlier draft's bytes
+  // still readable where this row's are not, against a conversion that
+  // would otherwise lose a recoverable image. Each pass is the registry's
+  // own walk over every address it holds for the hash, so a later pass may
+  // ask the reading host again for a hash it already missed: bounded by the
+  // walk's attempt cap, and it loses nothing (the miss may have been a
+  // transient of that pipe).
+  let missing = hashes.filter((hash) => !recovered.has(hash));
+  for (const fallback of stashImageFallbackHosts(input)) {
+    if (missing.length === 0) break;
     try {
       const more = await recoverCloudDraftImages({
         identity: input.summary.identity,
@@ -1740,6 +1748,7 @@ async function recoverCloudStashImages(input: {
         hashes: missing,
       });
       recovered = new Map([...recovered, ...more]);
+      missing = missing.filter((hash) => !recovered.has(hash));
     } catch (error: unknown) {
       appLogger.warn(
         "[draft-mirror] cloud stash image recovery through another host failed",
@@ -1767,20 +1776,24 @@ async function recoverCloudStashImages(input: {
 }
 
 /**
- * The first host remembered on the row, other than the reading one, whose
- * session is mounted here; `null` when there is none.
+ * Every host remembered on the row, other than the reading one, whose
+ * session is mounted here, in the order they were remembered.
  */
-function stashImageFallbackHost(input: {
+function stashImageFallbackHosts(input: {
   readonly hostId: string;
   readonly summary: CloudChatSummary;
-}): { hostId: string; client: HostRequester<HostRpcRegistry> } | null {
+}): ReadonlyArray<{ hostId: string; client: HostRequester<HostRpcRegistry> }> {
   const key = cloudDraftIdentityKey(input.summary);
+  const hosts: Array<{
+    hostId: string;
+    client: HostRequester<HostRpcRegistry>;
+  }> = [];
   for (const rowHostId of cloudDraftRowHosts.get(key) ?? []) {
     if (rowHostId === input.hostId) continue;
     const client = sessionClients.get(rowHostId);
-    if (client !== undefined) return { hostId: rowHostId, client };
+    if (client !== undefined) hosts.push({ hostId: rowHostId, client });
   }
-  return null;
+  return hosts;
 }
 
 function recoverIngestedCloudDraftImages(input: {
