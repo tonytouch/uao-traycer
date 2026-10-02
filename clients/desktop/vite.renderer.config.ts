@@ -121,6 +121,13 @@ export default defineConfig((): UserConfig => {
       // manual restart. Default dev keeps live reload (`hmr: true`).
       hmr: noWatch ? false : true,
       watch: noWatch ? null : undefined,
+      proxy: {
+        "/uao-api": {
+          target: "http://127.0.0.1:5050",
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/uao-api/, ""),
+        },
+      },
     },
   };
 });
