@@ -1105,12 +1105,19 @@ describe("useCloudDraftsIngest", () => {
     expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 
-  it("releases the coordinator's claim once, at the end, when every attempt of a head read throws", async () => {
+  it("abandons the coordinator's claim once, at the end, when every attempt of a head read throws, and starts no read of its own when the abandon wakes it", async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
     readMock.read.mockRejectedValue(new Error("persistent read failure"));
     const row = summary(DIGEST_ONE, null);
     directoryMock.chats = [row];
+    // The real coordinator tells every subscriber, this mount's included, and
+    // answers "not held" once the claim is gone (the default of the settled
+    // mock): without the hook's own exhausted-key check this wake would start
+    // a fourth read.
+    claimMock.abandon.mockImplementation((abandoned) => {
+      deliverAbandon({ ...abandoned });
+    });
 
     const view = renderHook(() =>
       useCloudDraftsIngest(CLIENT as never, HOST_ID),
@@ -1120,7 +1127,7 @@ describe("useCloudDraftsIngest", () => {
     await vi.waitFor(() => {
       expect(vi.getTimerCount()).toBe(1);
     });
-    expect(claimMock.release).not.toHaveBeenCalled();
+    expect(claimMock.abandon).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
 
     // Attempt 1 fails and arms the second retry (doubled); still claimed.
@@ -1128,54 +1135,159 @@ describe("useCloudDraftsIngest", () => {
       expect(vi.getTimerCount()).toBe(1);
     });
     expect(readMock.read).toHaveBeenCalledTimes(2);
-    expect(claimMock.release).not.toHaveBeenCalled();
+    expect(claimMock.abandon).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 2);
 
-    // Attempt 2 is the last: it gives up and releases.
+    // Attempt 2 is the last: it gives up and abandons.
     await vi.waitFor(() => {
-      expect(claimMock.release).toHaveBeenCalledTimes(1);
+      expect(claimMock.abandon).toHaveBeenCalledTimes(1);
     });
     expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
-    expect(claimMock.release).toHaveBeenCalledWith(row);
-    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(claimMock.abandon).toHaveBeenCalledWith(row);
+    expect(claimMock.release).not.toHaveBeenCalled();
     expect(claimMock.settleWithoutApply).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
 
+    // The wake the abandon delivered to this very mount started nothing: no
+    // new claim, no fourth read, no timer, however long it waits.
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
-    expect(claimMock.release).toHaveBeenCalledTimes(1);
-    // Giving up is not a teardown: nothing wakes another mount, and the
-    // exhausted head is no longer this mount's to abandon when it goes.
-    expect(claimMock.abandon).not.toHaveBeenCalled();
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(claimMock.abandon).toHaveBeenCalledTimes(1);
+    expect(claimMock.release).not.toHaveBeenCalled();
+
+    // The exhausted head is no longer this mount's to abandon when it goes.
     view.unmount();
-    expect(claimMock.abandon).not.toHaveBeenCalled();
+    expect(claimMock.abandon).toHaveBeenCalledTimes(1);
     warnSpy.mockRestore();
   });
 
-  it("releases the coordinator's claim once, at the end, when every attempt of an apply throws", async () => {
+  it("abandons the coordinator's claim once, at the end, when every attempt of an apply throws, and starts no read of its own when the abandon wakes it", async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockRejectedValue(new Error("persistent apply failure"));
     const row = summary(DIGEST_ONE, null);
     directoryMock.chats = [row];
+    claimMock.abandon.mockImplementation((abandoned) => {
+      deliverAbandon({ ...abandoned });
+    });
 
-    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
 
     await vi.waitFor(() => {
       expect(vi.getTimerCount()).toBe(1);
     });
-    expect(claimMock.release).not.toHaveBeenCalled();
+    expect(claimMock.abandon).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
     await vi.waitFor(() => {
       expect(vi.getTimerCount()).toBe(1);
     });
-    expect(claimMock.release).not.toHaveBeenCalled();
+    expect(claimMock.abandon).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 2);
 
     await vi.waitFor(() => {
-      expect(claimMock.release).toHaveBeenCalledTimes(1);
+      expect(claimMock.abandon).toHaveBeenCalledTimes(1);
     });
     expect(ingestMock.ingest).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
-    expect(claimMock.release).toHaveBeenCalledWith(row);
+    expect(claimMock.abandon).toHaveBeenCalledWith(row);
+    expect(claimMock.release).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    // No fourth read or apply from the wake the abandon delivered here.
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+    expect(ingestMock.ingest).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+    expect(vi.getTimerCount()).toBe(0);
+
+    view.unmount();
+    expect(claimMock.abandon).toHaveBeenCalledTimes(1);
+    expect(claimMock.release).not.toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  it("ignores the abandon wake only for the head it exhausted this run: another head's abandon still starts a read", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
+    readMock.read.mockRejectedValue(new Error("persistent read failure"));
+    const exhausted = summary(DIGEST_ONE, null);
+    const skipped = summary(DIGEST_TWO, {
+      identity: {
+        taskId: "scp_1",
+        chatId: "draft-2",
+        ownerUserId: "user-1",
+      },
+    });
+    // The second row is held by another mount at setup, and free afterwards.
+    settledMock.settled.mockImplementation(
+      (candidate) => candidate === skipped,
+    );
+    directoryMock.chats = [exhausted, skipped];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 2);
+    await vi.waitFor(() => {
+      expect(claimMock.abandon).toHaveBeenCalledTimes(1);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+
+    // The exhausted head's wake is ignored; the skipped head's is not.
+    settledMock.settled.mockReturnValue(false);
+    deliverAbandon({ ...exhausted });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+
+    deliverAbandon({ ...skipped });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimMock.begin).toHaveBeenCalledTimes(2);
+    expect(claimMock.begin.mock.calls[1][0]).toBe(skipped);
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS + 1);
+    warnSpy.mockRestore();
+  });
+
+  it("asks the coordinator about a head this mount already ingested when it is listed again, and starts no read", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    const first = summary(DIGEST_ONE, null);
+    directoryMock.chats = [first];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    expect(settledMock.settled).toHaveBeenCalledWith(first);
+    settledMock.settled.mockClear();
+    noteHostMock.note.mockClear();
+
+    // The same identity and digest listed again at a later publication time:
+    // the coordinator is the one that moves the record's stamp on it, so the
+    // guard must reach it even though this mount's own set has the key.
+    const republished = summary(DIGEST_ONE, { publishedAt: 9 });
+    directoryMock.chats = [republished];
+    view.rerender();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settledMock.settled).toHaveBeenCalledTimes(1);
+    expect(settledMock.settled).toHaveBeenCalledWith(republished);
+    expect(settledMock.settled.mock.calls[0][0]).toBe(republished);
+    // The per-mount set still skips it when the coordinator does not hold it.
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    expect(noteHostMock.note).toHaveBeenCalledWith(republished, HOST_ID);
   });
 });

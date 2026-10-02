@@ -392,6 +392,84 @@ describe("cloudDraftHeadSettled", () => {
   });
 });
 
+describe("cloudDraftHeadSettled against the mirror's owner", () => {
+  const OTHER_OWNER_HOST_ID = "host-z";
+
+  /** Re-owns the mirror the store holds for `DRAFT_ID`, as another owner's row under the same id would. */
+  function setMirrorOwner(ownerHostId: string | null): void {
+    useLandingDraftStore.setState((state) => ({
+      drafts: state.drafts.map((draft) =>
+        draft.id === DRAFT_ID ? { ...draft, ownerHostId } : draft,
+      ),
+    }));
+  }
+
+  it("is not settled when the mirror in the store names another owner than the row, and the record is forgotten", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    await ingest(
+      HOST_ID,
+      summary,
+      cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+    );
+    expect(landingIds()).toEqual([DRAFT_ID]);
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+
+    setMirrorOwner(OTHER_OWNER_HOST_ID);
+
+    // The mirror is still there, but it is not this row's.
+    expect(landingIds()).toEqual([DRAFT_ID]);
+    expect(cloudDraftHeadSettled(summary)).toBe(false);
+    expect(cloudDraftHeadReading(summary)).toBe(false);
+
+    // The record was deleted, not merely masked: once the mirror names the
+    // original owner again, the head is still not settled, and nothing is
+    // being read for it.
+    setMirrorOwner(OWNER_HOST_ID);
+    expect(cloudDraftHeadSettled(summary)).toBe(false);
+    expect(cloudDraftHeadReading(summary)).toBe(false);
+  });
+
+  it("settles by the listing's owner: the other owner's row under the same id is its own record", async () => {
+    const original = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    const other = summaryFor(DRAFT_ID, OTHER_OWNER_HOST_ID, HEAD_ONE);
+    await ingest(
+      HOST_ID,
+      original,
+      cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+    );
+    expect(cloudDraftHeadSettled(original)).toBe(true);
+    expect(cloudDraftHeadSettled(other)).toBe(false);
+
+    // The mirror now shows the other owner's draft: the other owner's listing
+    // matches it, and the original owner's no longer does.
+    setMirrorOwner(OTHER_OWNER_HOST_ID);
+    await ingest(
+      HOST_ID,
+      other,
+      cloudDocument(DRAFT_ID, OTHER_OWNER_HOST_ID, "landing"),
+    );
+
+    expect(cloudDraftHeadSettled(other)).toBe(true);
+    expect(cloudDraftHeadSettled(original)).toBe(false);
+  });
+
+  it("still counts a mirror with no owner as present, and keeps the record", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    await ingest(
+      HOST_ID,
+      summary,
+      cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+    );
+
+    setMirrorOwner(null);
+
+    expect(landingIds()).toEqual([DRAFT_ID]);
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+    // Not forgotten: a second ask answers the same.
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+  });
+});
+
 describe("a listing older than the record", () => {
   const HEAD_THREE = "12".repeat(32);
 
@@ -1076,5 +1154,142 @@ describe("noteCloudDraftHeadHost", () => {
 
     expect(sources.count()).toBe(1);
     expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 1);
+  });
+  describe("a host skipped while the head is still being read", () => {
+    /** Mounts both sessions, so each host has a requester to register. */
+    async function mountBothSessions(): Promise<void> {
+      mountSession(HOST_ID);
+      mountSession(SECOND_HOST_ID);
+      await Promise.resolve();
+    }
+
+    it("control: ingesting an image head through a mounted host records one source change and nothing for another host", async () => {
+      const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      beginCloudDraftHeadRead(summary);
+
+      await ingestWithImage(HOST_ID, summary);
+
+      expect(cloudDraftHeadSettled(summary)).toBe(true);
+      expect(sources.count()).toBe(1);
+    });
+
+    it("registers nothing while the read is in flight, then registers the skipped host's requester once when the read settles with images", async () => {
+      const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      const versionBefore = cloudDraftImageSourceVersion();
+      beginCloudDraftHeadRead(summary);
+
+      // Whether the head names images is unknown until the read settles. Noted
+      // twice (two mounts on the same host): still one entry on the record.
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+      expect(cloudDraftHeadReading(summary)).toBe(true);
+      expect(sources.count()).toBe(0);
+      expect(cloudDraftImageSourceVersion()).toBe(versionBefore);
+
+      // The reading host ingests it: its own source (the control above) plus
+      // the skipped host's, which is registered at the settle.
+      await ingestWithImage(HOST_ID, summary);
+
+      expect(cloudDraftHeadSettled(summary)).toBe(true);
+      expect(cloudDraftHeadReading(summary)).toBe(false);
+      expect(sources.count()).toBe(2);
+      expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 2);
+
+      // The host is marked on the settled record: noting it again adds nothing.
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+      expect(sources.count()).toBe(2);
+      expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 2);
+    });
+
+    it("leaves a skipped host with no mounted session unmarked at the settle, and a later note registers it once its session mounts", async () => {
+      const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+      mountSession(HOST_ID);
+      await Promise.resolve();
+      const sources = countSourceChanges();
+      beginCloudDraftHeadRead(summary);
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+      await ingestWithImage(HOST_ID, summary);
+
+      // Only the reading host's own source: the skipped host had no session.
+      expect(sources.count()).toBe(1);
+
+      // Still no session: nothing to register, and nothing marked.
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+      expect(sources.count()).toBe(1);
+
+      mountSession(SECOND_HOST_ID);
+      await Promise.resolve();
+      const afterMount = sources.count();
+
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+      expect(sources.count()).toBe(afterMount + 1);
+
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+      expect(sources.count()).toBe(afterMount + 1);
+    });
+
+    it("registers nothing for a skipped host when the head settles without images", async () => {
+      const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      const versionBefore = cloudDraftImageSourceVersion();
+      beginCloudDraftHeadRead(summary);
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+      await ingestCloudDraftSummary({
+        hostId: HOST_ID,
+        summary,
+        document: cloudDocument(DRAFT_ID, OWNER_HOST_ID, "landing"),
+        readOwner: OWNER_USER_ID,
+      });
+
+      expect(cloudDraftHeadSettled(summary)).toBe(true);
+      expect(sources.count()).toBe(0);
+      expect(cloudDraftImageSourceVersion()).toBe(versionBefore);
+
+      // Nothing was held back on the settled record either.
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+      expect(sources.count()).toBe(0);
+    });
+
+    it("registers nothing for a skipped host when the head settles without an apply", async () => {
+      const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      beginCloudDraftHeadRead(summary);
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+      settleCloudDraftHeadWithoutApply(summary);
+
+      expect(cloudDraftHeadSettled(summary)).toBe(true);
+      expect(sources.count()).toBe(0);
+    });
+
+    it("forgets a skipped host along with a released read: a later read of the head does not register it", async () => {
+      const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      beginCloudDraftHeadRead(summary);
+      noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+      // Released silently: an abandon would also wake whatever subscribers
+      // other tests in this file left behind.
+      releaseCloudDraftHeadRead(summary);
+      expect(cloudDraftHeadReading(summary)).toBe(false);
+
+      // The next read is a new record: its settle owes the old skip nothing.
+      beginCloudDraftHeadRead(summary);
+      await ingestWithImage(HOST_ID, summary);
+
+      expect(cloudDraftHeadSettled(summary)).toBe(true);
+      expect(sources.count()).toBe(1);
+    });
   });
 });

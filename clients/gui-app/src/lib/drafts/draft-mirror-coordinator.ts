@@ -245,6 +245,13 @@ type CloudDraftHeadRecord = {
    */
   readonly imageHashes: readonly string[];
   readonly sourceHosts: ReadonlySet<string>;
+  /**
+   * The hosts whose mounts skipped this head while it was still being read.
+   * Whether the head names images is not known until the read settles, so
+   * they are kept here and registered as sources at that settle; a `settled`
+   * record carries none.
+   */
+  readonly skippedHosts: ReadonlySet<string>;
 };
 /** What a decided head is remembered with. */
 type CloudDraftHeadSettlement = {
@@ -1341,6 +1348,7 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   cloudIngestSeq = 0;
   cloudIngestSeqByDraft.clear();
   cloudDraftHeads.clear();
+  cloudDraftHeadAbandonListeners.clear();
   inheritableLandingTabs.clear();
   retiredStashIdsThisSession.clear();
   warnedUnboundComposer.clear();
@@ -1744,9 +1752,17 @@ export function cloudDraftHeadSettled(summary: CloudChatSummary): boolean {
     return true;
   }
   const mirrorId = record.mirrorId;
-  const present = useLandingDraftStore
+  const mirror = useLandingDraftStore
     .getState()
-    .drafts.some((draft) => draft.id === mirrorId);
+    .drafts.find((draft) => draft.id === mirrorId);
+  // Present AND this row's. Cloud ids are host-minted, so another owner's
+  // row under the same id installs over this mirror's id; the record is
+  // keyed per row and would otherwise keep answering "settled" for a mirror
+  // that now shows the other owner's draft. An unowned mirror matches, as
+  // the absence sweep's owner check has it.
+  const present =
+    mirror !== undefined &&
+    (mirror.ownerHostId === null || mirror.ownerHostId === summary.ownerHostId);
   if (!present) {
     cloudDraftHeads.delete(key);
     return false;
@@ -1823,6 +1839,7 @@ export function beginCloudDraftHeadRead(summary: CloudChatSummary): void {
     mirrorId: null,
     imageHashes: [],
     sourceHosts: new Set<string>(),
+    skippedHosts: new Set<string>(),
   });
 }
 
@@ -1846,13 +1863,17 @@ function listingIsOlderThanRecord(
 
 /**
  * The mount that was reading this head is gone (its tile closed, its host or
- * scope changed) with the read undecided. The claim is released as
- * {@link releaseCloudDraftHeadRead} does, and every mount still listening is
- * told, so one of them picks the head up now rather than at its next
- * directory delivery. Only teardown wakes: a read that gave up after its
- * attempts, or an apply refused for the moment, would have met the same
- * answer on the other mount, and waking it would trade the head between
- * mounts at the retry ladder's pace.
+ * scope changed) with the read undecided, or its read ran out of attempts.
+ * The claim is released as {@link releaseCloudDraftHeadRead} does, and every
+ * mount still listening is told, so one of them picks the head up now rather
+ * than at its next directory delivery. A read that gave up wakes the others
+ * because its failure is its host's: two mounts bound to different hosts read
+ * through different byte pipes, and the directory has no polling interval to
+ * bring the healthy one back on its own. The mount that gave up ignores its
+ * own wake for that head (the hook keeps the keys it exhausted this run), so
+ * the head is not traded between mounts at the ladder's pace. An apply
+ * refused for the moment still releases silently: the other mount would meet
+ * the same answer.
  */
 export function abandonCloudDraftHeadRead(summary: CloudChatSummary): void {
   const key = cloudDraftIdentityKey(summary);
@@ -1881,18 +1902,47 @@ export function subscribeCloudDraftHeadAbandoned(
 }
 
 /**
- * A mount on `hostId` skipped this settled head: register that host's
- * requester as a source for the head's images, once per host, if its mirror
- * session is mounted. Before the coordinator held the record, that mount's
- * own ingest did this; a window whose only mounted session is on another
- * host than the one that ingested the head would otherwise have no live
- * source for those images once the ingesting host's session is released.
+ * A mount on `hostId` skipped this head: register that host's requester as a
+ * source for the head's images, once per host, if its mirror session is
+ * mounted. Before the coordinator held the record, that mount's own ingest
+ * did this; a window whose only mounted session is on another host than the
+ * one that ingested the head would otherwise have no live source for those
+ * images once the ingesting host's session is released. A head still being
+ * read keeps the host on its record and registers it when the read settles:
+ * nothing calls this again for that mount until its next directory
+ * delivery, and the ingesting mount can be gone by then.
  */
 export function noteCloudDraftHeadHost(
   summary: CloudChatSummary,
   hostId: string,
 ): void {
   const key = cloudDraftIdentityKey(summary);
+  const record = cloudDraftHeads.get(key);
+  if (record === undefined || record.headSha256 !== summary.headSha256) {
+    return;
+  }
+  if (record.state === "reading") {
+    if (record.skippedHosts.has(hostId)) return;
+    cloudDraftHeads.set(key, {
+      ...record,
+      skippedHosts: new Set([...record.skippedHosts, hostId]),
+    });
+    return;
+  }
+  registerCloudDraftHeadHost(key, summary, hostId);
+}
+
+/**
+ * Record `hostId`'s requester as a source for the settled head's images, if
+ * the head names any, the host's session is mounted and the account is still
+ * served. A host not marked here is marked by a later
+ * {@link noteCloudDraftHeadHost} once it can be.
+ */
+function registerCloudDraftHeadHost(
+  key: string,
+  summary: CloudChatSummary,
+  hostId: string,
+): void {
   const record = cloudDraftHeads.get(key);
   if (
     record === undefined ||
@@ -1989,7 +2039,15 @@ function settleCloudDraftHead(
       settlement.sourceHost === null
         ? new Set<string>()
         : new Set([settlement.sourceHost]),
+    skippedHosts: new Set<string>(),
   });
+  // The mounts that skipped this head while it was being read register
+  // their hosts now that the head's images are known.
+  if (current !== undefined && current.state === "reading") {
+    for (const hostId of current.skippedHosts) {
+      registerCloudDraftHeadHost(key, summary, hostId);
+    }
+  }
 }
 
 /** Forget every head whose mirror is one of `draftIds`. */

@@ -43,7 +43,10 @@ import { useCloudDraftsDirectory } from "./use-cloud-drafts-directory";
  * set alone made each mount a full fan-out through the host, N-fold when N
  * tabs restored at once. Ownership never moves, so a row whose owner differs
  * from the listing is a different row under the same id, which a new key
- * already covers.
+ * already covers. The coordinator is asked BEFORE the per-mount set: its
+ * answer also advances the record's publication stamp when the same digest
+ * is listed again later, and the mount that ingested that digest is the one
+ * whose set would otherwise short-circuit past it.
  */
 function guardMaySkip(
   ingestedKeys: ReadonlyMap<string, string>,
@@ -51,8 +54,8 @@ function guardMaySkip(
 ): boolean {
   return (
     summary.headSha256 === null ||
-    ingestedKeys.has(cloudDraftHeadKey(summary)) ||
-    cloudDraftHeadSettled(summary)
+    cloudDraftHeadSettled(summary) ||
+    ingestedKeys.has(cloudDraftHeadKey(summary))
   );
 }
 
@@ -117,6 +120,11 @@ export function useCloudDraftsIngest(
     // return without touching the set once aborted.
     const pendingTimers = new Set<TimerHandle>();
     const unsettledKeys = new Map<string, CloudChatSummary>();
+    // Heads whose read this run gave up on. Giving up abandons the claim so
+    // a mount on another host reads the head through its own pipe; this set
+    // keeps the wake from restarting the read that just failed, here, until
+    // the next directory delivery re-runs this effect.
+    const exhaustedKeys = new Set<string>();
     const tornDown = (): boolean => scope.signal.aborted;
     const foreign = directory.chats.filter(
       (chat) => chat.ownerHostId !== hostId,
@@ -222,10 +230,14 @@ export function useCloudDraftsIngest(
           if (nextAttempt >= MAX_HEAD_READ_ATTEMPTS) {
             // Out of attempts. Release the guard so a later run of this effect
             // - or the fresh `ingested` set a remount brings - can ask again,
-            // rather than leaving the row hidden for good.
+            // rather than leaving the row hidden for good. Abandoned in the
+            // coordinator, not merely released: a mount bound to another host
+            // reads it through its own pipe now. This mount's own wake is
+            // ignored (`exhaustedKeys`).
             settle();
             ingestedKeys.delete(key);
-            releaseCloudDraftHeadRead(summary);
+            exhaustedKeys.add(key);
+            abandonCloudDraftHeadRead(summary);
             appLogger.warn("[cloud-drafts] head read failed", {
               attempts: nextAttempt,
               error: describeLogError(error),
@@ -286,7 +298,8 @@ export function useCloudDraftsIngest(
           if (nextAttempt >= MAX_HEAD_READ_ATTEMPTS) {
             settle();
             ingestedKeys.delete(key);
-            releaseCloudDraftHeadRead(summary);
+            exhaustedKeys.add(key);
+            abandonCloudDraftHeadRead(summary);
             appLogger.warn("[cloud-drafts] head apply failed", {
               attempts: nextAttempt,
               error: describeLogError(error),
@@ -316,15 +329,17 @@ export function useCloudDraftsIngest(
       startRead(summary);
     }
     // A head this run skipped because another mount was reading it is picked
-    // up here if that mount is torn down before its read decides: the
-    // abandon releases the claim and names the head, and this mount reads it
-    // now instead of at its next directory delivery. Only a head this run's
-    // directory lists, and only when nothing has it (the guard is asked
-    // again: a third mount may have claimed it first).
+    // up here if that mount is torn down before its read decides, or gives
+    // the read up: the abandon releases the claim and names the head, and
+    // this mount reads it now instead of at its next directory delivery.
+    // Only a head this run's directory lists, never one this run gave up on
+    // itself, and only when nothing has it (the guard is asked again: a
+    // third mount may have claimed it first).
     const unsubscribeAbandoned = subscribeCloudDraftHeadAbandoned(
       (abandoned) => {
         if (tornDown()) return;
         const abandonedKey = cloudDraftHeadKey(abandoned);
+        if (exhaustedKeys.has(abandonedKey)) return;
         const listed = foreign.find(
           (summary) => cloudDraftHeadKey(summary) === abandonedKey,
         );

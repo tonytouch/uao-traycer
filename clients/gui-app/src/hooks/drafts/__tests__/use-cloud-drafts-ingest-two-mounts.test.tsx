@@ -23,6 +23,9 @@ const directoryMock = vi.hoisted(() => ({
 const readMock = vi.hoisted(() => ({
   pending: [] as Array<{
     chatId: string;
+    // The host client the read went out on: each mount's port wraps its own,
+    // so a test can say WHICH mount issued a read.
+    client: object;
     resolve: (outcome: CloudDraftReadOutcome) => void;
     reject: (error: Error) => void;
   }>,
@@ -38,15 +41,19 @@ vi.mock("@/hooks/drafts/use-cloud-drafts-directory", () => ({
   }),
 }));
 vi.mock("@/lib/chats/cloud-chat-read-port", () => ({
-  createHostCloudChatReadPort: () => ({}),
+  createHostCloudChatReadPort: (client: object): { client: object } => ({
+    client,
+  }),
 }));
 vi.mock("@/lib/drafts/cloud-draft-reader", () => ({
   readCloudDraft: (options: {
     identity: { chatId: string };
+    port: { client: object };
   }): Promise<CloudDraftReadOutcome> =>
     new Promise((resolve, reject) => {
       readMock.pending.push({
         chatId: options.identity.chatId,
+        client: options.port.client,
         resolve,
         reject,
       });
@@ -57,6 +64,7 @@ const { useCloudDraftsIngest } =
   await import("@/hooks/drafts/use-cloud-drafts-ingest");
 
 const HOST_ID = "host-a";
+const SECOND_HOST_ID = "host-c";
 const OWNER_HOST_ID = "host-b";
 const HEAD_SHA = "a".repeat(64);
 // Mirrors the retry constants in use-cloud-drafts-ingest.ts, which are not
@@ -84,6 +92,8 @@ const HEAD: DraftHeadReaderRecord = {
 // The hook only needs a non-null client: the read port and the reader are
 // mocked above.
 const CLIENT = { request: () => Promise.reject(new Error("unused")) };
+// A second mount bound to another host reads through its own client.
+const SECOND_CLIENT = { request: () => Promise.reject(new Error("unused")) };
 
 function row(chatId: string): CloudChatSummary {
   return {
@@ -108,6 +118,13 @@ function mount(): { unmount: () => void } {
   return renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
 }
 
+/** A mount bound to another host than `mount()`'s, with its own client. */
+function mountOnSecondHost(): { unmount: () => void } {
+  return renderHook(() =>
+    useCloudDraftsIngest(SECOND_CLIENT as never, SECOND_HOST_ID),
+  );
+}
+
 function landingIds(): readonly string[] {
   return useLandingDraftStore
     .getState()
@@ -124,6 +141,16 @@ function readsFor(
   chatId: string,
 ): readonly (typeof readMock.pending)[number][] {
   return readMock.pending.filter((read) => read.chatId === chatId);
+}
+
+/** The reads one mount's client issued for one draft so far. */
+function readsOn(
+  client: object,
+  chatId: string,
+): readonly (typeof readMock.pending)[number][] {
+  return readMock.pending.filter(
+    (read) => read.client === client && read.chatId === chatId,
+  );
 }
 
 async function nextTick(): Promise<void> {
@@ -330,7 +357,7 @@ describe("useCloudDraftsIngest across mounts, on the real coordinator", () => {
     expect(cloudDraftHeadSettled(decidedRow)).toBe(true);
   });
 
-  it("does not wake a surviving mount when the reading mount gives up after every attempt: no read from it, and the head is free for a later mount", async () => {
+  it("hands a head to the surviving mount, bound to another host, when the reading mount gives up after every attempt: one read from the survivor through its own client, none more from the exhausted mount", async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
     const failingRow = row("draft-8");
@@ -338,36 +365,74 @@ describe("useCloudDraftsIngest across mounts, on the real coordinator", () => {
 
     mount();
     await vi.advanceTimersByTimeAsync(0);
-    expect(readsFor("draft-8")).toHaveLength(1);
-    mount();
+    expect(readsOn(CLIENT, "draft-8")).toHaveLength(1);
+    mountOnSecondHost();
     await vi.advanceTimersByTimeAsync(0);
     // The second mount skipped the head, and is still mounted throughout.
     expect(readsFor("draft-8")).toHaveLength(1);
+    expect(readsOn(SECOND_CLIENT, "draft-8")).toHaveLength(0);
 
     // Attempt 0 fails; the retry is the reading mount's, at 2 s.
     readsFor("draft-8")[0].reject(new Error("read failed"));
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
-    expect(readsFor("draft-8")).toHaveLength(2);
+    expect(readsOn(CLIENT, "draft-8")).toHaveLength(2);
+    expect(readsOn(SECOND_CLIENT, "draft-8")).toHaveLength(0);
     expect(cloudDraftHeadReading(failingRow)).toBe(true);
 
     // Attempt 1 fails; the retry is at 4 s.
     readsFor("draft-8")[1].reject(new Error("read failed"));
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 2);
-    expect(readsFor("draft-8")).toHaveLength(3);
+    expect(readsOn(CLIENT, "draft-8")).toHaveLength(3);
+    expect(readsOn(SECOND_CLIENT, "draft-8")).toHaveLength(0);
 
-    // Attempt 2 is the last: the mount gives up and releases the claim. That
-    // is not a teardown, so the second mount is not woken.
-    readsFor("draft-8")[2].reject(new Error("read failed"));
+    // Attempt 2 is the last: the mount gives up and abandons the claim, which
+    // wakes the second mount. It reads the head now, through its own pipe; the
+    // exhausted mount ignores its own wake and starts no fourth read.
+    readsOn(CLIENT, "draft-8")[2].reject(new Error("read failed"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(readsOn(SECOND_CLIENT, "draft-8")).toHaveLength(1);
+    expect(readsOn(CLIENT, "draft-8")).toHaveLength(3);
+    expect(cloudDraftHeadReading(failingRow)).toBe(true);
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
+    expect(readsOn(SECOND_CLIENT, "draft-8")).toHaveLength(1);
+    expect(readsOn(CLIENT, "draft-8")).toHaveLength(3);
+
+    // The survivor's read decides the head.
+    readsOn(SECOND_CLIENT, "draft-8")[0].resolve({ kind: "ok", record: HEAD });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(landingIds()).toEqual(["draft-8"]);
+    expect(cloudDraftHeadReading(failingRow)).toBe(false);
+    expect(cloudDraftHeadSettled(failingRow)).toBe(true);
+    expect(readsFor("draft-8")).toHaveLength(4);
+  });
+
+  it("gives the head back to nobody when the only mount gives up after every attempt: released, not settled, and a later mount asks again", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
+    const failingRow = row("draft-9");
+    directoryMock.chats = [failingRow];
+
+    mount();
+    await vi.advanceTimersByTimeAsync(0);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      readsFor("draft-9")[attempt].reject(new Error("read failed"));
+      await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 2 ** attempt);
+    }
+    expect(readsFor("draft-9")).toHaveLength(3);
+
+    readsFor("draft-9")[2].reject(new Error("read failed"));
     await vi.advanceTimersByTimeAsync(0);
     expect(cloudDraftHeadReading(failingRow)).toBe(false);
     expect(cloudDraftHeadSettled(failingRow)).toBe(false);
     expect(warnSpy).toHaveBeenCalledTimes(1);
+    // Nobody else was listening, and the exhausted mount ignored its own wake.
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
-    expect(readsFor("draft-8")).toHaveLength(3);
+    expect(readsFor("draft-9")).toHaveLength(3);
 
     // Released, not settled: a later mount asks again.
     mount();
     await vi.advanceTimersByTimeAsync(0);
-    expect(readsFor("draft-8")).toHaveLength(4);
+    expect(readsFor("draft-9")).toHaveLength(4);
   });
 });
