@@ -222,6 +222,15 @@ const cloudIngestSeqByDraft = new Map<string, number>();
  */
 type CloudDraftHeadRecord = {
   readonly headSha256: string | null;
+  /**
+   * The listing's `throughRecordSeq` for that head: the row's staleness
+   * projection, used here for the one thing it is for. Two host-scoped
+   * directory caches can list successive heads of one row at once, and a
+   * mount walking the older cache must neither read the older head nor
+   * replace the record of the newer one. Never an authority decision: the
+   * apply still refuses by revision.
+   */
+  readonly throughRecordSeq: number | null;
   /** `reading`: a mount has the head read in flight; `settled`: decided. */
   readonly state: "reading" | "settled";
   readonly mirrorId: string | null;
@@ -1718,8 +1727,11 @@ export function cloudDraftHeadKey(summary: CloudChatSummary): string {
 export function cloudDraftHeadSettled(summary: CloudChatSummary): boolean {
   const key = cloudDraftIdentityKey(summary);
   const record = cloudDraftHeads.get(key);
-  if (record === undefined || record.headSha256 !== summary.headSha256) {
-    return false;
+  if (record === undefined) return false;
+  if (record.headSha256 !== summary.headSha256) {
+    // A listing older than the record is a stale cache, not a new head:
+    // nothing to read, and the record stands.
+    return listingIsOlderThanRecord(record, summary);
   }
   if (record.state === "reading" || record.mirrorId === null) return true;
   const mirrorId = record.mirrorId;
@@ -1750,13 +1762,40 @@ export function cloudDraftHeadReading(summary: CloudChatSummary): boolean {
  * record per row, so a read of a newer head displaces whatever the row held.
  */
 export function beginCloudDraftHeadRead(summary: CloudChatSummary): void {
-  cloudDraftHeads.set(cloudDraftIdentityKey(summary), {
+  const key = cloudDraftIdentityKey(summary);
+  const current = cloudDraftHeads.get(key);
+  // A read started from a stale listing must not displace the newer head's
+  // record (the hook asks `cloudDraftHeadSettled` first and will not start
+  // one; this holds for any caller).
+  if (current !== undefined && listingIsOlderThanRecord(current, summary)) {
+    return;
+  }
+  cloudDraftHeads.set(key, {
     headSha256: summary.headSha256,
+    throughRecordSeq: summary.throughRecordSeq,
     state: "reading",
     mirrorId: null,
     imageHashes: [],
     sourceHosts: new Set<string>(),
   });
+}
+
+/**
+ * Whether `summary` lists an OLDER head of the row than `record` holds: a
+ * different digest pinned at a lower sequence. Unknown on either side (an
+ * unpublished row, or a record from before the field) compares as not older,
+ * which is the pre-existing behaviour: a different digest is read.
+ */
+function listingIsOlderThanRecord(
+  record: CloudDraftHeadRecord,
+  summary: CloudChatSummary,
+): boolean {
+  return (
+    record.headSha256 !== summary.headSha256 &&
+    record.throughRecordSeq !== null &&
+    summary.throughRecordSeq !== null &&
+    summary.throughRecordSeq < record.throughRecordSeq
+  );
 }
 
 /**
@@ -1820,6 +1859,11 @@ export function noteCloudDraftHeadHost(
   }
   const client = sessionClients.get(hostId);
   if (client === undefined) return;
+  // The registry refuses a source for an account this window no longer
+  // serves (a cached directory rendered across a switch); marking the host
+  // then would hide the images from the account on its return. Marked only
+  // when the registry will take it.
+  if (summary.identity.ownerUserId !== currentDraftBlobOwnerId()) return;
   recordCloudDraftImageSources({
     identity: summary.identity,
     hostId,
@@ -1886,6 +1930,7 @@ function settleCloudDraftHead(
   }
   cloudDraftHeads.set(key, {
     headSha256: summary.headSha256,
+    throughRecordSeq: summary.throughRecordSeq,
     state: "settled",
     mirrorId: settlement.mirrorId,
     imageHashes: settlement.imageHashes,

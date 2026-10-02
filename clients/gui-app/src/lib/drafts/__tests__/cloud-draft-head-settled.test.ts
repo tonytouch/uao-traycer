@@ -73,6 +73,14 @@ function summaryFor(
   };
 }
 
+/** The same listing row pinned at another sequence (`null` is an unpublished row). */
+function withSeq(
+  summary: CloudChatSummary,
+  throughRecordSeq: number | null,
+): CloudChatSummary {
+  return { ...summary, throughRecordSeq };
+}
+
 function cloudDocument(
   draftId: string,
   ownerHostId: string,
@@ -373,6 +381,94 @@ describe("cloudDraftHeadSettled", () => {
     expect(cloudDraftHeadSettled(firstNewer)).toBe(true);
     expect(cloudDraftHeadSettled(first)).toBe(false);
     expect(cloudDraftHeadSettled(second)).toBe(true);
+  });
+});
+
+describe("a listing older than the record", () => {
+  const HEAD_THREE = "12".repeat(32);
+
+  it("is settled, and a read of it leaves a settled newer head in place", () => {
+    const newer = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 9);
+    const stale = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), 5);
+    settleCloudDraftHeadWithoutApply(newer);
+
+    expect(cloudDraftHeadSettled(stale)).toBe(true);
+    beginCloudDraftHeadRead(stale);
+
+    expect(cloudDraftHeadSettled(newer)).toBe(true);
+    expect(cloudDraftHeadReading(stale)).toBe(false);
+    expect(cloudDraftHeadReading(newer)).toBe(false);
+  });
+
+  it("is settled, and a read of it leaves a newer head still being read in place", () => {
+    const newer = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 9);
+    const stale = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), 5);
+    beginCloudDraftHeadRead(newer);
+
+    expect(cloudDraftHeadSettled(stale)).toBe(true);
+    beginCloudDraftHeadRead(stale);
+
+    expect(cloudDraftHeadReading(newer)).toBe(true);
+    expect(cloudDraftHeadSettled(newer)).toBe(true);
+    expect(cloudDraftHeadReading(stale)).toBe(false);
+  });
+
+  it("is settled after a newer head was installed through an ingest", async () => {
+    const newer = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 9);
+    const stale = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), 5);
+    await ingest(
+      HOST_ID,
+      newer,
+      cloudDocument(DRAFT_ID, OWNER_HOST_ID, "chat-composer"),
+    );
+
+    expect(cloudDraftHeadSettled(newer)).toBe(true);
+    expect(cloudDraftHeadSettled(stale)).toBe(true);
+  });
+
+  it("is not settled when the listing carries a higher sequence, and its read replaces the record", () => {
+    const settled = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 9);
+    const newer = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_THREE), 12);
+    settleCloudDraftHeadWithoutApply(settled);
+
+    expect(cloudDraftHeadSettled(newer)).toBe(false);
+    beginCloudDraftHeadRead(newer);
+
+    expect(cloudDraftHeadReading(newer)).toBe(true);
+    expect(cloudDraftHeadReading(settled)).toBe(false);
+    // The record now names the sequence-12 head, so the old one is the stale
+    // listing and is settled by that rule, not by holding the record.
+    expect(cloudDraftHeadSettled(settled)).toBe(true);
+  });
+
+  it("keeps the old behaviour when the listing has no sequence", () => {
+    const settled = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO), 9);
+    const unknown = withSeq(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE),
+      null,
+    );
+    settleCloudDraftHeadWithoutApply(settled);
+
+    expect(cloudDraftHeadSettled(unknown)).toBe(false);
+    beginCloudDraftHeadRead(unknown);
+
+    expect(cloudDraftHeadReading(unknown)).toBe(true);
+    expect(cloudDraftHeadSettled(settled)).toBe(false);
+  });
+
+  it("keeps the old behaviour when the record has no sequence", () => {
+    const settled = withSeq(
+      summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+      null,
+    );
+    const other = withSeq(summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE), 5);
+    settleCloudDraftHeadWithoutApply(settled);
+
+    expect(cloudDraftHeadSettled(other)).toBe(false);
+    beginCloudDraftHeadRead(other);
+
+    expect(cloudDraftHeadReading(other)).toBe(true);
+    expect(cloudDraftHeadSettled(settled)).toBe(false);
   });
 });
 
@@ -761,6 +857,33 @@ describe("noteCloudDraftHeadHost", () => {
 
     noteCloudDraftHeadHost(summary, HOST_ID);
     expect(sources.count()).toBe(afterMount + 1);
+  });
+
+  it("does not mark the host while the window serves another account, so the account's return still registers it", async () => {
+    const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
+    mountSession(HOST_ID);
+    mountSession(SECOND_HOST_ID);
+    await Promise.resolve();
+    await ingestWithImage(HOST_ID, summary);
+    expect(cloudDraftHeadSettled(summary)).toBe(true);
+    const sources = countSourceChanges();
+    const versionBefore = cloudDraftImageSourceVersion();
+
+    useAuthStore.setState({
+      contextMetadata: { userId: "user-2", username: "user-2" },
+    });
+    noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+    expect(sources.count()).toBe(0);
+    expect(cloudDraftImageSourceVersion()).toBe(versionBefore);
+
+    useAuthStore.setState({
+      contextMetadata: { userId: OWNER_USER_ID, username: OWNER_USER_ID },
+    });
+    noteCloudDraftHeadHost(summary, SECOND_HOST_ID);
+
+    expect(sources.count()).toBe(1);
+    expect(cloudDraftImageSourceVersion()).toBe(versionBefore + 1);
   });
 
   it("is a no-op for another head of the row than the settled one", async () => {
