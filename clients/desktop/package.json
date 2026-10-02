@@ -26,6 +26,7 @@
     "dev:renderer": "vite --config vite.renderer.config.ts",
     "dev:main": "bun run build:main && bun scripts/dev/dev-main.cjs",
     "dev": "bun scripts/dev/dev-stack.cjs",
+    "dev:uao": "bun scripts/dev/dev-stack.cjs --uao",
     "lint": "bun run lint:files .",
     "lint:files": "oxlint -c oxlint.config.mts --fix --deny-warnings --no-error-on-unmatched-pattern",
     "format": "oxfmt .",

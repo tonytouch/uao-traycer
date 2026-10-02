@@ -2,10 +2,18 @@ import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
-const devStack = require("../dev-stack.cjs") as {
-  readRendererPort: (env: NodeJS.ProcessEnv) => number;
-  buildChildEnv: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
-};
+interface DevStackModule {
+  readonly readRendererPort: (env: NodeJS.ProcessEnv) => number;
+  readonly buildChildEnv: {
+    (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+    (
+      env: NodeJS.ProcessEnv,
+      options: { readonly uao: boolean } | undefined,
+    ): NodeJS.ProcessEnv;
+  };
+}
+
+const devStack = require("../dev-stack.cjs") as DevStackModule;
 
 describe("readRendererPort", () => {
   it("defaults to 5173 when PORT is unset", () => {
@@ -103,5 +111,30 @@ describe("buildChildEnv", () => {
       TRAYCER_DESKTOP_DEV_URL: "http://127.0.0.1:39584",
     });
     expect(childEnv.TRAYCER_DESKTOP_DEV_URL).toBe("http://127.0.0.1:39584");
+  });
+
+  it("enables UAO dev mode when requested via options", () => {
+    const childEnv = devStack.buildChildEnv({}, { uao: true });
+    expect(childEnv.TRAYCER_DESKTOP_UAO_DEV).toBe("1");
+  });
+
+  it("enables UAO dev mode when requested via env", () => {
+    const childEnv = devStack.buildChildEnv({
+      TRAYCER_DESKTOP_UAO_DEV: "1",
+    });
+    expect(childEnv.TRAYCER_DESKTOP_UAO_DEV).toBe("1");
+  });
+
+  it("clears an inherited TRAYCER_DESKTOP_UAO_DEV when uao mode is false", () => {
+    const childEnv = devStack.buildChildEnv(
+      { TRAYCER_DESKTOP_UAO_DEV: "1" },
+      { uao: false },
+    );
+    expect(childEnv.TRAYCER_DESKTOP_UAO_DEV).toBeUndefined();
+  });
+
+  it("does not set TRAYCER_DESKTOP_UAO_DEV by default", () => {
+    const childEnv = devStack.buildChildEnv({});
+    expect(childEnv.TRAYCER_DESKTOP_UAO_DEV).toBeUndefined();
   });
 });

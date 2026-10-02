@@ -30,7 +30,11 @@ function readRendererPort(env) {
 // main process, which reads `DEV_DESKTOP_SLOT` directly, registers the bare
 // one, silently breaking the callback isolation this threading provides. Clear
 // it so both sides always derive from the same source.
-function buildChildEnv(env) {
+function buildChildEnv(env, options) {
+  const isUao =
+    options?.uao === true ||
+    (options?.uao === undefined &&
+      env.TRAYCER_DESKTOP_UAO_DEV === "1");
   const rendererPort = readRendererPort(env);
   const rendererUrl =
     env.TRAYCER_DESKTOP_DEV_URL ?? `http://localhost:${rendererPort}`;
@@ -41,6 +45,11 @@ function buildChildEnv(env) {
     TRAYCER_DESKTOP_DEV: "1",
     TRAYCER_DESKTOP_DEV_URL: rendererUrl,
   };
+  if (isUao) {
+    childEnv.TRAYCER_DESKTOP_UAO_DEV = "1";
+  } else {
+    delete childEnv.TRAYCER_DESKTOP_UAO_DEV;
+  }
   if (typeof env.DEV_DESKTOP_SLOT === "string") {
     childEnv.VITE_DEV_DESKTOP_SLOT = env.DEV_DESKTOP_SLOT;
   } else {
@@ -58,8 +67,11 @@ function buildChildEnv(env) {
 }
 
 function main() {
+  const isUao =
+    process.argv.includes("--uao") ||
+    process.env.TRAYCER_DESKTOP_UAO_DEV === "1";
   const rendererPort = readRendererPort(process.env);
-  const childEnv = buildChildEnv(process.env);
+  const childEnv = buildChildEnv(process.env, { uao: isUao });
 
   const child = spawn(
     "bun",
