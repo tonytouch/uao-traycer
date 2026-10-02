@@ -231,23 +231,34 @@ export function useCloudDraftsIngest(
       // directory in the same tick (N tabs restored into one Task) skips the
       // head instead of reading it too. The coordinator settles or releases
       // the claim when the read decides; the two exhausted-attempt exits and
-      // teardown below release it themselves.
+      // teardown below release it themselves, and a retry that finds the
+      // claim displaced by a newer head stops without releasing, because the
+      // claim is not its own any more.
       beginCloudDraftHeadRead(summary);
       const settle = (): void => {
         unsettledKeys.delete(key);
       };
       const attemptRead = async (attempt: number): Promise<void> => {
         // A retry runs on a timer, and the claim it is retrying may be gone
-        // by then: a newer head's read displaced it and is applying. Such a
+        // by then. Two ways, told apart by what the guard says about the
+        // head now. A newer head's read displaced it and is applying: the
         // retry must not advance the ingest fence below, because that fence
         // is also the apply's supersession check, and advancing it would
         // abandon the newer head's apply and then install this older one
-        // over it. The claim is checked before anything is reserved; the
-        // first attempt holds the claim it just made.
+        // over it; the guard answers settled (the listing is older than the
+        // record) and the retry stops. Or the claim was dropped under this
+        // mount - a torn-down mount's apply, superseded by this very claim's
+        // fence reservation, released the row by digest - and nothing holds
+        // the head: the guard answers not settled, and the retry claims it
+        // again rather than leaving the head to nobody. The first attempt
+        // holds the claim it just made.
         if (attempt > 0 && !cloudDraftHeadReading(summary)) {
-          settle();
-          ingestedKeys.delete(key);
-          return;
+          if (cloudDraftHeadSettled(summary)) {
+            settle();
+            ingestedKeys.delete(key);
+            return;
+          }
+          beginCloudDraftHeadRead(summary);
         }
         // Reserved BEFORE the head read: another mount's older directory
         // snapshot settling during the read must not sweep the mirror this
@@ -383,11 +394,28 @@ export function useCloudDraftsIngest(
         if (tornDown()) return;
         const abandonedKey = cloudDraftHeadKey(abandoned);
         if (exhaustedKeys.has(abandonedKey)) return;
-        const listed = foreign.find(
-          (summary) => cloudDraftHeadKey(summary) === abandonedKey,
-        );
-        if (listed === undefined || guardMaySkip(ingestedKeys, listed)) return;
-        startRead(listed);
+        // Deferred past the commit that abandoned the head. When a directory
+        // delivery re-runs EVERY mount at once (a refetch moves the fence
+        // sequence this effect depends on), React runs every cleanup before
+        // any setup: the first mount's teardown abandons its reads in flight
+        // while the others' old runs are still subscribed, and a wake taken
+        // synchronously there would start the reads in a run about to be
+        // torn down, which abandons them to the next, and so on down the
+        // mounts - every read sent once per mount, the fan-out this guard
+        // exists to remove. After the commit the old runs are torn down and
+        // return here; the new runs find the heads unclaimed on their own
+        // walk and read each once. A mount torn down alone (a tab closed)
+        // still wakes the survivors, one microtask later.
+        queueMicrotask(() => {
+          if (tornDown() || exhaustedKeys.has(abandonedKey)) return;
+          const listed = foreign.find(
+            (summary) => cloudDraftHeadKey(summary) === abandonedKey,
+          );
+          if (listed === undefined || guardMaySkip(ingestedKeys, listed)) {
+            return;
+          }
+          startRead(listed);
+        });
       },
     );
     return () => {

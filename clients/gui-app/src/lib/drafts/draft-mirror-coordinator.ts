@@ -317,9 +317,12 @@ const cloudDraftHeadAbandonListeners = new Set<
  * sixty `api/chats/resolve` on an account with two hosts, queued ahead of the
  * chat the person was opening - and N tabs restored into one Task read every
  * head N times at once. A head is read once per renderer lifetime and again
- * only when its `headSha256` changes, when the sweep drops its mirror, when
- * the mirror is gone from the store by any other road, or when the one read
- * in flight was torn down or gave up.
+ * only when its `headSha256` changes or the same digest is republished later,
+ * when the sweep drops its mirror, when the mirror is gone from the store by
+ * any other road, or when the one read in flight was torn down or gave up
+ * (and then by one mount: the wake a teardown sends is taken after the
+ * commit, so a delivery that re-runs every mount at once hands the reads to
+ * the new runs, not down the chain of old ones).
  */
 const cloudDraftHeads = new Map<string, CloudDraftHeadRecord>();
 /**
@@ -1577,10 +1580,11 @@ export async function ingestCloudDraftSummary(input: {
   // the store can vouch for and is settled for this renderer: a patch the
   // user discards locally comes back on the next head, not the next mount
   // (stash already worked this way, `retiredStashIdsThisSession`). A landing
-  // head refused because its id is RETIRED here is settled too. Every other
-  // refusal - a pending delete, a newer apply, an identity that changed under
-  // the read, a dirty local row - is about this moment, not this head, so the
-  // record is released and the next mount asks again, as it always did.
+  // head refused because its id is RETIRED here is settled too (a landing
+  // pending delete is such a retirement receipt). Every other refusal - a
+  // newer apply, an identity that changed under the read, a dirty local row
+  // - is about this moment, not this head, so the record is released and
+  // the next mount asks again, as it always did.
   if (installed) {
     settleCloudDraftHead(input.summary, installedHeadSettlement(input));
   } else if (
@@ -1875,9 +1879,10 @@ function laterPublication(
 
 /**
  * Whether another mount of this renderer is reading the head a row lists
- * right now. A mount that skips such a head still reserves its ingest fence,
- * as it did when it read every head itself: the reader's apply must not meet
- * a replica this mount's absence sweep dropped in the meantime.
+ * right now. A mount that skips such a head still reserves the row's SWEEP
+ * fence on its walk, as every listed head is: the reader's apply must not
+ * meet a replica this mount's absence sweep dropped in the meantime. The
+ * ingest fence is the reader's own.
  */
 export function cloudDraftHeadReading(summary: CloudChatSummary): boolean {
   const record = cloudDraftHeads.get(cloudDraftIdentityKey(summary));
@@ -2080,7 +2085,12 @@ function imageHashesOfDocument(document: DraftDocument): readonly string[] {
  * The read of this head ended without a decision - torn down with its mount,
  * out of attempts, or refused for a reason about the moment rather than the
  * head. Only a record still READING this head is dropped: a decision another
- * mount reached in the meantime, or a newer head's read, stays.
+ * mount reached in the meantime, or a newer head's read, stays. The claim is
+ * identified by row and digest, not by the mount that made it, so a release
+ * from a torn-down continuation can drop another mount's live read of the
+ * same head; that mount's next attempt claims the head again when it finds
+ * nobody holding it (the ingest hook's retry), and otherwise the cost is one
+ * duplicate read by a third mount.
  */
 export function releaseCloudDraftHeadRead(summary: CloudChatSummary): void {
   const key = cloudDraftIdentityKey(summary);

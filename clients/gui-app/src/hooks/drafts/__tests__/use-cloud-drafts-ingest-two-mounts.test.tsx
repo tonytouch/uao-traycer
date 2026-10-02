@@ -1,4 +1,4 @@
-import { cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import type { DraftHeadReaderRecord } from "@traycer/protocol/persistence/draft/schemas";
@@ -157,6 +157,15 @@ async function nextTick(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/**
+ * Lets the microtasks an abandon queued run: a surviving mount's wake is
+ * deferred one microtask past the commit that abandoned the head.
+ */
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 afterEach(() => {
   // Unmount first: teardown releases the claims it still holds.
   cleanup();
@@ -286,6 +295,7 @@ describe("useCloudDraftsIngest across mounts, on the real coordinator", () => {
     expect(cloudDraftHeadReading(pendingRow)).toBe(true);
 
     reader.unmount();
+    await flushMicrotasks();
 
     // The survivor read it at once, not at its next directory delivery: two
     // reads over the head's lifetime, and the claim is the survivor's.
@@ -326,6 +336,7 @@ describe("useCloudDraftsIngest across mounts, on the real coordinator", () => {
     expect(readsFor("draft-6")).toHaveLength(1);
 
     reader.unmount();
+    await flushMicrotasks();
 
     // The first survivor claims the head; the second asks the guard again and
     // finds it held.
@@ -434,5 +445,63 @@ describe("useCloudDraftsIngest across mounts, on the real coordinator", () => {
     mount();
     await vi.advanceTimersByTimeAsync(0);
     expect(readsFor("draft-9")).toHaveLength(4);
+  });
+
+  it("two mounts re-run by one delivery with reads in flight resolve each head once, not once per mount", async () => {
+    const heads = [row("draft-10"), row("draft-11"), row("draft-12")];
+    directoryMock.chats = heads;
+
+    // Two mounts of one host in ONE component, so one directory delivery
+    // re-runs both in a single React commit: every cleanup runs before any
+    // setup, which is the order a refetch that moves the fence sequence gives
+    // every mounted tab.
+    const view = renderHook(() => {
+      useCloudDraftsIngest(CLIENT as never, HOST_ID);
+      useCloudDraftsIngest(CLIENT as never, HOST_ID);
+    });
+    await vi.waitFor(() => {
+      expect(readMock.pending).toHaveLength(heads.length);
+    });
+    await nextTick();
+    // The first mount read every head; the second found each one claimed. None
+    // of the reads has been answered.
+    expect(readMock.pending).toHaveLength(heads.length);
+    for (const head of heads) {
+      expect(readsFor(head.identity.chatId)).toHaveLength(1);
+      expect(cloudDraftHeadReading(head)).toBe(true);
+    }
+
+    // One delivery: a new array with the same rows, both mounts re-run in one
+    // commit.
+    directoryMock.chats = [...heads];
+    act(() => {
+      view.rerender();
+    });
+    await flushMicrotasks();
+    await nextTick();
+
+    // The reads in flight were abandoned by the torn-down runs and read once
+    // more by the new runs: each head was resolved twice over its lifetime (the
+    // abandoned read plus one fresh read), never once more per mount.
+    expect(readMock.pending).toHaveLength(heads.length * 2);
+    for (const head of heads) {
+      expect(readsFor(head.identity.chatId)).toHaveLength(2);
+      expect(cloudDraftHeadReading(head)).toBe(true);
+    }
+
+    // The fresh reads decide the heads; the abandoned ones install nothing
+    // and add no read.
+    for (const head of heads) {
+      readsFor(head.identity.chatId)[0].resolve({ kind: "ok", record: HEAD });
+    }
+    await nextTick();
+    expect(landingIds()).toEqual([]);
+    for (const head of heads) {
+      readsFor(head.identity.chatId)[1].resolve({ kind: "ok", record: HEAD });
+    }
+    await vi.waitFor(() => {
+      expect(landingIds()).toEqual(["draft-10", "draft-11", "draft-12"]);
+    });
+    expect(readMock.pending).toHaveLength(heads.length * 2);
   });
 });
