@@ -148,7 +148,13 @@ export function useCloudDraftsIngest(
     // a mount on another host reads the head through its own pipe; this set
     // keeps the wake from restarting the read that just failed, here, until
     // the next directory delivery re-runs this effect.
+    // Keyed by head AND publication: the wake to ignore is the one this
+    // run's own exhaustion sends, and a later republication of the same
+    // digest abandoned by another mount is a different publication, whose
+    // wake this mount must take or nobody holds the head.
     const exhaustedKeys = new Set<string>();
+    const exhaustedKeyOf = (summary: CloudChatSummary): string =>
+      `${cloudDraftHeadKey(summary)}@${summary.publishedAt ?? "unpublished"}`;
     const tornDown = (): boolean => scope.signal.aborted;
     const foreign = directory.chats.filter(
       (chat) => chat.ownerHostId !== hostId,
@@ -290,7 +296,7 @@ export function useCloudDraftsIngest(
             // ignored (`exhaustedKeys`).
             settle();
             ingestedKeys.delete(key);
-            exhaustedKeys.add(key);
+            exhaustedKeys.add(exhaustedKeyOf(summary));
             abandonCloudDraftHeadRead(summary);
             appLogger.warn("[cloud-drafts] head read failed", {
               attempts: nextAttempt,
@@ -352,7 +358,7 @@ export function useCloudDraftsIngest(
           if (nextAttempt >= MAX_HEAD_READ_ATTEMPTS) {
             settle();
             ingestedKeys.delete(key);
-            exhaustedKeys.add(key);
+            exhaustedKeys.add(exhaustedKeyOf(summary));
             abandonCloudDraftHeadRead(summary);
             appLogger.warn("[cloud-drafts] head apply failed", {
               attempts: nextAttempt,
@@ -393,7 +399,8 @@ export function useCloudDraftsIngest(
       (abandoned) => {
         if (tornDown()) return;
         const abandonedKey = cloudDraftHeadKey(abandoned);
-        if (exhaustedKeys.has(abandonedKey)) return;
+        const abandonedExhaustedKey = exhaustedKeyOf(abandoned);
+        if (exhaustedKeys.has(abandonedExhaustedKey)) return;
         // Deferred past the commit that abandoned the head. When a directory
         // delivery re-runs EVERY mount at once (a refetch moves the fence
         // sequence this effect depends on), React runs every cleanup before
@@ -407,7 +414,7 @@ export function useCloudDraftsIngest(
         // walk and read each once. A mount torn down alone (a tab closed)
         // still wakes the survivors, one microtask later.
         queueMicrotask(() => {
-          if (tornDown() || exhaustedKeys.has(abandonedKey)) return;
+          if (tornDown() || exhaustedKeys.has(abandonedExhaustedKey)) return;
           const listed = foreign.find(
             (summary) => cloudDraftHeadKey(summary) === abandonedKey,
           );

@@ -1909,7 +1909,7 @@ describe("noteCloudDraftHeadHost", () => {
       expect(sources.count()).toBe(0);
     });
 
-    it("forgets a skipped host along with a released read: a later read of the head does not register it", async () => {
+    it("keeps a skipped host through a released read: a later read of the head registers it when it settles with images", async () => {
       const summary = summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_ONE);
       await mountBothSessions();
       const sources = countSourceChanges();
@@ -1921,12 +1921,97 @@ describe("noteCloudDraftHeadHost", () => {
       releaseCloudDraftHeadRead(summary);
       expect(cloudDraftHeadReading(summary)).toBe(false);
 
-      // The next read is a new record: its settle owes the old skip nothing.
+      // The row's hosts outlive the read: the next read's settle registers the
+      // skipped host beside the ingesting host's own source.
       beginCloudDraftHeadRead(summary);
       await ingestWithImage(HOST_ID, summary);
 
       expect(cloudDraftHeadSettled(summary)).toBe(true);
-      expect(sources.count()).toBe(1);
+      expect(sources.count()).toBe(2);
+    });
+
+    it("keeps a host noted during a read that is RELEASED, and registers it when the next read of the row settles with images", async () => {
+      const headB = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        9,
+      );
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      beginCloudDraftHeadRead(headB);
+      noteCloudDraftHeadHost(headB, SECOND_HOST_ID);
+
+      // Released silently: an abandon would also wake whatever subscribers
+      // other tests in this file left behind.
+      releaseCloudDraftHeadRead(headB);
+
+      expect(cloudDraftHeadReading(headB)).toBe(false);
+      expect(sources.count()).toBe(0);
+
+      // The row's hosts outlive the read: the next read's settle registers the
+      // noted host for the head's images, beside the ingesting host's own.
+      beginCloudDraftHeadRead(headB);
+      await ingestWithImage(HOST_ID, headB);
+
+      expect(cloudDraftHeadSettled(headB)).toBe(true);
+      expect(sources.count()).toBe(2);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, SECOND_HOST_ID, [
+          IMAGE_HASH,
+        ]),
+      ).toBe(true);
+    });
+
+    it("keeps a host noted during a read that is ABANDONED, and registers it when the next read of the row settles with images", async () => {
+      const headB = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        9,
+      );
+      await mountBothSessions();
+      const sources = countSourceChanges();
+      beginCloudDraftHeadRead(headB);
+      noteCloudDraftHeadHost(headB, SECOND_HOST_ID);
+
+      abandonCloudDraftHeadRead(headB);
+
+      expect(cloudDraftHeadReading(headB)).toBe(false);
+      expect(sources.count()).toBe(0);
+
+      beginCloudDraftHeadRead(headB);
+      await ingestWithImage(HOST_ID, headB);
+
+      expect(cloudDraftHeadSettled(headB)).toBe(true);
+      expect(sources.count()).toBe(2);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, SECOND_HOST_ID, [
+          IMAGE_HASH,
+        ]),
+      ).toBe(true);
+    });
+
+    it("remembers a host noted for a row with no record yet, and registers it when the row's first head settles with images", async () => {
+      const headB = withPublishedAt(
+        summaryFor(DRAFT_ID, OWNER_HOST_ID, HEAD_TWO),
+        9,
+      );
+      await mountBothSessions();
+      const sources = countSourceChanges();
+
+      // No record for the row: the host is remembered, nothing registers.
+      noteCloudDraftHeadHost(headB, SECOND_HOST_ID);
+
+      expect(cloudDraftHeadReading(headB)).toBe(false);
+      expect(sources.count()).toBe(0);
+
+      beginCloudDraftHeadRead(headB);
+      await ingestWithImage(HOST_ID, headB);
+
+      expect(cloudDraftHeadSettled(headB)).toBe(true);
+      expect(sources.count()).toBe(2);
+      expect(
+        cloudDraftImageSourcesRecorded(headB.identity, SECOND_HOST_ID, [
+          IMAGE_HASH,
+        ]),
+      ).toBe(true);
     });
   });
 });

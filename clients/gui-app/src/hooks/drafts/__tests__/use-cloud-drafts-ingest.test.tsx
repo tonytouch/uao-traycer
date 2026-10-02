@@ -1518,6 +1518,47 @@ describe("useCloudDraftsIngest", () => {
     warnSpy.mockRestore();
   });
 
+  it("takes the abandon wake for the same digest at a later publication after exhausting the earlier one, and still ignores its own", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
+    readMock.read.mockRejectedValue(new Error("persistent read failure"));
+    const exhausted = summary(DIGEST_ONE, { publishedAt: 5 });
+    directoryMock.chats = [exhausted];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 2);
+    await vi.waitFor(() => {
+      expect(claimMock.abandon).toHaveBeenCalledTimes(1);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+
+    // The coordinator answers: not held, not being read. The wake for the
+    // publication this run exhausted is still ignored.
+    settledMock.settled.mockReturnValue(false);
+    deliverAbandon({ ...exhausted });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimMock.begin).toHaveBeenCalledTimes(1);
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
+
+    // The same digest abandoned at a LATER publication by another mount is a
+    // different publication: this mount takes it, and reads the row it lists
+    // (the run's own listing is the one at 5; the wake carries the 9).
+    deliverAbandon({ ...exhausted, publishedAt: 9 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimMock.begin).toHaveBeenCalledTimes(2);
+    expect(claimMock.begin.mock.calls[1][0]).toBe(exhausted);
+    expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS + 1);
+    warnSpy.mockRestore();
+  });
+
   it("asks the coordinator about a head this mount already ingested when the same digest is listed at a later publication time, and reads it again when the coordinator no longer holds it", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);

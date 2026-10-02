@@ -290,18 +290,6 @@ type CloudDraftHeadRecord = {
    * go on naming an evicted host as registered.
    */
   readonly imageHashes: readonly string[];
-  /**
-   * The hosts whose mounts showed this ROW without reading its head: they
-   * skipped it while it was being read, or noted it once it was settled.
-   * They are the row's, carried across every transition of its record
-   * (reading to settled, settled or reading to a newer head's read), because
-   * a mount whose host-scoped directory is cached at an older head runs no
-   * note again until its next delivery, and each head that settles with
-   * images registers them as sources then. Whether a host IS recorded for a
-   * hash is the registry's to say (above); this set only names who to ask
-   * for.
-   */
-  readonly skippedHosts: ReadonlySet<string>;
 };
 /** What a decided head is remembered with. */
 type CloudDraftHeadSettlement = {
@@ -330,6 +318,32 @@ const cloudDraftHeadAbandonListeners = new Set<
  * the new runs, not down the chain of old ones).
  */
 const cloudDraftHeads = new Map<string, CloudDraftHeadRecord>();
+/**
+ * The hosts whose mounts have shown each ROW, keyed as `cloudDraftHeads` is:
+ * the host that ingested a head, and every host whose mount skipped or noted
+ * one. They are the row's, not a head's or a record's, and they outlive both:
+ * a mount whose host-scoped directory is cached at an older head runs no
+ * note again until its next delivery, so every head of the row that settles
+ * with images registers these hosts as sources for its hashes then, whatever
+ * records were claimed, settled, released or abandoned in between. Whether a
+ * host IS recorded for a hash is the registry's to say
+ * (`cloudDraftImageSourcesRecorded`), and a host whose session is gone is
+ * skipped at registration; this map only names who to ask for. Bounded by
+ * the rows ever shown times the hosts on the account.
+ */
+const cloudDraftRowHosts = new Map<string, Set<string>>();
+
+/** Remember `hostId` as a host of the row `key`; true when it was not yet. */
+function rememberCloudDraftRowHost(key: string, hostId: string): boolean {
+  const hosts = cloudDraftRowHosts.get(key);
+  if (hosts === undefined) {
+    cloudDraftRowHosts.set(key, new Set([hostId]));
+    return true;
+  }
+  if (hosts.has(hostId)) return false;
+  hosts.add(hostId);
+  return true;
+}
 /**
  * View state of landing rows a successor may inherit, keyed by the
  * superseded id: a row a host `delete` frame removed while open in this
@@ -1400,6 +1414,7 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   cloudIngestSeqByDraft.clear();
   cloudSweepFenceByRow.clear();
   cloudDraftHeads.clear();
+  cloudDraftRowHosts.clear();
   cloudDraftHeadAbandonListeners.clear();
   inheritableLandingTabs.clear();
   retiredStashIdsThisSession.clear();
@@ -1939,14 +1954,6 @@ export function beginCloudDraftHeadRead(summary: CloudChatSummary): void {
     state: "reading",
     mirrorId: null,
     imageHashes: [],
-    // The hosts that skipped the row while its previous head was being read
-    // are the row's, not that head's: their directories still list the row
-    // and run no note again until their next delivery, so a newer head's
-    // read inherits them and registers them when it settles with images.
-    skippedHosts:
-      current === undefined
-        ? new Set<string>()
-        : new Set<string>(current.skippedHosts),
   });
 }
 
@@ -2032,30 +2039,22 @@ export function noteCloudDraftHeadHost(
   hostId: string,
 ): void {
   const key = cloudDraftIdentityKey(summary);
+  // A host of the row from here on, whatever the record does: every head of
+  // the row that settles with images registers it then.
+  rememberCloudDraftRowHost(key, hostId);
   const record = cloudDraftHeads.get(key);
-  if (record === undefined) return;
-  // The head the guard skipped: this very digest, or a STALE listing of the
-  // row (an older head, from a host-scoped directory cache not yet
-  // refreshed) that the guard answered as settled because the record holds
-  // a newer one. That mount shows the row all the same, and its host is a
-  // source for the head the record holds: a listing of a newer head than
-  // the record's is read, never noted, and nothing else reaches here.
+  if (record === undefined || record.state === "reading") return;
+  // Registered now for the head the record holds when that is the head the
+  // guard skipped: this very digest, or a STALE listing of the row (an older
+  // head, from a host-scoped directory cache not yet refreshed) that the
+  // guard answered as settled because the record holds a newer one. A
+  // listing of a newer head than the record's is read, never noted.
   if (
     record.headSha256 !== summary.headSha256 &&
     !listingIsOlderThanRecord(record, summary)
   ) {
     return;
   }
-  // Kept on the record in both states, so a newer head of the row registers
-  // this host for its own images when it settles; a settled record also
-  // registers it now.
-  if (!record.skippedHosts.has(hostId)) {
-    cloudDraftHeads.set(key, {
-      ...record,
-      skippedHosts: new Set([...record.skippedHosts, hostId]),
-    });
-  }
-  if (record.state === "reading") return;
   registerCloudDraftHeadHost(key, summary.identity, hostId);
 }
 
@@ -2161,7 +2160,6 @@ export function settleCloudDraftHeadWithoutApply(
       state: "settled",
       mirrorId: null,
       imageHashes: [],
-      skippedHosts: new Set<string>(current.skippedHosts),
     });
     notifyCloudDraftHeadAbandoned(summary);
     return;
@@ -2240,17 +2238,13 @@ function settleCloudDraftHead(
     state: "settled",
     mirrorId: settlement.mirrorId,
     imageHashes: settlement.imageHashes,
-    // The row's hosts outlive the head: a later head's read inherits them
-    // and registers them again for ITS images.
-    skippedHosts:
-      current === undefined
-        ? new Set<string>()
-        : new Set<string>(current.skippedHosts),
   });
-  // The hosts that showed the row without reading this head register as
-  // sources now that the head's images are known.
-  if (current !== undefined) {
-    for (const hostId of current.skippedHosts) {
+  // The row's hosts register as sources now that this head's images are
+  // known (a no-op for a host the registry already holds, and for a head
+  // without images).
+  const hosts = cloudDraftRowHosts.get(key);
+  if (hosts !== undefined) {
+    for (const hostId of hosts) {
       registerCloudDraftHeadHost(key, summary.identity, hostId);
     }
   }
