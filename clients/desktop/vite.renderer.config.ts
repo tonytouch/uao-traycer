@@ -15,6 +15,7 @@ import {
   handleOrcaHttpRequest,
   handleOrcaTerminalStreamUpgrade,
 } from "./src/electron-main/uao-orca-adapter";
+import { handleUaoFrameDocument } from "./src/electron-main/uao-server";
 
 const rendererEnvPrefix = [
   "VITE_APP_",
@@ -150,6 +151,7 @@ export default defineConfig((): UserConfig => {
 
           server.middlewares.use(async (req, res, next) => {
             const rawUrl = req.url ?? "/";
+            if (await handleUaoFrameDocument(req, res, 5050)) return;
             if (
               rawUrl === "/uao-api/orca" ||
               rawUrl.startsWith("/uao-api/orca/")

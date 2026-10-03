@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PANE_ID,
+  ALL_NAV_PANES,
   getFeatureOwnerId,
   isFeatureOwner,
   WORKSPACE_PANE_ID,
@@ -48,7 +49,7 @@ describe("UAO Worktabs State & Persistence", () => {
       expect(sanitizePersistedWorktabs(malicious)).toBeNull();
     });
 
-    it("bounds the list to MAX_WORKTABS (12) and deduplicates owners", () => {
+    it("bounds saved tabs to known owners and deduplicates them", () => {
       const overflow = {
         tabs: [
           { ownerId: "command-center", routeTarget: "command-center" },
@@ -92,6 +93,18 @@ describe("UAO Worktabs State & Persistence", () => {
   });
 
   describe("Owner deduplication & child route updates", () => {
+    it("keeps earlier work when more than twelve features are opened", () => {
+      const owners = ALL_NAV_PANES.filter((pane) => isFeatureOwner(pane.id));
+      let state = openWorktab([], "memory-wiki");
+      for (const owner of owners) {
+        if (owner.id !== "second-brain") state = openWorktab(state.tabs, owner.id);
+      }
+      expect(state.tabs).toHaveLength(owners.length);
+      expect(state.tabs.length).toBeGreaterThan(12);
+      expect(selectWorktab(state.tabs, "second-brain").activeRouteId).toBe("memory-wiki");
+      expect(sanitizePersistedWorktabs(state)?.tabs).toEqual(state.tabs);
+    });
+
     it("creates a single owner tab and updates its routeTarget for child views", () => {
       const initial: readonly UaoWorktab[] = [
         { ownerId: "command-center", routeTarget: "command-center" },

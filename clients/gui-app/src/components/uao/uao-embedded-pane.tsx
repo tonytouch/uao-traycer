@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { uaoQueryOptions } from "@/lib/uao/query-options";
 import {
   DEFAULT_PANE_ID,
+  getFeatureOwnerId,
   isValidNavPaneId,
   isNativeUaoPane,
   WORKSPACE_PANE_ID,
@@ -42,10 +43,11 @@ export function UaoEmbeddedPane({
 }: UaoEmbeddedPaneProps) {
   const uiQuery = useQuery(uaoQueryOptions.builtUi());
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const lastFeatureId = useRef<string>(DEFAULT_PANE_ID);
-  const [initialSrc] = useState(
-    () => `/uao-api/#/${chatOnly ? "chat" : getSafeWebRoute(activePaneId)}`,
+  const [initialFeatureId] = useState(
+    () => getSafeWebRoute(activePaneId),
   );
+  const lastFeatureId = useRef<string>(initialFeatureId);
+  const initialSrc = `/uao-api/?desktop-frame=1#/${chatOnly ? "chat" : initialFeatureId}`;
   const cleanupRef = useRef<(() => void) | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [ready, setReady] = useState(false);
@@ -92,27 +94,43 @@ export function UaoEmbeddedPane({
       }
     }
 
+    let redirectedRoute: string | null = null;
+    const restoreRoute = (id: string) => {
+      if (child.location.hash === `#/${id}`) return;
+      redirectedRoute = id;
+      child.location.replace(new URL(`#/${id}`, child.location.href).href);
+    };
     const onHashChange = () => {
       const id = child.location.hash.replace(/^#\/?/, "");
+      if (id === redirectedRoute) {
+        redirectedRoute = null;
+        return;
+      }
       if (chatOnly) {
         if (id !== "chat" && isValidNavPaneId(id)) {
-          child.location.replace(new URL("#/chat", child.location.href).href);
+          restoreRoute("chat");
           onChildNavigate(id);
         }
         return;
       }
       if (id === "chat") {
         const safe = getSafeWebRoute(lastFeatureId.current);
-        child.location.replace(new URL(`#/${safe}`, child.location.href).href);
+        restoreRoute(safe);
         onChildNavigate(WORKSPACE_PANE_ID);
         return;
       }
       if (!isNativeUaoPane(id) && isValidNavPaneId(id)) {
-        lastFeatureId.current = id;
+        if (getFeatureOwnerId(id) === getFeatureOwnerId(lastFeatureId.current)) {
+          lastFeatureId.current = id;
+        } else {
+          restoreRoute(lastFeatureId.current);
+        }
         onChildNavigate(id);
       }
     };
-    child.addEventListener("hashchange", onHashChange);
+    // Restore cross-feature hashes before UAO's router reads them, so the
+    // current pane never unmounts when its header opens another desktop tab.
+    child.addEventListener("hashchange", onHashChange, true);
     const observer = new MutationObserver(() => {
       if (doc.querySelector(".app-shell")) {
         setReady(true);
@@ -138,9 +156,9 @@ export function UaoEmbeddedPane({
     cleanupRef.current = () => {
       clearTimeout(timeout);
       observer.disconnect();
-      child.removeEventListener("hashchange", onHashChange);
+      child.removeEventListener("hashchange", onHashChange, true);
     };
-  }, [onChildNavigate, chatOnly]);
+  }, [chatOnly, onChildNavigate]);
 
   const error = uiQuery.isError ? uiQuery.error.message : frameError;
   return (

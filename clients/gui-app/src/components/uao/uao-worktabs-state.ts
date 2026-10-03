@@ -1,4 +1,5 @@
 import {
+  ALL_NAV_PANES,
   DEFAULT_PANE_ID,
   getFeatureOwnerId,
   isFeatureOwner,
@@ -17,7 +18,10 @@ export interface PersistedWorktabsState {
   readonly activeRouteId: string;
 }
 
-export const MAX_WORKTABS = 12;
+// One tab per known feature. Opening another feature must never evict work.
+export const MAX_WORKTABS = ALL_NAV_PANES.filter((pane) =>
+  isFeatureOwner(pane.id),
+).length;
 export const WORKTABS_STORAGE_KEY = "uao_worktabs_state_v1";
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = "uao_sidebar_collapsed_v1";
 export const WORKSPACE_LAYOUT_STORAGE_KEY = "uao_workspace_layout_v1";
@@ -104,7 +108,7 @@ export function sanitizePersistedWorktabs(
 /**
  * Open or select a tab for a feature.
  * One tab per feature owner. If owner tab exists, updates its routeTarget.
- * If not, appends the owner tab up to the MAX_WORKTABS ceiling.
+ * If not, appends the owner tab. Only an explicit close removes a tab.
  */
 export function openWorktab(
   tabs: readonly UaoWorktab[],
@@ -128,10 +132,7 @@ export function openWorktab(
   }
 
   const newTab: UaoWorktab = { ownerId, routeTarget: effectiveTarget };
-  const nextTabs =
-    tabs.length >= MAX_WORKTABS
-      ? [...tabs.slice(tabs.length - MAX_WORKTABS + 1), newTab]
-      : [...tabs, newTab];
+  const nextTabs = [...tabs, newTab];
 
   return {
     tabs: nextTabs,

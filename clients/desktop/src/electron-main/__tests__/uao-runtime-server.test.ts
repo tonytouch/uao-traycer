@@ -54,6 +54,19 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
     mockBackend = http.createServer((req, res) => {
       const url = req.url ?? "/";
 
+      if (url.startsWith("/?desktop-frame=1")) {
+        const html = url.includes("large=1")
+          ? "x".repeat(1024 * 1024 + 1)
+          : '<html><head><script type="module" src="/assets/app.js"></script></head><body><div id="root"></div></body></html>';
+        res.writeHead(200, {
+          "Content-Type": "text/html",
+          "Content-Security-Policy": "base-uri 'self'; object-src 'none'",
+          "Content-Length": Buffer.byteLength(html),
+        });
+        res.end(html);
+        return;
+      }
+
       // Test endpoint: kanban boards
       if (url === "/api/kanban/boards") {
         const tokenHeader = req.headers["x-agent-os-token"] as
@@ -155,6 +168,18 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
       staticDir: tempStaticDir,
       backendPort: mockBackendPort,
     });
+  });
+
+  it("bootstraps shared activity before the embedded UI without changing its origin or CSP", async () => {
+    const response = await fetch(`${uaoServer.origin}/uao-api/?desktop-frame=1`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-security-policy")).toBe("base-uri 'self'; object-src 'none'");
+    const html = await response.text();
+    expect(html.indexOf("parent.__uaoActivitySource")).toBeGreaterThan(0);
+    expect(html.indexOf("parent.__uaoActivitySource")).toBeLessThan(html.indexOf('type="module"'));
+    expect(html).toContain('id="root"');
+    expect(response.headers.get("content-length")).toBe(String(Buffer.byteLength(html)));
+    expect((await fetch(`${uaoServer.origin}/uao-api/?desktop-frame=1&large=1`)).status).toBe(502);
   });
 
   afterAll(async () => {

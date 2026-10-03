@@ -68,6 +68,90 @@ export interface UaoServerInstance {
   readonly close: () => Promise<void>;
 }
 
+// Before UAO's module starts, share only its common dashboard activity feed.
+// Other EventSource URLs (tool-specific streams) retain their native behavior.
+const FRAME_BOOTSTRAP = `<script>
+(() => {
+  const NativeSource = window.EventSource;
+  window.EventSource = class extends NativeSource {
+    constructor(url, options) {
+      const target = new URL(url, location.href);
+      if (target.origin === location.origin && target.pathname === '/api/agents/activity'
+          && !target.search && !options?.withCredentials && parent.__uaoActivitySource) {
+        return new parent.__uaoActivitySource();
+      }
+      super(url, options);
+    }
+  };
+})();
+</script>`;
+
+/** Opt-in shell documents only. Preserve the backend's URL, CSP and assets. */
+export async function handleUaoFrameDocument(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  backendPort: number,
+): Promise<boolean> {
+  const url = new URL(req.url ?? "/", "http://127.0.0.1");
+  if (
+    req.method !== "GET" ||
+    url.pathname !== "/uao-api/" ||
+    url.searchParams.get("desktop-frame") !== "1"
+  ) return false;
+
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  res.once("close", abort);
+  try {
+    const response = await fetch(`http://127.0.0.1:${backendPort}/${url.search}`, {
+      headers: {
+        Accept: "text/html",
+        ...(process.env.AGENT_OS_TOKEN
+          ? { "x-agent-os-token": process.env.AGENT_OS_TOKEN }
+          : {}),
+      },
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+      redirect: "error",
+    });
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    if (reader) {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += chunk.value.byteLength;
+        if (size > 1024 * 1024) {
+          await reader.cancel();
+          throw new Error("UAO document too large");
+        }
+        chunks.push(chunk.value);
+      }
+    }
+    let html = Buffer.concat(chunks).toString("utf8");
+    if (response.ok && response.headers.get("content-type")?.includes("text/html")) {
+      html = html.replace(/<head(?:\s[^>]*)?>/i, (head) => head + FRAME_BOOTSTRAP);
+    }
+    const headers = Object.fromEntries(response.headers);
+    delete headers["content-encoding"];
+    delete headers["content-length"];
+    delete headers["transfer-encoding"];
+    delete headers.etag;
+    res.writeHead(response.status, {
+      ...headers,
+      "Content-Length": Buffer.byteLength(html),
+      "Cache-Control": "no-store",
+    });
+    res.end(html);
+  } catch {
+    if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain" });
+    res.end("UAO interface unavailable");
+  } finally {
+    res.removeListener("close", abort);
+  }
+  return true;
+}
+
 function isValidHost(host: string | undefined, port: number): boolean {
   if (host === undefined || host.length === 0) return false;
   return host === `127.0.0.1:${port}` || host === `localhost:${port}`;
@@ -413,6 +497,14 @@ export function startUaoServer(
         }
 
         // 4. Bounded proxy paths to backend 5050
+        if (
+          req.method === "GET" && pathname === "/uao-api/" &&
+          parsed.searchParams.get("desktop-frame") === "1"
+        ) {
+          void handleUaoFrameDocument(req, res, backendPort);
+          return;
+        }
+
         const proxyRoute = matchUaoProxyRoute(pathname);
         if (!proxyRoute.matched) {
           res.writeHead(404, { "Content-Type": "text/plain" });

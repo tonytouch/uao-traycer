@@ -22,6 +22,7 @@ import { UaoOrcaWorkspacesPane } from "./uao-orca-workspaces-pane";
 import {
   DEFAULT_PANE_ID,
   findNavPane,
+  isFeatureOwner,
   isNativeUaoPane,
   NAV_GROUPS,
   normalizeNavId,
@@ -48,6 +49,7 @@ import {
   type WorkspaceLayoutPreferences,
 } from "./uao-worktabs-state";
 import { WorkspaceResizeDivider } from "./uao-workspace-divider";
+import { UaoActivitySource } from "@/lib/uao/activity-source";
 
 function getConnectionDotClass(
   checking: boolean,
@@ -422,7 +424,11 @@ function UaoStandaloneScreenInner() {
 
   // Sync state on user tab open/switch
   const handleSelectPane = useCallback((paneId: string) => {
-    setTabsState((prev) => openWorktab(prev.tabs, paneId));
+    setTabsState((prev) =>
+      isFeatureOwner(paneId)
+        ? selectWorktab(prev.tabs, paneId)
+        : openWorktab(prev.tabs, paneId),
+    );
   }, []);
 
   const handleSelectTab = useCallback((ownerId: string) => {
@@ -435,8 +441,31 @@ function UaoStandaloneScreenInner() {
     );
   }, []);
 
-  const handleChildNavigate = useCallback((paneId: string) => {
-    setTabsState((prev) => updateWorktabRoute(prev.tabs, paneId));
+  const handleChildNavigate = useCallback((ownerId: string, paneId: string) => {
+    setTabsState((prev) =>
+      prev.activeOwnerId === ownerId
+        ? updateWorktabRoute(prev.tabs, paneId)
+        : prev,
+    );
+  }, []);
+
+  // Like Traycer's tab host, mount on first activation and retain while open.
+  // Restoring a strip must not start every embedded application at once.
+  const [visitedOwners, setVisitedOwners] = useState<ReadonlySet<string>>(
+    () => new Set([tabsState.activeOwnerId]),
+  );
+  if (!visitedOwners.has(tabsState.activeOwnerId)) {
+    setVisitedOwners(new Set([...visitedOwners, tabsState.activeOwnerId]));
+  }
+
+  useEffect(() => {
+    Object.defineProperty(window, "__uaoActivitySource", {
+      value: UaoActivitySource,
+      configurable: true,
+    });
+    return () => {
+      Reflect.deleteProperty(window, "__uaoActivitySource");
+    };
   }, []);
 
   // Listen to browser / Electron back/forward navigation
@@ -580,7 +609,9 @@ function UaoStandaloneScreenInner() {
               boards={boards}
               activeBoard={activeBoard}
               onSelectBoard={setActiveBoardSelection}
-              onNavigateAway={handleSelectPane}
+              onNavigateAway={(paneId) =>
+                handleChildNavigate(WORKSPACE_PANE_ID, paneId)
+              }
             />
           </div>
 
@@ -597,26 +628,30 @@ function UaoStandaloneScreenInner() {
             />
           </div>
 
-          {/* General Embedded Feature Pane */}
-          <div
-            id={
-              isNativeUaoPane(tabsState.activeOwnerId)
-                ? undefined
-                : `uao-panel-${tabsState.activeOwnerId}`
-            }
-            role="tabpanel"
-            aria-labelledby={`uao-tab-${tabsState.activeOwnerId}`}
-            hidden={
-              tabsState.activeOwnerId === WORKSPACE_PANE_ID ||
-              tabsState.activeOwnerId === ORCA_PANE_ID
-            }
-            className="h-full min-h-0"
-          >
-            <UaoEmbeddedPane
-              activePaneId={tabsState.activeRouteId}
-              onChildNavigate={handleChildNavigate}
-            />
-          </div>
+          {/* Stable feature documents preserve drafts, drawers and scroll. */}
+          {tabsState.tabs
+            .filter(
+              (tab) =>
+                !isNativeUaoPane(tab.ownerId) &&
+                visitedOwners.has(tab.ownerId),
+            )
+            .map((tab) => (
+              <div
+                key={tab.ownerId}
+                id={`uao-panel-${tab.ownerId}`}
+                role="tabpanel"
+                aria-labelledby={`uao-tab-${tab.ownerId}`}
+                hidden={tabsState.activeOwnerId !== tab.ownerId}
+                className="h-full min-h-0"
+              >
+                <UaoEmbeddedPane
+                  activePaneId={tab.routeTarget}
+                  onChildNavigate={(paneId) =>
+                    handleChildNavigate(tab.ownerId, paneId)
+                  }
+                />
+              </div>
+            ))}
         </div>
       </div>
     </div>
