@@ -1,8 +1,9 @@
 // UAO owns the window and navigation. GenOffice owns document engines, editor
 // IPC, save/recovery behavior and the document-tab close guards.
 import { app, dialog, ipcMain, Menu, webContents, type BrowserWindow, type Rectangle, type WebContents } from 'electron';
-import { join, extname } from 'node:path';
-import { installRendererProtocol, contextMenuLabels, installContextMenu } from './upstream/packages/electron-utils/src/index';
+import { join, extname, basename } from 'node:path';
+import { installRendererProtocol, contextMenuLabels, installContextMenu, configuredDefaultSaveDir } from './upstream/packages/electron-utils/src/index';
+import { blankXlsxBuffer } from './upstream/packages/xlsx-gateway/src/gateway/csv-import';
 import { setUiLang } from './upstream/packages/i18n/src/index';
 import { TabManager } from './upstream/apps/shell/src/main/tab-manager';
 import { blankPdfBuffer } from './upstream/apps/pdf/src/main/blank-pdf';
@@ -18,6 +19,7 @@ import {
 import {
   configureSheetsRuntime, installSheetsMenu, setSheetsShellWindow,
   setSheetsWorkbookOpenedHook, setSheetsCloseTabHook, stopSheetsSidecar,
+  markSheetsUnsavedNew, markSheetsUntitledPath, sendSheetsMenuAction, hasActiveQueuedWorkbook,
 } from './upstream/apps/sheets/src/main/sheets-main';
 import {
   configureSlidesRuntime, installSlidesMenu, setSlidesShellWindow,
@@ -112,6 +114,27 @@ export function createOfficeHost(window: BrowserWindow, resources: string) {
   function changed() {
     if (!window.isDestroyed()) window.webContents.send('uao-office:changed');
   }
+  // GenOffice's in-memory blank grid cannot be saved. Like its own shell, back a
+  // new sheet with a temp workbook whose first Save goes through Save As.
+  async function newSheetTab() {
+    const saveDir = configuredDefaultSaveDir(app);
+    let suggested = join(saveDir, 'Untitled.xlsx');
+    for (let n = 2; existsSync(suggested); n++) suggested = join(saveDir, `Untitled-${n}.xlsx`);
+    const tempDir = join(app.getPath('temp'), 'genoffice-new', randomUUID());
+    mkdirSync(tempDir, { recursive: true });
+    const backing = join(tempDir, basename(suggested));
+    writeFileSync(backing, await blankXlsxBuffer());
+    markSheetsUnsavedNew(backing, suggested, tempDir);
+    markSheetsUntitledPath(backing);
+    manager.openSheetsTab(backing);
+    // The renderer may mount after a single 'open' nudge; repeat until consumed.
+    const startedAt = Date.now();
+    sendSheetsMenuAction('open');
+    const nudge = setInterval(() => {
+      if (!hasActiveQueuedWorkbook() || Date.now() - startedAt > 30_000) clearInterval(nudge);
+      else sendSheetsMenuAction('open');
+    }, 700);
+  }
   function openPath(path: string) {
     if (!existsSync(path)) throw new Error('The document no longer exists.');
     const existing = manager.list().find(tab => tab.filePath === path);
@@ -136,7 +159,7 @@ export function createOfficeHost(window: BrowserWindow, resources: string) {
     async create(kind: string) {
       switch (kind) {
         case 'docs': manager.openDocsTab(undefined, { newBlank: true }); break;
-        case 'sheets': manager.openSheetsTab(undefined, { newBlank: true }); break;
+        case 'sheets': await newSheetTab(); break;
         case 'slides': manager.openSlidesTab(); break;
         case 'markdown': manager.openMarkdownTab(); break;
         case 'html': manager.openHtmlTab(); break;
