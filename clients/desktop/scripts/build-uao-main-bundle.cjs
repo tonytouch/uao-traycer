@@ -50,12 +50,20 @@ const sharedConfig = {
 };
 
 async function build() {
+  require("node:child_process").execFileSync(process.execPath,
+    [path.resolve(workspaceRoot, "../../integrations/genoffice/build.cjs")],
+    { cwd: workspaceRoot, stdio: "inherit" });
   const start = Date.now();
   await esbuild.build({
     ...sharedConfig,
     entryPoints: [mainEntry],
     outfile: mainOutFile,
     absWorkingDir: workspaceRoot,
+  });
+  await esbuild.build({
+    ...sharedConfig,
+    entryPoints: [path.join(workspaceRoot, "src/electron-preload/uao-office-preload.ts")],
+    outfile: path.join(outDir, "uao-office-preload.cjs"),
   });
   const ms = Date.now() - start;
   console.log(

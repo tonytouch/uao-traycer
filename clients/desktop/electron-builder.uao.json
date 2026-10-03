@@ -19,7 +19,7 @@
   "afterPack": null,
   "protocols": [],
   "publish": null,
-  "extraResources": [],
+  "extraResources": [{ "from": "resources/genoffice", "to": ".", "filter": ["**/*"] }],
   "files": [
     "dist/main-uao/**/*",
     "dist/renderer-uao/**/*",
@@ -40,7 +40,7 @@
     "category": "Development",
     "icon": "icons",
     "syncDesktopName": true,
-    "extraResources": [],
+    "extraResources": [{ "from": "resources/genoffice", "to": ".", "filter": ["**/*"] }],
     "target": [
       {
         "target": "AppImage",

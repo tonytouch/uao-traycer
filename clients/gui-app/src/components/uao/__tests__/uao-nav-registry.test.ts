@@ -14,6 +14,7 @@ import {
   PRIORITY_PANE_IDS,
   WORKSPACE_PANE_ID,
   ORCA_PANE_ID,
+  OFFICE_PANE_ID,
   isNativeUaoPane,
   FEATURE_OWNER_MAP,
 } from "../uao-nav-registry";
@@ -25,10 +26,10 @@ import {
 } from "../../../../../desktop/src/shared/content-security-policy";
 
 describe("UAO Navigation Registry & Inventory", () => {
-  it("contains all 34 original UAO panes plus the tasks and orca workspace panes (36 total)", () => {
-    expect(ALL_NAV_PANES).toHaveLength(36);
+  it("contains the original UAO panes plus tasks, Orca and Office workspaces", () => {
+    expect(ALL_NAV_PANES).toHaveLength(37);
     const uniqueIds = new Set(ALL_NAV_PANES.map((p) => p.id));
-    expect(uniqueIds.size).toBe(36);
+    expect(uniqueIds.size).toBe(37);
   });
 
   it("sets command-center as the default pane", () => {
@@ -74,6 +75,10 @@ describe("UAO Navigation Registry & Inventory", () => {
   });
 
   it("validates and normalizes route hashes correctly", () => {
+    expect(isNativeUaoPane(OFFICE_PANE_ID)).toBe(true);
+    expect(normalizeNavId("#/office")).toBe(OFFICE_PANE_ID);
+    expect(filterNavPanes("genoffice").map(pane => pane.id)).toEqual([OFFICE_PANE_ID]);
+    expect(getFeatureOwnerId(OFFICE_PANE_ID)).toBe(OFFICE_PANE_ID);
     expect(isValidNavPaneId("command-center")).toBe(true);
     expect(isValidNavPaneId("agent-cockpit")).toBe(true);
     expect(isValidNavPaneId("second-brain")).toBe(true);
@@ -144,7 +149,7 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(orcaSearch.some((p) => p.id === "orca-workspaces")).toBe(true);
 
     // Empty search returns all panes
-    expect(filterNavPanes("")).toHaveLength(36);
+    expect(filterNavPanes("")).toHaveLength(37);
   });
 
   it("labels backend terminal as Service Terminals vs Orca Workspaces", () => {
@@ -154,13 +159,13 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(terminal?.keywords).toContain("service");
   });
 
-  it("organizes consolidated primary owner panes into 6 navigation groups (22 total default sidebar entries)", () => {
+  it("organizes consolidated owner panes into six navigation groups", () => {
     expect(NAV_GROUPS).toHaveLength(6);
     const totalGroupPanes = NAV_GROUPS.reduce(
       (sum, g) => sum + g.panes.length,
       0,
     );
-    expect(totalGroupPanes).toBe(22);
+    expect(totalGroupPanes).toBe(23);
   });
 });
 

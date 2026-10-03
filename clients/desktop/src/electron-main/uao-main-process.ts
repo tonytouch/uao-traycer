@@ -12,6 +12,7 @@ import {
   isUaoProxyDocument,
 } from "../shared/content-security-policy";
 import { startUaoServer, type UaoServerInstance } from "./uao-server";
+import { prepareUaoOffice, attachUaoOffice } from "./uao-office";
 
 let uaoWindow: BrowserWindow | null = null;
 let serverInstance: UaoServerInstance | null = null;
@@ -23,7 +24,9 @@ function hardenUaoSession(serverOrigin: string): void {
 
   defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const headers = details.responseHeaders ?? {};
-    if (isUaoProxyDocument(details.url, serverOrigin)) {
+    if (isUaoProxyDocument(details.url, serverOrigin) ||
+      details.url.startsWith("genoffice-app:") || details.url.startsWith("genoffice-docx-media:") ||
+      details.url.startsWith("html-preview:") || details.url.startsWith("html-asset:")) {
       callback({ responseHeaders: headers });
       return;
     }
@@ -33,7 +36,8 @@ function hardenUaoSession(serverOrigin: string): void {
 }
 
 app.setName("UAO");
-app.setPath("userData", join(app.getPath("appData"), "uao-desktop"));
+app.setPath("userData", process.env.UAO_DESKTOP_USER_DATA ?? join(app.getPath("appData"), "uao-desktop"));
+const officeRuntime = prepareUaoOffice();
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -65,7 +69,7 @@ async function startUaoDesktop(): Promise<void> {
     app.quit();
   });
 
-  app.on("before-quit", () => {
+  app.on("will-quit", () => {
     if (serverInstance !== null) {
       void serverInstance.close();
       serverInstance = null;
@@ -75,12 +79,16 @@ async function startUaoDesktop(): Promise<void> {
   await app.whenReady();
 
   const staticDir = join(app.getAppPath(), "dist", "renderer-uao");
+  const port = Number(process.env.UAO_DESKTOP_PORT ?? "5183");
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error("UAO_DESKTOP_PORT must be a valid local port.");
+  }
   serverInstance = await startUaoServer({
     staticDir,
     backendPort: 5050,
     // Stable origin keeps the embedded UAO UI and worktab preferences across restarts.
     // The app's single-instance lock prevents two desktop shells sharing this port.
-    port: 5183,
+    port,
   });
 
   hardenUaoSession(serverInstance.origin);
@@ -94,12 +102,15 @@ async function startUaoDesktop(): Promise<void> {
     show: false,
     backgroundColor: "#0b0b0d",
     webPreferences: {
+      preload: join(__dirname, "uao-office-preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
       devTools: true,
     },
   });
+
+  attachUaoOffice(uaoWindow, serverInstance.origin, officeRuntime);
 
   uaoWindow.on("closed", () => {
     uaoWindow = null;

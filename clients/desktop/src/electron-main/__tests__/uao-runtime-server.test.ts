@@ -579,9 +579,10 @@ describe("UAO Packaging Contract & Isolation", () => {
     expect(parsed.protocols).toEqual([]);
     expect(parsed.publish).toBeNull();
 
-    // extraResources must NOT bundle CLI or Host
-    expect(parsed.extraResources).toEqual([]);
-    expect(parsed.linux.extraResources).toEqual([]);
+    // GenOffice assets and engines are separate from Traycer CLI/Host.
+    const officeResources = [{ from: "resources/genoffice", to: ".", filter: ["**/*"] }];
+    expect(parsed.extraResources).toEqual(officeResources);
+    expect(parsed.linux.extraResources).toEqual(officeResources);
     expect(parsed.mac.extraResources).toEqual([]);
     expect(parsed.win.extraResources).toEqual([]);
 

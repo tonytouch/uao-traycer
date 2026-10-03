@@ -19,6 +19,7 @@ import { uaoQueryOptions } from "@/lib/uao/query-options";
 import { UaoEmbeddedPane } from "./uao-embedded-pane";
 import { UaoKanbanTasksPane } from "./uao-kanban-tasks-pane";
 import { UaoOrcaWorkspacesPane } from "./uao-orca-workspaces-pane";
+import { UaoOfficePane } from "./uao-office-pane";
 import {
   DEFAULT_PANE_ID,
   findNavPane,
@@ -27,6 +28,7 @@ import {
   NAV_GROUPS,
   normalizeNavId,
   ORCA_PANE_ID,
+  OFFICE_PANE_ID,
   WORKSPACE_PANE_ID,
 } from "./uao-nav-registry";
 import { UaoSidebar } from "./uao-sidebar";
@@ -628,6 +630,14 @@ function UaoStandaloneScreenInner() {
             />
           </div>
 
+          {visitedOwners.has(OFFICE_PANE_ID) ? (
+            <div id={`uao-panel-${OFFICE_PANE_ID}`} role="tabpanel"
+              aria-labelledby={`uao-tab-${OFFICE_PANE_ID}`}
+              hidden={tabsState.activeOwnerId !== OFFICE_PANE_ID}
+              className="h-full min-h-0">
+              <UaoOfficePane active={tabsState.activeOwnerId === OFFICE_PANE_ID} />
+            </div>
+          ) : null}
           {/* Stable feature documents preserve drafts, drawers and scroll. */}
           {tabsState.tabs
             .filter(

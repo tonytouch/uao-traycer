@@ -23,8 +23,9 @@ export const PRIORITY_PANE_IDS = [
 ] as const;
 export const WORKSPACE_PANE_ID = "tasks-workspace";
 export const ORCA_PANE_ID = "orca-workspaces";
+export const OFFICE_PANE_ID = "office";
 export function isNativeUaoPane(id: string): boolean {
-  return id === WORKSPACE_PANE_ID || id === ORCA_PANE_ID;
+  return id === WORKSPACE_PANE_ID || id === ORCA_PANE_ID || id === OFFICE_PANE_ID;
 }
 const paneRows: readonly (readonly [
   string,
@@ -67,6 +68,13 @@ const paneRows: readonly (readonly [
     "terminal",
     "workspace",
     ["orca", "workspaces", "worktree", "terminals", "agent", "screen"],
+  ],
+  [
+    "office",
+    "Office",
+    "file-text",
+    "workspace",
+    ["genoffice", "office", "word", "excel", "powerpoint", "documents", "spreadsheets", "slides", "pdf", "markdown", "html"],
   ],
   [
     "overview",
