@@ -15,7 +15,7 @@ vi.mock("electron", () => ({
     on: (name: string, callback: (event: IpcMainInvokeEvent, value: unknown) => void) => boundary.listeners.set(name, callback),
   },
   BrowserWindow: class extends EventEmitter {
-    webContents = { mainFrame: boundary.frame };
+    webContents = { mainFrame: { get url() { return boundary.frame.url; } } };
     getContentBounds() { return { x: 0, y: 0, width: 800, height: 600 }; }
     close = vi.fn();
   },
@@ -46,7 +46,7 @@ describe("UAO Office native boundary", () => {
     const list = boundary.handles.get("uao-office:list")!;
     expect(list(event, undefined)).toEqual([]);
     expect(() => list({ ...event, sender: new BrowserWindow().webContents }, undefined)).toThrow("refused");
-    expect(() => list({ ...event, senderFrame: { ...event.senderFrame } }, undefined)).toThrow("refused");
+    expect(() => list({ ...event, senderFrame: new BrowserWindow().webContents.mainFrame }, undefined)).toThrow("refused");
     boundary.frame.url = "https://other.example/";
     expect(() => list(event, undefined)).toThrow("refused");
     boundary.frame.url = "";
