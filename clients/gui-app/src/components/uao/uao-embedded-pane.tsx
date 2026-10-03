@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertCircle } from "lucide-react";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
+import { attachDraftPersistence } from "@/lib/uao/draft-persistence";
 import { uaoQueryOptions } from "@/lib/uao/query-options";
 import {
   DEFAULT_PANE_ID,
@@ -131,6 +132,10 @@ export function UaoEmbeddedPane({
     // Restore cross-feature hashes before UAO's router reads them, so the
     // current pane never unmounts when its header opens another desktop tab.
     child.addEventListener("hashchange", onHashChange, true);
+    const detachDrafts = attachDraftPersistence(doc, {
+      scope: () =>
+        chatOnly ? "chat" : getFeatureOwnerId(lastFeatureId.current),
+    });
     const observer = new MutationObserver(() => {
       if (doc.querySelector(".app-shell")) {
         setReady(true);
@@ -157,6 +162,7 @@ export function UaoEmbeddedPane({
       clearTimeout(timeout);
       observer.disconnect();
       child.removeEventListener("hashchange", onHashChange, true);
+      detachDrafts();
     };
   }, [chatOnly, onChildNavigate]);
 

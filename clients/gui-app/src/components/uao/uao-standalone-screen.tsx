@@ -15,6 +15,7 @@ import { queryClient } from "@/lib/query-client";
 import { ThemeProvider } from "@/providers/theme-provider";
 import { cn } from "@/lib/utils";
 import type { KanbanBoard } from "@/lib/uao/adapter";
+import { discardDrafts } from "@/lib/uao/draft-persistence";
 import { uaoQueryOptions } from "@/lib/uao/query-options";
 import { UaoEmbeddedPane } from "./uao-embedded-pane";
 import { UaoKanbanTasksPane } from "./uao-kanban-tasks-pane";
@@ -441,6 +442,9 @@ function UaoStandaloneScreenInner() {
     setTabsState((prev) =>
       closeWorktab(prev.tabs, prev.activeOwnerId, ownerId),
     );
+    // Closing discards the tab's unsent drafts. Wait until its document has
+    // been removed, because removal flushes one last snapshot.
+    setTimeout(() => discardDrafts(ownerId, window.localStorage), 0);
   }, []);
 
   const handleChildNavigate = useCallback((ownerId: string, paneId: string) => {

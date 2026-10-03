@@ -11,6 +11,7 @@ import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { readAppSettings, writeAppSettings } from './upstream/apps/shell/src/main/app-settings';
 import { normalizeAiPanelPrefs } from './upstream/packages/ui/src/ai-panel-prefs';
+import { buildOfficeSession, existingDocuments, readOfficeSession, writeOfficeSession, type SessionTab } from './office-session';
 import {
   configureDocsRuntime, registerAiIpc, registerProjectIpc, registerDocsIpc,
   buildDocsMenu, setDocsShellWindow, setDocsShellHooks, setDocsMenuGate,
@@ -73,6 +74,15 @@ export function createOfficeHost(window: BrowserWindow, resources: string) {
   });
   installContextMenu(app, () => contextMenuLabels('en'));
   let viewport: Rectangle | null = null;
+  // Reopen last session's saved documents the first time Office is shown.
+  const sessionPath = join(app.getPath('userData'), 'office-session.json');
+  const scratchDir = join(app.getPath('userData'), 'office-scratch');
+  const newSheetDir = join(app.getPath('temp'), 'genoffice-new');
+  const knownTabs = new Map<string, SessionTab>();
+  let sessionRestored = false;
+  // While closing for quit, tabs close one by one; keep recording the pre-quit
+  // set so a restart reopens it, including files first saved by the close prompt.
+  let quitting: { order: string[]; activeId?: string } | null = null;
   const manager = new TabManager(window, changed, kind => {
     if (!viewport) return;
     if (kind === 'docs') buildDocsMenu();
@@ -113,6 +123,35 @@ export function createOfficeHost(window: BrowserWindow, resources: string) {
 
   function changed() {
     if (!window.isDestroyed()) window.webContents.send('uao-office:changed');
+    persistSession();
+  }
+  function persistSession() {
+    const tabs = manager.list();
+    if (!quitting) knownTabs.clear();
+    for (const tab of tabs) knownTabs.set(tab.id, { id: tab.id, filePath: tab.filePath });
+    if (!sessionRestored) return;
+    const order = quitting?.order ?? tabs.map(tab => tab.id);
+    const activeId = quitting ? quitting.activeId : tabs.find(tab => tab.active)?.id;
+    try {
+      writeOfficeSession(sessionPath, buildOfficeSession(order, knownTabs, activeId,
+        [newSheetDir, scratchDir]));
+    } catch (error) {
+      console.warn('[uao-office] could not record open documents', error);
+    }
+  }
+  function restoreSession() {
+    if (sessionRestored) return;
+    const session = existingDocuments(readOfficeSession(sessionPath));
+    const opened: (string | undefined)[] = [];
+    for (const path of session.documents) {
+      try { openPath(path); }
+      catch (error) { console.warn('[uao-office] could not reopen', path, error); }
+      opened.push(manager.list().find(tab => tab.filePath === path)?.id);
+    }
+    const activeId = opened[session.active];
+    if (activeId) manager.activateTab(activeId);
+    sessionRestored = true;
+    persistSession();
   }
   // GenOffice's in-memory blank grid cannot be saved. Like its own shell, back a
   // new sheet with a temp workbook whose first Save goes through Save As.
@@ -120,7 +159,7 @@ export function createOfficeHost(window: BrowserWindow, resources: string) {
     const saveDir = configuredDefaultSaveDir(app);
     let suggested = join(saveDir, 'Untitled.xlsx');
     for (let n = 2; existsSync(suggested); n++) suggested = join(saveDir, `Untitled-${n}.xlsx`);
-    const tempDir = join(app.getPath('temp'), 'genoffice-new', randomUUID());
+    const tempDir = join(newSheetDir, randomUUID());
     mkdirSync(tempDir, { recursive: true });
     const backing = join(tempDir, basename(suggested));
     writeFileSync(backing, await blankXlsxBuffer());
@@ -164,9 +203,8 @@ export function createOfficeHost(window: BrowserWindow, resources: string) {
         case 'markdown': manager.openMarkdownTab(); break;
         case 'html': manager.openHtmlTab(); break;
         case 'pdf': {
-          const scratch = join(app.getPath('userData'), 'office-scratch');
-          mkdirSync(scratch, { recursive: true });
-          const file = join(scratch, `Untitled-${randomUUID()}.pdf`);
+          mkdirSync(scratchDir, { recursive: true });
+          const file = join(scratchDir, `Untitled-${randomUUID()}.pdf`);
           writeFileSync(file, await blankPdfBuffer());
           manager.openPdfTab(file); break;
         }
@@ -178,13 +216,22 @@ export function createOfficeHost(window: BrowserWindow, resources: string) {
     close: (id: string) => manager.closeTab(id),
     setViewport(bounds: Rectangle | null) {
       viewport = bounds; manager.setViewport(bounds);
-      if (bounds) manager.refreshActiveTargets();
-      else Menu.setApplicationMenu(null);
+      if (bounds) {
+        restoreSession();
+        manager.refreshActiveTargets();
+      } else Menu.setApplicationMenu(null);
     },
     async closeAll() {
-      for (const tab of manager.list().filter(tab => tab.closable)) {
+      const tabs = manager.list();
+      quitting = { order: tabs.map(tab => tab.id), activeId: tabs.find(tab => tab.active)?.id };
+      for (const tab of tabs.filter(tab => tab.closable)) {
         await manager.closeTab(tab.id);
-        if (manager.list().some(current => current.id === tab.id)) return false;
+        if (manager.list().some(current => current.id === tab.id)) {
+          // Quit canceled: the remaining tabs are the session again.
+          quitting = null;
+          persistSession();
+          return false;
+        }
       }
       return true;
     },
