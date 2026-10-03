@@ -4,6 +4,13 @@ import {
   fetchKanbanTask,
   fetchKanbanTasks,
 } from "@/lib/uao/adapter";
+import {
+  fetchOrcaRepos,
+  fetchOrcaStatus,
+  fetchOrcaTerminals,
+  fetchOrcaWorktrees,
+  readOrcaTerminalScreen,
+} from "@/lib/uao/orca-adapter";
 import { uaoQueryKeys } from "@/lib/query-keys/uao-query-keys";
 
 export const uaoQueryOptions = {
@@ -56,5 +63,61 @@ export const uaoQueryOptions = {
         taskId === null
           ? skipToken
           : ({ signal }) => fetchKanbanTask(taskId, board, signal),
+    }),
+  orcaStatus: () =>
+    queryOptions({
+      queryKey: uaoQueryKeys.orcaStatus(),
+      queryFn: ({ signal }) => fetchOrcaStatus(signal),
+      refetchInterval: 5000,
+      refetchIntervalInBackground: false,
+      staleTime: 2000,
+    }),
+  orcaRepos: (enabled: boolean) =>
+    queryOptions({
+      queryKey: uaoQueryKeys.orcaRepos(),
+      queryFn: enabled
+        ? ({ signal }) => fetchOrcaRepos(signal)
+        : skipToken,
+      staleTime: 10000,
+    }),
+  orcaWorktrees: (enabled: boolean) =>
+    queryOptions({
+      queryKey: uaoQueryKeys.orcaWorktrees(),
+      queryFn: enabled
+        ? ({ signal }) => fetchOrcaWorktrees(signal)
+        : skipToken,
+      refetchInterval: enabled ? 4000 : false,
+      refetchIntervalInBackground: false,
+      staleTime: 2000,
+    }),
+  orcaTerminals: (worktreeId: string | null) =>
+    queryOptions({
+      queryKey: uaoQueryKeys.orcaTerminals(worktreeId),
+      queryFn:
+        worktreeId === null
+          ? skipToken
+          : ({ signal }) =>
+              fetchOrcaTerminals(
+                worktreeId.startsWith("id:") ? worktreeId : `id:${worktreeId}`,
+                signal,
+              ),
+      refetchInterval: worktreeId !== null ? 3000 : false,
+      refetchIntervalInBackground: false,
+      staleTime: 1500,
+    }),
+  orcaTerminalScreen: (
+    terminalHandle: string | null,
+    enabled: boolean,
+  ) =>
+    queryOptions({
+      queryKey: uaoQueryKeys.orcaTerminalScreen(terminalHandle),
+      queryFn:
+        terminalHandle === null || !enabled
+          ? skipToken
+          : ({ signal }) =>
+              readOrcaTerminalScreen(terminalHandle, 300, signal),
+      refetchInterval: terminalHandle !== null && enabled ? 2000 : false,
+      refetchIntervalInBackground: false,
+      staleTime: 1000,
     }),
 };

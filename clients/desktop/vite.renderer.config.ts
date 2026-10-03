@@ -11,6 +11,7 @@ import {
   CONTENT_SECURITY_POLICY,
   isUaoDevMode,
 } from "./src/shared/content-security-policy";
+import { handleOrcaHttpRequest } from "./src/electron-main/uao-orca-adapter";
 
 const rendererEnvPrefix = [
   "VITE_APP_",
@@ -90,6 +91,31 @@ export default defineConfig((): UserConfig => {
         authToken: process.env.SENTRY_AUTH_TOKEN,
         disable: !process.env.SENTRY_AUTH_TOKEN || !process.env.SENTRY_ORG,
       }),
+      {
+        name: "uao-orca-dev-middleware",
+        configureServer(server) {
+          if (!isUaoDev) return;
+          server.middlewares.use(async (req, res, next) => {
+            const rawUrl = req.url ?? "/";
+            if (
+              rawUrl === "/uao-api/orca" ||
+              rawUrl.startsWith("/uao-api/orca/")
+            ) {
+              try {
+                const handled = await handleOrcaHttpRequest(req, res, {
+                  port,
+                  serverOrigin: `http://127.0.0.1:${port}`,
+                });
+                if (handled) return;
+              } catch (err) {
+                next(err);
+                return;
+              }
+            }
+            next();
+          });
+        },
+      },
     ],
     // Worker bundles are separate builds that do not see `plugins`, and each
     // worker keeps its own copy of its source - the epic runtime runs several.

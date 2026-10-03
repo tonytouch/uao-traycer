@@ -10,6 +10,8 @@ import {
   normalizeNavId,
   PRIORITY_PANE_IDS,
   WORKSPACE_PANE_ID,
+  ORCA_PANE_ID,
+  isNativeUaoPane,
 } from "../uao-nav-registry";
 import {
   buildCspDirectives,
@@ -19,10 +21,10 @@ import {
 } from "../../../../../desktop/src/shared/content-security-policy";
 
 describe("UAO Navigation Registry & Inventory", () => {
-  it("contains all 34 original UAO panes plus the extra workspace pane (35 total)", () => {
-    expect(ALL_NAV_PANES).toHaveLength(35);
+  it("contains all 34 original UAO panes plus the tasks and orca workspace panes (36 total)", () => {
+    expect(ALL_NAV_PANES).toHaveLength(36);
     const uniqueIds = new Set(ALL_NAV_PANES.map((p) => p.id));
-    expect(uniqueIds.size).toBe(35);
+    expect(uniqueIds.size).toBe(36);
   });
 
   it("sets command-center as the default pane", () => {
@@ -54,16 +56,29 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(ws?.group).toBe("workspace");
   });
 
+  it("includes the orca workspaces pane with correct ID, group, and label", () => {
+    expect(ORCA_PANE_ID).toBe("orca-workspaces");
+    const orca = findNavPane(ORCA_PANE_ID);
+    expect(orca).toBeDefined();
+    expect(orca?.label).toBe("Orca Workspaces");
+    expect(orca?.group).toBe("workspace");
+    expect(isNativeUaoPane(ORCA_PANE_ID)).toBe(true);
+    expect(isNativeUaoPane(WORKSPACE_PANE_ID)).toBe(true);
+    expect(ALL_NAV_PANES.filter((pane) => !isNativeUaoPane(pane.id))).toHaveLength(34);
+  });
+
   it("validates and normalizes route hashes correctly", () => {
     expect(isValidNavPaneId("command-center")).toBe(true);
     expect(isValidNavPaneId("agent-cockpit")).toBe(true);
     expect(isValidNavPaneId("second-brain")).toBe(true);
     expect(isValidNavPaneId("tasks-workspace")).toBe(true);
+    expect(isValidNavPaneId("orca-workspaces")).toBe(true);
     expect(isValidNavPaneId("non-existent-pane")).toBe(false);
 
     expect(normalizeNavId("#/second-brain")).toBe("second-brain");
     expect(normalizeNavId("#second-brain")).toBe("second-brain");
     expect(normalizeNavId("second-brain")).toBe("second-brain");
+    expect(normalizeNavId("#/orca-workspaces")).toBe("orca-workspaces");
     expect(normalizeNavId("")).toBe("command-center");
     expect(normalizeNavId("#/invalid-slug")).toBe("command-center");
   });
@@ -78,8 +93,12 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(codingSearch.some((p) => p.id === "claude-code")).toBe(true);
     expect(codingSearch.some((p) => p.id === "coding-cli")).toBe(true);
 
+    // Orca search
+    const orcaSearch = filterNavPanes("orca");
+    expect(orcaSearch.some((p) => p.id === "orca-workspaces")).toBe(true);
+
     // Empty search returns all panes
-    expect(filterNavPanes("")).toHaveLength(35);
+    expect(filterNavPanes("")).toHaveLength(36);
   });
 
   it("organizes panes into 6 structured navigation groups", () => {
@@ -88,7 +107,7 @@ describe("UAO Navigation Registry & Inventory", () => {
       (sum, g) => sum + g.panes.length,
       0,
     );
-    expect(totalGroupPanes).toBe(35);
+    expect(totalGroupPanes).toBe(36);
   });
 });
 

@@ -11,12 +11,14 @@ import { uaoQueryOptions } from "@/lib/uao/query-options";
 import { UaoChatPane } from "./uao-chat-pane";
 import { UaoEmbeddedPane } from "./uao-embedded-pane";
 import { UaoKanbanTasksPane } from "./uao-kanban-tasks-pane";
+import { UaoOrcaWorkspacesPane } from "./uao-orca-workspaces-pane";
 import {
   DEFAULT_PANE_ID,
   NAV_GROUPS,
   findNavPane,
   normalizeNavId,
   WORKSPACE_PANE_ID,
+  ORCA_PANE_ID,
 } from "./uao-nav-registry";
 import { UaoSidebar } from "./uao-sidebar";
 import { UaoTaskDetailPane } from "./uao-task-detail-pane";
@@ -315,7 +317,16 @@ function UaoStandaloneScreenInner() {
             />
           </div>
           <div
-            hidden={activePaneId === WORKSPACE_PANE_ID}
+            hidden={activePaneId !== ORCA_PANE_ID}
+            className="h-full min-h-0"
+          >
+            <UaoOrcaWorkspacesPane active={activePaneId === ORCA_PANE_ID} />
+          </div>
+          <div
+            hidden={
+              activePaneId === WORKSPACE_PANE_ID ||
+              activePaneId === ORCA_PANE_ID
+            }
             className="h-full min-h-0"
           >
             <UaoEmbeddedPane

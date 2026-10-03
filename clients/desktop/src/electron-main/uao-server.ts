@@ -7,6 +7,7 @@ import {
   UAO_CONTENT_SECURITY_POLICY,
   isUaoProxyDocument,
 } from "../shared/content-security-policy";
+import { handleOrcaHttpRequest } from "./uao-orca-adapter";
 
 const MIME_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -280,6 +281,22 @@ export function startUaoServer(
         if (isServiceWorkerRequest(pathname, req.headers)) {
           res.writeHead(404, { "Content-Type": "text/plain" });
           res.end("Not Found");
+          return;
+        }
+
+        // 2b. Direct bounded Orca CLI adapter
+        if (
+          pathname === "/uao-api/orca" ||
+          pathname.startsWith("/uao-api/orca/")
+        ) {
+          void handleOrcaHttpRequest(req, res, {
+            port,
+            serverOrigin,
+            parsedUrl: parsed,
+          }).catch(() => {
+            if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "Orca request failed" }));
+          });
           return;
         }
 

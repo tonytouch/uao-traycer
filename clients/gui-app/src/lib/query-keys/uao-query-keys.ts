@@ -4,4 +4,17 @@ export const uaoQueryKeys = {
   tasks: (board: string | undefined) => ["uao", "tasks", board] as const,
   task: (board: string | undefined, taskId: string | null) =>
     ["uao", "task", board, taskId] as const,
+  orcaStatus: () => ["uao", "orca", "status"] as const,
+  orcaRepos: () => ["uao", "orca", "repos"] as const,
+  orcaWorktrees: () => ["uao", "orca", "worktrees"] as const,
+  orcaTerminals: (worktreeId: string | null) =>
+    ["uao", "orca", "terminals", worktreeId] as const,
+  orcaTerminalScreen: (terminalHandle: string | null) =>
+    ["uao", "orca", "screen", terminalHandle] as const,
+  orcaTerminalSendMutation: () =>
+    ["uao", "orca", "terminal", "send"] as const,
+  orcaTerminalCreateMutation: () =>
+    ["uao", "orca", "terminal", "create"] as const,
+  orcaOpenMutation: () =>
+    ["uao", "orca", "open"] as const,
 };

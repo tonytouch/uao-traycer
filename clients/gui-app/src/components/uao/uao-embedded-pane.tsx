@@ -7,7 +7,7 @@ import { uaoQueryOptions } from "@/lib/uao/query-options";
 import {
   DEFAULT_PANE_ID,
   isValidNavPaneId,
-  WORKSPACE_PANE_ID,
+  isNativeUaoPane,
 } from "./uao-nav-registry";
 
 interface UaoEmbeddedPaneProps {
@@ -29,11 +29,11 @@ export function UaoEmbeddedPane({
   const uiQuery = useQuery(uaoQueryOptions.builtUi());
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const lastFeatureId = useRef(
-    activePaneId === WORKSPACE_PANE_ID ? DEFAULT_PANE_ID : activePaneId,
+    isNativeUaoPane(activePaneId) ? DEFAULT_PANE_ID : activePaneId,
   );
   const [initialSrc] = useState(
     () =>
-      `/uao-api/#/${activePaneId === WORKSPACE_PANE_ID ? DEFAULT_PANE_ID : activePaneId}`,
+      `/uao-api/#/${isNativeUaoPane(activePaneId) ? DEFAULT_PANE_ID : activePaneId}`,
   );
   const cleanupRef = useRef<(() => void) | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -42,7 +42,7 @@ export function UaoEmbeddedPane({
 
   // replace avoids adding a second joint-history entry for a sidebar click.
   useEffect(() => {
-    if (activePaneId === WORKSPACE_PANE_ID) return;
+    if (isNativeUaoPane(activePaneId)) return;
     lastFeatureId.current = activePaneId;
     const child = iframeRef.current?.contentWindow;
     if (ready && child && child.location.hash !== `#/${activePaneId}`) {
@@ -71,7 +71,7 @@ export function UaoEmbeddedPane({
 
     const onHashChange = () => {
       const id = child.location.hash.replace(/^#\/?/, "");
-      if (id !== WORKSPACE_PANE_ID && isValidNavPaneId(id)) {
+      if (!isNativeUaoPane(id) && isValidNavPaneId(id)) {
         lastFeatureId.current = id;
         onChildNavigate(id);
       }
