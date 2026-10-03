@@ -8,32 +8,43 @@ import {
   DEFAULT_PANE_ID,
   isValidNavPaneId,
   isNativeUaoPane,
+  WORKSPACE_PANE_ID,
 } from "./uao-nav-registry";
 
 interface UaoEmbeddedPaneProps {
   readonly activePaneId: string;
   readonly onChildNavigate: (paneId: string) => void;
+  readonly chatOnly?: boolean;
 }
 
 // Keep the normal UAO shell's header, palette, providers, drawers and toasts.
-const UAO_CHROME_CSS = `
+export const UAO_CHROME_CSS = `
   .sidebar, .sidebar-scrim, .mobile-menu-trigger, .embed-nav-toggle { display: none !important; }
   .app-body, .app-main { width: 100% !important; }
   .app-main { flex: 1 1 auto !important; }
 `;
 
+function getSafeWebRoute(lastId: string): string {
+  if (
+    !isNativeUaoPane(lastId) &&
+    lastId !== "chat" &&
+    isValidNavPaneId(lastId)
+  ) {
+    return lastId;
+  }
+  return DEFAULT_PANE_ID;
+}
+
 export function UaoEmbeddedPane({
   activePaneId,
   onChildNavigate,
+  chatOnly = false,
 }: UaoEmbeddedPaneProps) {
   const uiQuery = useQuery(uaoQueryOptions.builtUi());
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const lastFeatureId = useRef(
-    isNativeUaoPane(activePaneId) ? DEFAULT_PANE_ID : activePaneId,
-  );
+  const lastFeatureId = useRef<string>(DEFAULT_PANE_ID);
   const [initialSrc] = useState(
-    () =>
-      `/uao-api/#/${isNativeUaoPane(activePaneId) ? DEFAULT_PANE_ID : activePaneId}`,
+    () => `/uao-api/#/${chatOnly ? "chat" : getSafeWebRoute(activePaneId)}`,
   );
   const cleanupRef = useRef<(() => void) | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -42,7 +53,8 @@ export function UaoEmbeddedPane({
 
   // replace avoids adding a second joint-history entry for a sidebar click.
   useEffect(() => {
-    if (isNativeUaoPane(activePaneId)) return;
+    if (chatOnly || isNativeUaoPane(activePaneId) || activePaneId === "chat")
+      return;
     lastFeatureId.current = activePaneId;
     const child = iframeRef.current?.contentWindow;
     if (ready && child && child.location.hash !== `#/${activePaneId}`) {
@@ -50,7 +62,7 @@ export function UaoEmbeddedPane({
         new URL(`#/${activePaneId}`, child.location.href).href,
       );
     }
-  }, [activePaneId, ready]);
+  }, [activePaneId, ready, chatOnly]);
 
   useEffect(() => () => cleanupRef.current?.(), []);
 
@@ -65,12 +77,36 @@ export function UaoEmbeddedPane({
     const style = doc.createElement("style");
     style.textContent = UAO_CHROME_CSS;
     doc.head.appendChild(style);
-    const hash = `#/${lastFeatureId.current}`;
-    if (child.location.hash !== hash)
-      child.location.replace(new URL(hash, child.location.href).href);
+
+    const childHashId = child.location.hash.replace(/^#\/?/, "");
+    if (chatOnly) {
+      child.location.replace(new URL("#/chat", child.location.href).href);
+    } else if (childHashId === "chat") {
+      const safe = getSafeWebRoute(lastFeatureId.current);
+      child.location.replace(new URL(`#/${safe}`, child.location.href).href);
+      onChildNavigate(WORKSPACE_PANE_ID);
+    } else {
+      const hash = `#/${lastFeatureId.current}`;
+      if (child.location.hash !== hash) {
+        child.location.replace(new URL(hash, child.location.href).href);
+      }
+    }
 
     const onHashChange = () => {
       const id = child.location.hash.replace(/^#\/?/, "");
+      if (chatOnly) {
+        if (id !== "chat" && isValidNavPaneId(id)) {
+          child.location.replace(new URL("#/chat", child.location.href).href);
+          onChildNavigate(id);
+        }
+        return;
+      }
+      if (id === "chat") {
+        const safe = getSafeWebRoute(lastFeatureId.current);
+        child.location.replace(new URL(`#/${safe}`, child.location.href).href);
+        onChildNavigate(WORKSPACE_PANE_ID);
+        return;
+      }
       if (!isNativeUaoPane(id) && isValidNavPaneId(id)) {
         lastFeatureId.current = id;
         onChildNavigate(id);
@@ -104,7 +140,7 @@ export function UaoEmbeddedPane({
       observer.disconnect();
       child.removeEventListener("hashchange", onHashChange);
     };
-  }, [onChildNavigate]);
+  }, [onChildNavigate, chatOnly]);
 
   const error = uiQuery.isError ? uiQuery.error.message : frameError;
   return (
@@ -116,7 +152,11 @@ export function UaoEmbeddedPane({
         <iframe
           key={attempt}
           ref={iframeRef}
-          title="Ultimate Agent OS Built Interface"
+          title={
+            chatOnly
+              ? "UAO Built-in Dedicated Chat"
+              : "Ultimate Agent OS Built Interface"
+          }
           src={initialSrc}
           onLoad={handleLoad}
           onError={() => setFrameError("The UAO interface could not load.")}

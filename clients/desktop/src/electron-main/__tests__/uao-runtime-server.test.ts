@@ -4,10 +4,7 @@ import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  startUaoServer,
-  type UaoServerInstance,
-} from "../uao-server";
+import { startUaoServer, type UaoServerInstance } from "../uao-server";
 import {
   UAO_CONTENT_SECURITY_POLICY,
   isUaoProxyDocument,
@@ -42,7 +39,10 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
     );
     const assetsDir = path.join(tempStaticDir, "assets");
     fs.mkdirSync(assetsDir);
-    fs.writeFileSync(path.join(assetsDir, "app.js"), "console.log('uao shell');");
+    fs.writeFileSync(
+      path.join(assetsDir, "app.js"),
+      "console.log('uao shell');",
+    );
 
     // Outside file and symlink pointing outside
     const outsideSecret = path.join(outsideDir, "secret.txt");
@@ -56,7 +56,9 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
 
       // Test endpoint: kanban boards
       if (url === "/api/kanban/boards") {
-        const tokenHeader = req.headers["x-agent-os-token"] as string | undefined;
+        const tokenHeader = req.headers["x-agent-os-token"] as
+          | string
+          | undefined;
         const hostHeader = req.headers.host;
         const originHeader = req.headers.origin;
 
@@ -79,7 +81,9 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
         });
         res.write("data: first\n\n");
         finishStream = () => res.end("data: second\n\n");
-        streamClosed = new Promise<void>((resolve) => res.once("close", resolve));
+        streamClosed = new Promise<void>((resolve) =>
+          res.once("close", resolve),
+        );
         return;
       }
 
@@ -106,12 +110,15 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
     // Mock backend upgrade for WebSockets
     mockBackend.on("upgrade", (req, socket) => {
       if (req.url === "/api/rejected-ws") {
-        socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        socket.end(
+          "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        );
         return;
       }
       const host = req.headers.host ?? "";
       const origin = req.headers.origin ?? "";
-      const token = (req.headers["x-agent-os-token"] as string | undefined) ?? "";
+      const token =
+        (req.headers["x-agent-os-token"] as string | undefined) ?? "";
 
       socket.write(
         "HTTP/1.1 101 Switching Protocols\r\n" +
@@ -164,6 +171,25 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
   });
 
   describe("Request Boundary Validation", () => {
+    it("reuses an explicitly bound origin across restarts", async () => {
+      const first = await startUaoServer({
+        staticDir: tempStaticDir,
+        backendPort: mockBackendPort,
+      });
+      const { port, origin } = first;
+      await first.close();
+      const second = await startUaoServer({
+        staticDir: tempStaticDir,
+        backendPort: mockBackendPort,
+        port,
+      });
+      try {
+        expect(second.origin).toBe(origin);
+      } finally {
+        await second.close();
+      }
+    });
+
     it("rejects non-loopback Host headers with 403 Forbidden", async () => {
       const statusCode = await new Promise<number>((resolve, reject) => {
         const req = http.request(
@@ -183,7 +209,6 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
       });
       expect(statusCode).toBe(403);
     });
-
 
     it("rejects untrusted Origin headers with 403 Forbidden", async () => {
       const res = await fetch(`http://127.0.0.1:${uaoServer.port}/desktop/`, {
@@ -205,16 +230,22 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
     });
 
     it("rejects requests carrying service-worker: script headers", async () => {
-      const res = await fetch(`http://127.0.0.1:${uaoServer.port}/desktop/assets/app.js`, {
-        headers: { "Service-Worker": "script" },
-      });
+      const res = await fetch(
+        `http://127.0.0.1:${uaoServer.port}/desktop/assets/app.js`,
+        {
+          headers: { "Service-Worker": "script" },
+        },
+      );
       expect(res.status).toBe(404);
     });
 
     it("rejects non-GET/HEAD methods on static files with 405 Method Not Allowed", async () => {
-      const res = await fetch(`http://127.0.0.1:${uaoServer.port}/desktop/uao.html`, {
-        method: "POST",
-      });
+      const res = await fetch(
+        `http://127.0.0.1:${uaoServer.port}/desktop/uao.html`,
+        {
+          method: "POST",
+        },
+      );
       expect(res.status).toBe(405);
       expect(res.headers.get("Allow")).toContain("GET");
     });
@@ -237,22 +268,30 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
     });
 
     it("rejects encoded traversal even when the target exists inside the static root", async () => {
-      const response = await fetch(`${uaoServer.origin}/desktop/%2e%2e%2fuao.html`);
+      const response = await fetch(
+        `${uaoServer.origin}/desktop/%2e%2e%2fuao.html`,
+      );
       expect(response.status).toBe(403);
     });
 
     it("rejects malformed URL escapes without crashing the runtime", async () => {
       const response = await fetch(`${uaoServer.origin}/desktop/%ZZ`);
       expect(response.status).toBe(400);
-      expect((await fetch(`${uaoServer.origin}/desktop/uao.html`)).status).toBe(200);
+      expect((await fetch(`${uaoServer.origin}/desktop/uao.html`)).status).toBe(
+        200,
+      );
     });
 
     it("rejects unexpected proxy methods", async () => {
       const status = await new Promise<number>((resolve, reject) => {
-        const request = http.request(`${uaoServer.origin}/api/ping`, { method: "TRACE" }, response => {
-          response.resume();
-          resolve(response.statusCode ?? 0);
-        });
+        const request = http.request(
+          `${uaoServer.origin}/api/ping`,
+          { method: "TRACE" },
+          (response) => {
+            response.resume();
+            resolve(response.statusCode ?? 0);
+          },
+        );
         request.on("error", reject);
         request.end();
       });
@@ -260,7 +299,9 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
     });
 
     it("rejects browser cross-site requests even without Origin or Referer", async () => {
-      const response = await fetch(`${uaoServer.origin}/api/ping`, { headers: { "Sec-Fetch-Site": "cross-site" } });
+      const response = await fetch(`${uaoServer.origin}/api/ping`, {
+        headers: { "Sec-Fetch-Site": "cross-site" },
+      });
       expect(response.status).toBe(403);
     });
 
@@ -270,7 +311,6 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
       );
       expect(res.status).toBe(403);
     });
-
 
     it("rejects unexpected paths that are neither /desktop/ nor bounded proxy paths (no open proxy)", async () => {
       const res = await fetch(
@@ -282,7 +322,9 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
 
   describe("Static Renderer Serving & CSP Matching", () => {
     it("serves compiled uao.html under /desktop/ and /desktop with exact CSP header", async () => {
-      const resSlash = await fetch(`http://127.0.0.1:${uaoServer.port}/desktop/`);
+      const resSlash = await fetch(
+        `http://127.0.0.1:${uaoServer.port}/desktop/`,
+      );
       expect(resSlash.status).toBe(200);
       expect(resSlash.headers.get("Content-Type")).toContain("text/html");
       const cspHeader = resSlash.headers.get("Content-Security-Policy");
@@ -292,7 +334,9 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
       const text = await resSlash.text();
       expect(text).toContain("<title>UAO Shell</title>");
 
-      const resNoSlash = await fetch(`http://127.0.0.1:${uaoServer.port}/desktop`);
+      const resNoSlash = await fetch(
+        `http://127.0.0.1:${uaoServer.port}/desktop`,
+      );
       expect(resNoSlash.status).toBe(200);
     });
 
@@ -312,8 +356,12 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
       );
       expect(res.status).toBe(200);
       expect(res.headers.get("x-received-token")).toBe("test-secret-token");
-      expect(res.headers.get("x-received-host")).toBe(`127.0.0.1:${mockBackendPort}`);
-      expect(res.headers.get("x-received-origin")).toBe(`http://127.0.0.1:${mockBackendPort}`);
+      expect(res.headers.get("x-received-host")).toBe(
+        `127.0.0.1:${mockBackendPort}`,
+      );
+      expect(res.headers.get("x-received-origin")).toBe(
+        `http://127.0.0.1:${mockBackendPort}`,
+      );
 
       const data = await res.json();
       expect(data).toEqual([{ slug: "main", name: "Main Board" }]);
@@ -347,9 +395,13 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
     });
 
     it("keeps /uao-api redirects inside the same proxy prefix", async () => {
-      const response = await fetch(`${uaoServer.origin}/uao-api/api/redirect`, { redirect: "manual" });
+      const response = await fetch(`${uaoServer.origin}/uao-api/api/redirect`, {
+        redirect: "manual",
+      });
       expect(response.status).toBe(302);
-      expect(response.headers.get("location")).toBe("/uao-api/api/kanban/boards");
+      expect(response.headers.get("location")).toBe(
+        "/uao-api/api/kanban/boards",
+      );
     });
 
     it("preserves upstream CSP only on explicitly matched proxy docs", async () => {
@@ -372,7 +424,7 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
       // Point to an unused local port
       const badServer = await startUaoServer({
         staticDir: tempStaticDir,
-          backendPort: 54321,
+        backendPort: 54321,
       });
 
       try {
@@ -417,8 +469,12 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
           const resp = chunk.toString();
           if (resp.includes("101 Switching Protocols")) {
             expect(resp).toContain("101 Switching Protocols");
-            expect(resp).toContain(`x-received-host: 127.0.0.1:${mockBackendPort}`);
-            expect(resp).toContain(`x-received-origin: http://127.0.0.1:${mockBackendPort}`);
+            expect(resp).toContain(
+              `x-received-host: 127.0.0.1:${mockBackendPort}`,
+            );
+            expect(resp).toContain(
+              `x-received-origin: http://127.0.0.1:${mockBackendPort}`,
+            );
             expect(resp).toContain("x-received-token: test-secret-token");
 
             // Test echo communication over upgraded socket
@@ -434,13 +490,20 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
     });
 
     it("returns rejected backend upgrades and closes the connection", async () => {
-      const socket = net.createConnection({ host: "127.0.0.1", port: uaoServer.port });
+      const socket = net.createConnection({
+        host: "127.0.0.1",
+        port: uaoServer.port,
+      });
       let response = "";
       await new Promise<void>((resolve, reject) => {
-        socket.on("connect", () => socket.write(
-          `GET /api/rejected-ws HTTP/1.1\r\nHost: 127.0.0.1:${uaoServer.port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n`,
-        ));
-        socket.on("data", chunk => { response += chunk.toString(); });
+        socket.on("connect", () =>
+          socket.write(
+            `GET /api/rejected-ws HTTP/1.1\r\nHost: 127.0.0.1:${uaoServer.port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n`,
+          ),
+        );
+        socket.on("data", (chunk) => {
+          response += chunk.toString();
+        });
         socket.on("close", resolve);
         socket.on("error", reject);
       });
@@ -521,7 +584,9 @@ describe("UAO Packaging Contract & Isolation", () => {
     expect(parsed.build.productName).toBe("Traycer");
     expect(parsed.build.appId).toBe("ai.traycer.desktop");
     expect(parsed.build.directories.output).toBe("release");
-    expect(parsed.build.afterPack).toBe("scripts/prepack/inject-host-launch-agent.cjs");
+    expect(parsed.build.afterPack).toBe(
+      "scripts/prepack/inject-host-launch-agent.cjs",
+    );
     expect(parsed.main).toBe("dist/main/index.js");
 
     // UAO scripts exist in package.json

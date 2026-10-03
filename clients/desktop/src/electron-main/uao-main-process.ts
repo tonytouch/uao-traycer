@@ -78,6 +78,9 @@ async function startUaoDesktop(): Promise<void> {
   serverInstance = await startUaoServer({
     staticDir,
     backendPort: 5050,
+    // Stable origin keeps the embedded UAO UI and worktab preferences across restarts.
+    // The app's single-instance lock prevents two desktop shells sharing this port.
+    port: 5183,
   });
 
   hardenUaoSession(serverInstance.origin);

@@ -1,27 +1,53 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { Boxes, CheckCircle2, Radio, RefreshCw, Server } from "lucide-react";
+import {
+  Boxes,
+  CheckCircle2,
+  FileText,
+  Radio,
+  RefreshCw,
+  Sliders,
+} from "lucide-react";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { queryClient } from "@/lib/query-client";
+import { ThemeProvider } from "@/providers/theme-provider";
 import { cn } from "@/lib/utils";
 import type { KanbanBoard } from "@/lib/uao/adapter";
 import { uaoQueryOptions } from "@/lib/uao/query-options";
-import { UaoChatPane } from "./uao-chat-pane";
 import { UaoEmbeddedPane } from "./uao-embedded-pane";
 import { UaoKanbanTasksPane } from "./uao-kanban-tasks-pane";
 import { UaoOrcaWorkspacesPane } from "./uao-orca-workspaces-pane";
 import {
   DEFAULT_PANE_ID,
-  NAV_GROUPS,
   findNavPane,
+  isNativeUaoPane,
+  NAV_GROUPS,
   normalizeNavId,
-  WORKSPACE_PANE_ID,
   ORCA_PANE_ID,
+  WORKSPACE_PANE_ID,
 } from "./uao-nav-registry";
 import { UaoSidebar } from "./uao-sidebar";
 import { UaoTaskDetailPane } from "./uao-task-detail-pane";
+import { UaoWorktabsBar } from "./uao-worktabs-bar";
+import {
+  closeWorktab,
+  DEFAULT_2PANE_SIZES,
+  DEFAULT_3PANE_SIZES,
+  MIN_PANE_FRACTION,
+  openWorktab,
+  sanitizePersistedWorktabs,
+  sanitizeWorkspaceLayout,
+  selectWorktab,
+  SIDEBAR_COLLAPSED_STORAGE_KEY,
+  updateWorktabRoute,
+  WORKSPACE_LAYOUT_STORAGE_KEY,
+  WORKTABS_STORAGE_KEY,
+  type PersistedWorktabsState,
+  type WorkspaceLayoutPreferences,
+} from "./uao-worktabs-state";
+import { WorkspaceResizeDivider } from "./uao-workspace-divider";
 
 function getConnectionDotClass(
   checking: boolean,
@@ -45,22 +71,57 @@ interface UaoTasksWorkspaceProps {
   readonly boards: readonly KanbanBoard[];
   readonly activeBoard: string | undefined;
   readonly onSelectBoard: (boardSlug: string) => void;
+  readonly onNavigateAway: (paneId: string) => void;
 }
 
 function UaoTasksWorkspace({
   boards,
   activeBoard,
   onSelectBoard,
+  onNavigateAway,
 }: UaoTasksWorkspaceProps) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedBoardSlug, setSelectedBoardSlug] = useState<
     string | undefined
   >(undefined);
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
+
+  const [layoutPrefs, setLayoutPrefs] = useState<WorkspaceLayoutPreferences>(
+    () => {
+      if (typeof window !== "undefined") {
+        try {
+          const raw = localStorage.getItem(WORKSPACE_LAYOUT_STORAGE_KEY);
+          if (raw) return sanitizeWorkspaceLayout(JSON.parse(raw));
+        } catch {
+          // ignore parsing error
+        }
+      }
+      return {
+        sizes3: DEFAULT_3PANE_SIZES,
+        sizes2: DEFAULT_2PANE_SIZES,
+      };
+    },
+  );
+
+  const persistLayout = useCallback((prefs: WorkspaceLayoutPreferences) => {
+    setLayoutPrefs(prefs);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(
+          WORKSPACE_LAYOUT_STORAGE_KEY,
+          JSON.stringify(prefs),
+        );
+      } catch {
+        // ignore storage error
+      }
+    }
+  }, []);
 
   const handleSelectTask = useCallback(
     (taskId: string, boardSlug: string | undefined) => {
       setSelectedTaskId(taskId);
       setSelectedBoardSlug(boardSlug ?? activeBoard);
+      setIsDetailOpen(true);
     },
     [activeBoard],
   );
@@ -68,94 +129,264 @@ function UaoTasksWorkspace({
   const handleCloseDetail = useCallback(() => {
     setSelectedTaskId(null);
     setSelectedBoardSlug(undefined);
+    setIsDetailOpen(false);
   }, []);
+
+  const handleResetLayout = useCallback(() => {
+    persistLayout({
+      sizes3: DEFAULT_3PANE_SIZES,
+      sizes2: DEFAULT_2PANE_SIZES,
+    });
+  }, [persistLayout]);
+
+  const handleCommitSizes = useCallback(
+    (newSizes: ReadonlyArray<number>) => {
+      if (isDetailOpen && newSizes.length === 3) {
+        persistLayout({
+          ...layoutPrefs,
+          sizes3: [newSizes[0], newSizes[1], newSizes[2]],
+        });
+      } else if (!isDetailOpen && newSizes.length === 2) {
+        persistLayout({
+          ...layoutPrefs,
+          sizes2: [newSizes[0], newSizes[1]],
+        });
+      }
+    },
+    [isDetailOpen, layoutPrefs, persistLayout],
+  );
+
+  const currentSizes = isDetailOpen ? layoutPrefs.sizes3 : layoutPrefs.sizes2;
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
       {/* Workspace Sub-header */}
       <div className="flex shrink-0 items-center justify-between border-b border-border/30 bg-card/40 px-4 py-1.5">
-        <div className="flex items-center gap-2">
-          <span className="font-heading text-ui-xs font-semibold text-foreground">
-            Workspace Boards:
-          </span>
-          {boards.length > 0 ? (
-            <div className="flex items-center gap-1.5">
-              <label className="sr-only" htmlFor="uao-board-select">
-                Select board
-              </label>
-              <select
-                id="uao-board-select"
-                aria-label="Select board"
-                className="rounded-md border border-border/60 bg-card px-2 py-0.5 text-ui-xs text-foreground"
-                value={activeBoard ?? ""}
-                onChange={(event) => onSelectBoard(event.currentTarget.value)}
-              >
-                {boards.map((board) => (
-                  <option key={board.slug} value={board.slug}>
-                    {board.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : (
-            <span className="font-mono text-micro text-muted-foreground">
-              Default Board
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="font-heading text-ui-xs font-semibold text-foreground">
+              Workspace Boards:
             </span>
+            {boards.length > 0 ? (
+              <div className="flex items-center gap-1.5">
+                <label className="sr-only" htmlFor="uao-board-select">
+                  Select board
+                </label>
+                <select
+                  id="uao-board-select"
+                  aria-label="Select board"
+                  className="rounded-md border border-border/60 bg-card px-2 py-0.5 text-ui-xs text-foreground"
+                  value={activeBoard ?? ""}
+                  onChange={(event) => onSelectBoard(event.currentTarget.value)}
+                >
+                  {boards.map((board) => (
+                    <option key={board.slug} value={board.slug}>
+                      {board.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <span className="font-mono text-micro text-muted-foreground">
+                Default Board
+              </span>
+            )}
+          </div>
+
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={handleResetLayout}
+            aria-label="Reset workspace layout"
+          >
+            <Sliders className="size-3 text-muted-foreground" />
+            <span className="text-micro text-muted-foreground">
+              Reset layout
+            </span>
+          </Button>
+
+          {!isDetailOpen && (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => setIsDetailOpen(true)}
+              aria-label="Open detail pane"
+            >
+              <FileText className="size-3 text-muted-foreground" />
+              <span className="text-micro text-muted-foreground">
+                Detail pane
+              </span>
+            </Button>
           )}
         </div>
+
         <div className="flex items-center gap-2">
           <Badge variant="outline" size="xs">
-            3-Pane Workspace
+            {isDetailOpen ? "3-Pane Workspace" : "2-Pane Workspace"}
           </Badge>
         </div>
       </div>
 
-      {/* Standalone Preview Notice Banner */}
-      <div className="flex shrink-0 items-center justify-between border-b border-border/20 bg-primary/5 px-4 py-1 text-micro text-foreground/80">
-        <div className="flex items-center gap-2">
-          <Server className="size-3 text-primary" />
-          <span>
-            <b>Standalone Preview</b> — Direct proxy to UAO Hermes backend.
-            Local CLI turns are fresh (non-resumable) and in-memory only.
-          </span>
-        </div>
-      </div>
-
-      {/* Three-Pane Work Area */}
+      {/* Fluid Resizable Multi-Pane Work Area */}
       <main
-        aria-label="Task, chat, and detail panes. Scroll horizontally on narrow screens."
-        className="flex min-h-0 flex-1 flex-row overflow-x-auto overflow-y-hidden md:overflow-hidden"
+        aria-label="Task, chat, and detail panes"
+        className="flex min-h-0 flex-1 flex-row overflow-hidden"
       >
         {/* Left Pane: Kanban Tasks */}
-        <UaoKanbanTasksPane
-          selectedTaskId={selectedTaskId}
-          selectedBoardSlug={selectedBoardSlug}
-          onSelectTask={handleSelectTask}
-          activeBoard={activeBoard}
+        <div
+          data-split-child
+          style={{
+            flexGrow: currentSizes[0],
+            flexShrink: 1,
+            flexBasis: "0%",
+            minWidth: 0,
+          }}
+          className="flex h-full min-h-0 flex-col overflow-hidden"
+        >
+          <UaoKanbanTasksPane
+            selectedTaskId={selectedTaskId}
+            selectedBoardSlug={selectedBoardSlug}
+            onSelectTask={handleSelectTask}
+            activeBoard={activeBoard}
+          />
+        </div>
+
+        {/* Divider 0: between Tasks and Chat */}
+        <WorkspaceResizeDivider
+          index={0}
+          sizes={currentSizes}
+          minFraction={MIN_PANE_FRACTION}
+          onCommitSizes={handleCommitSizes}
+          onReset={handleResetLayout}
         />
 
-        {/* Center Pane: Streaming Chat */}
-        <UaoChatPane />
+        {/* Center Pane: Persistent Dedicated Backend-Served Chat */}
+        <div
+          data-split-child
+          style={{
+            flexGrow: currentSizes[1],
+            flexShrink: 1,
+            flexBasis: "0%",
+            minWidth: 0,
+          }}
+          className="flex h-full min-h-0 flex-col overflow-hidden"
+        >
+          <UaoEmbeddedPane
+            activePaneId="chat"
+            onChildNavigate={onNavigateAway}
+            chatOnly
+          />
+        </div>
 
-        {/* Right Pane: Selected Task Detail */}
-        <UaoTaskDetailPane
-          taskId={selectedTaskId}
-          boardSlug={selectedBoardSlug}
-          onClose={handleCloseDetail}
-        />
+        {/* Optional Right Pane: Selected Task Detail */}
+        {isDetailOpen ? (
+          <>
+            <WorkspaceResizeDivider
+              index={1}
+              sizes={currentSizes}
+              minFraction={MIN_PANE_FRACTION}
+              onCommitSizes={handleCommitSizes}
+              onReset={handleResetLayout}
+            />
+            <div
+              data-split-child
+              style={{
+                flexGrow: currentSizes[2],
+                flexShrink: 1,
+                flexBasis: "0%",
+                minWidth: 0,
+              }}
+              className="flex h-full min-h-0 flex-col overflow-hidden"
+            >
+              <UaoTaskDetailPane
+                taskId={selectedTaskId}
+                boardSlug={selectedBoardSlug}
+                onClose={handleCloseDetail}
+              />
+            </div>
+          </>
+        ) : null}
       </main>
     </div>
   );
 }
 
 function UaoStandaloneScreenInner() {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [activePaneId, setActivePaneId] = useState<string>(() => {
-    if (typeof window !== "undefined" && window.location.hash) {
-      return normalizeNavId(window.location.hash);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
+      } catch {
+        // ignore storage read error
+      }
     }
-    return DEFAULT_PANE_ID;
+    return false;
   });
+
+  const [tabsState, setTabsState] = useState<PersistedWorktabsState>(() => {
+    const initialHash =
+      typeof window !== "undefined" && window.location.hash
+        ? normalizeNavId(window.location.hash)
+        : null;
+
+    let savedParsed: PersistedWorktabsState | null = null;
+    if (typeof window !== "undefined") {
+      try {
+        const raw = localStorage.getItem(WORKTABS_STORAGE_KEY);
+        if (raw) savedParsed = sanitizePersistedWorktabs(JSON.parse(raw));
+      } catch {
+        // ignore parse error
+      }
+    }
+
+    if (initialHash) {
+      // New nav hash takes precedence over restore
+      const baseTabs = savedParsed ? savedParsed.tabs : [];
+      return openWorktab(
+        baseTabs.length > 0
+          ? baseTabs
+          : [{ ownerId: DEFAULT_PANE_ID, routeTarget: DEFAULT_PANE_ID }],
+        initialHash,
+      );
+    }
+
+    if (savedParsed) {
+      return savedParsed;
+    }
+
+    return {
+      tabs: [{ ownerId: DEFAULT_PANE_ID, routeTarget: DEFAULT_PANE_ID }],
+      activeOwnerId: DEFAULT_PANE_ID,
+      activeRouteId: DEFAULT_PANE_ID,
+    };
+  });
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(WORKTABS_STORAGE_KEY, JSON.stringify(tabsState));
+      } catch {
+        // ignore storage error
+      }
+    }
+  }, [tabsState]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(
+          SIDEBAR_COLLAPSED_STORAGE_KEY,
+          String(sidebarCollapsed),
+        );
+      } catch {
+        // ignore storage error
+      }
+    }
+  }, [sidebarCollapsed]);
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => !prev);
+  }, []);
 
   const [activeBoardSelection, setActiveBoardSelection] = useState<
     string | null
@@ -173,27 +404,49 @@ function UaoStandaloneScreenInner() {
     connected = false;
   }
 
-  // Active pane metadata
-  const activePane = useMemo(() => findNavPane(activePaneId), [activePaneId]);
+  // Active target pane metadata
+  const activePane = useMemo(
+    () => findNavPane(tabsState.activeRouteId),
+    [tabsState.activeRouteId],
+  );
 
-  // Sync state to URL hash
-  const handleSelectPane = useCallback((paneId: string) => {
-    setActivePaneId(paneId);
+  // Keep URL hash in sync with active route
+  useEffect(() => {
     if (typeof window !== "undefined") {
-      window.location.hash = `/${paneId}`;
+      const targetHash = `#/${tabsState.activeRouteId}`;
+      if (window.location.hash !== targetHash) {
+        window.location.hash = targetHash;
+      }
     }
+  }, [tabsState.activeRouteId]);
+
+  // Sync state on user tab open/switch
+  const handleSelectPane = useCallback((paneId: string) => {
+    setTabsState((prev) => openWorktab(prev.tabs, paneId));
+  }, []);
+
+  const handleSelectTab = useCallback((ownerId: string) => {
+    setTabsState((prev) => selectWorktab(prev.tabs, ownerId));
+  }, []);
+
+  const handleCloseTab = useCallback((ownerId: string) => {
+    setTabsState((prev) =>
+      closeWorktab(prev.tabs, prev.activeOwnerId, ownerId),
+    );
   }, []);
 
   const handleChildNavigate = useCallback((paneId: string) => {
-    setActivePaneId(paneId);
-    window.history.replaceState(null, "", `#/${paneId}`);
+    setTabsState((prev) => updateWorktabRoute(prev.tabs, paneId));
   }, []);
 
   // Listen to browser / Electron back/forward navigation
   useEffect(() => {
     const handleHashChange = () => {
       const target = normalizeNavId(window.location.hash);
-      setActivePaneId((prev) => (prev !== target ? target : prev));
+      setTabsState((prev) => {
+        if (prev.activeRouteId === target) return prev;
+        return openWorktab(prev.tabs, target);
+      });
     };
 
     window.addEventListener("hashchange", handleHashChange);
@@ -229,7 +482,7 @@ function UaoStandaloneScreenInner() {
               :
             </span>
             <span className="font-heading text-ui-xs font-semibold text-foreground">
-              {activePane?.label ?? activePaneId}
+              {activePane?.label ?? tabsState.activeRouteId}
             </span>
           </div>
 
@@ -283,15 +536,23 @@ function UaoStandaloneScreenInner() {
       <div className="flex min-h-0 flex-1 flex-row overflow-hidden">
         {/* Traycer-style Searchable Collapsible Sidebar */}
         <UaoSidebar
-          activePaneId={activePaneId}
+          activePaneId={tabsState.activeRouteId}
           onSelectPane={handleSelectPane}
           collapsed={sidebarCollapsed}
-          onToggleCollapsed={() => setSidebarCollapsed((prev) => !prev)}
+          onToggleCollapsed={handleToggleSidebar}
         />
 
-        {/* Content Area */}
+        {/* Content Area with Worktabs Bar */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
-          {activePaneId === "pwa-hitl" && (
+          {/* Top Content Bar: Feature Worktabs */}
+          <UaoWorktabsBar
+            tabs={tabsState.tabs}
+            activeOwnerId={tabsState.activeOwnerId}
+            onSelectTab={handleSelectTab}
+            onCloseTab={handleCloseTab}
+          />
+
+          {tabsState.activeRouteId === "pwa-hitl" && (
             <div
               role="note"
               className="shrink-0 border-b border-border bg-card px-4 py-2 text-ui-xs text-muted-foreground"
@@ -306,31 +567,53 @@ function UaoStandaloneScreenInner() {
               </a>
             </div>
           )}
+
+          {/* Persistent Task Workspace (Kanban + Dedicated Chat + Detail) */}
           <div
-            hidden={activePaneId !== WORKSPACE_PANE_ID}
+            id={`uao-panel-${WORKSPACE_PANE_ID}`}
+            role="tabpanel"
+            aria-labelledby={`uao-tab-${WORKSPACE_PANE_ID}`}
+            hidden={tabsState.activeOwnerId !== WORKSPACE_PANE_ID}
             className="h-full min-h-0"
           >
             <UaoTasksWorkspace
               boards={boards}
               activeBoard={activeBoard}
               onSelectBoard={setActiveBoardSelection}
+              onNavigateAway={handleSelectPane}
             />
           </div>
+
+          {/* Persistent Orca Terminal Workspaces */}
           <div
-            hidden={activePaneId !== ORCA_PANE_ID}
+            id={`uao-panel-${ORCA_PANE_ID}`}
+            role="tabpanel"
+            aria-labelledby={`uao-tab-${ORCA_PANE_ID}`}
+            hidden={tabsState.activeOwnerId !== ORCA_PANE_ID}
             className="h-full min-h-0"
           >
-            <UaoOrcaWorkspacesPane active={activePaneId === ORCA_PANE_ID} />
+            <UaoOrcaWorkspacesPane
+              active={tabsState.activeOwnerId === ORCA_PANE_ID}
+            />
           </div>
+
+          {/* General Embedded Feature Pane */}
           <div
+            id={
+              isNativeUaoPane(tabsState.activeOwnerId)
+                ? undefined
+                : `uao-panel-${tabsState.activeOwnerId}`
+            }
+            role="tabpanel"
+            aria-labelledby={`uao-tab-${tabsState.activeOwnerId}`}
             hidden={
-              activePaneId === WORKSPACE_PANE_ID ||
-              activePaneId === ORCA_PANE_ID
+              tabsState.activeOwnerId === WORKSPACE_PANE_ID ||
+              tabsState.activeOwnerId === ORCA_PANE_ID
             }
             className="h-full min-h-0"
           >
             <UaoEmbeddedPane
-              activePaneId={activePaneId}
+              activePaneId={tabsState.activeRouteId}
               onChildNavigate={handleChildNavigate}
             />
           </div>
@@ -343,7 +626,9 @@ function UaoStandaloneScreenInner() {
 export function UaoStandaloneScreen() {
   return (
     <QueryClientProvider client={queryClient}>
-      <UaoStandaloneScreenInner />
+      <ThemeProvider>
+        <UaoStandaloneScreenInner />
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }

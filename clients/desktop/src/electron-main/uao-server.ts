@@ -7,7 +7,10 @@ import {
   UAO_CONTENT_SECURITY_POLICY,
   isUaoProxyDocument,
 } from "../shared/content-security-policy";
-import { handleOrcaHttpRequest } from "./uao-orca-adapter";
+import {
+  handleOrcaHttpRequest,
+  handleOrcaTerminalStreamUpgrade,
+} from "./uao-orca-adapter";
 
 const MIME_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -56,6 +59,7 @@ export const UAO_PROXY_DIR_PREFIXES: readonly string[] = [
 export interface UaoServerOptions {
   readonly staticDir: string;
   readonly backendPort: number | undefined;
+  readonly port?: number;
 }
 
 export interface UaoServerInstance {
@@ -119,7 +123,9 @@ function forwardHeaders(
 }
 
 function writeUpgradeResponse(res: http.IncomingMessage): string {
-  const lines = [`HTTP/1.1 ${res.statusCode ?? 502} ${res.statusMessage ?? "Bad Gateway"}`];
+  const lines = [
+    `HTTP/1.1 ${res.statusCode ?? 502} ${res.statusMessage ?? "Bad Gateway"}`,
+  ];
   for (const [key, value] of Object.entries(res.headers)) {
     if (value !== undefined) {
       for (const item of Array.isArray(value) ? value : [value]) {
@@ -185,8 +191,7 @@ export function matchUaoProxyRoute(pathname: string): {
     };
   }
 
-  const isUaoApi =
-    pathname === "/uao-api" || pathname.startsWith("/uao-api/");
+  const isUaoApi = pathname === "/uao-api" || pathname.startsWith("/uao-api/");
   if (isUaoApi) {
     const stripped = pathname.slice("/uao-api".length);
     const backendPath = stripped.length === 0 ? "/" : stripped;
@@ -271,7 +276,17 @@ export function startUaoServer(
           return;
         }
         const pathname = parsed.pathname;
-        if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(req.method ?? "")) {
+        if (
+          ![
+            "GET",
+            "HEAD",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "OPTIONS",
+          ].includes(req.method ?? "")
+        ) {
           res.writeHead(405);
           res.end("Method Not Allowed");
           return;
@@ -294,8 +309,11 @@ export function startUaoServer(
             serverOrigin,
             parsedUrl: parsed,
           }).catch(() => {
-            if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ ok: false, error: "Orca request failed" }));
+            if (!res.headersSent)
+              res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({ ok: false, error: "Orca request failed" }),
+            );
           });
           return;
         }
@@ -434,7 +452,10 @@ export function startUaoServer(
             const location = responseHeaders.location;
             if (typeof location === "string") {
               try {
-                const target = new URL(location, `http://${backendHost}:${backendPort}${targetBackendPath}`);
+                const target = new URL(
+                  location,
+                  `http://${backendHost}:${backendPort}${targetBackendPath}`,
+                );
                 if (target.origin === `http://${backendHost}:${backendPort}`) {
                   responseHeaders.location = `${proxyRoute.isUaoApi ? "/uao-api" : ""}${target.pathname}${target.search}${target.hash}`;
                 }
@@ -462,7 +483,9 @@ export function startUaoServer(
         });
 
         backendReq.on("socket", trackSocket);
-        backendReq.setTimeout(30_000, () => backendReq.destroy(new Error("Backend timeout")));
+        backendReq.setTimeout(30_000, () =>
+          backendReq.destroy(new Error("Backend timeout")),
+        );
         res.once("close", () => backendReq.destroy());
         req.on("aborted", () => {
           backendReq.destroy();
@@ -496,6 +519,20 @@ export function startUaoServer(
           socket.destroy();
           return;
         }
+
+        if (parsed.pathname === "/uao-api/orca/terminal/stream") {
+          void handleOrcaTerminalStreamUpgrade(req, socket, head, {
+            port,
+            serverOrigin,
+            parsedUrl: parsed,
+            userDataPath: undefined,
+            subscribeRuntimeImpl: undefined,
+          }).catch(() => {
+            socket.destroy();
+          });
+          return;
+        }
+
         const proxyRoute = matchUaoProxyRoute(parsed.pathname);
         if (!proxyRoute.matched) {
           socket.destroy();
@@ -560,7 +597,7 @@ export function startUaoServer(
       },
     );
 
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(options.port ?? 0, "127.0.0.1", () => {
       const addr = server.address() as AddressInfo | null;
       if (addr === null) {
         rejectServer(new Error("Failed to bind UAO runtime server address"));

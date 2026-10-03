@@ -1,18 +1,20 @@
-import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Boxes,
-  CheckCircle2,
   FolderGit2,
   Play,
   Plus,
   RefreshCw,
   Search,
-  Send,
-  Square,
-  Terminal as TerminalIcon,
-  XCircle,
 } from "lucide-react";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Badge } from "@/components/ui/badge";
@@ -22,16 +24,19 @@ import { uaoQueryOptions } from "@/lib/uao/query-options";
 import {
   createOrcaTerminal,
   openOrca,
-  sendOrcaTerminalInput,
   type OrcaAllowedAgent,
   type OrcaOpenResult,
   type OrcaRepo,
   type OrcaTerminalCreateResult,
-  type OrcaTerminalSendResult,
   type OrcaTerminalSummary,
   type OrcaWorktree,
 } from "@/lib/uao/orca-adapter";
 import { cn } from "@/lib/utils";
+const UaoOrcaTerminalXterm = lazy(() =>
+  import("./uao-orca-terminal-xterm").then((module) => ({
+    default: module.UaoOrcaTerminalXterm,
+  })),
+);
 
 function usePageVisibility(): boolean {
   return useSyncExternalStore(
@@ -47,7 +52,10 @@ function usePageVisibility(): boolean {
   );
 }
 
-const AGENT_OPTIONS: readonly { readonly id: OrcaAllowedAgent; readonly label: string }[] = [
+const AGENT_OPTIONS: readonly {
+  readonly id: OrcaAllowedAgent;
+  readonly label: string;
+}[] = [
   { id: "shell", label: "Shell (Default)" },
   { id: "claude", label: "Claude Code" },
   { id: "codex", label: "Codex" },
@@ -58,75 +66,24 @@ const EMPTY_REPOS: readonly OrcaRepo[] = [];
 const EMPTY_WORKTREES: readonly OrcaWorktree[] = [];
 const EMPTY_TERMINALS: readonly OrcaTerminalSummary[] = [];
 
-interface LastReceiptState {
-  readonly handle: string;
-  readonly accepted: boolean;
-  readonly turnStarted: boolean;
-  readonly requestId: string | undefined;
-  readonly warnings: readonly string[] | undefined;
-  readonly error: string | undefined;
-}
-
-function createSendReceipt(
-  terminal: string,
-  data: OrcaTerminalSendResult,
-): LastReceiptState {
-  const promptStages = data.send?.prompt?.stages ?? [];
-  const turnStarted = promptStages.includes("turn_started");
-  return {
-    handle: terminal,
-    accepted: data.send?.accepted ?? data.ok,
-    turnStarted,
-    requestId: data.send?.prompt?.requestId,
-    warnings: data.warnings,
-    error: data.error ?? (data.send?.accepted === false ? data.send.refusedReason : undefined),
-  };
-}
-
-function createErrorReceipt(
-  terminal: string,
-  errorMessage: string,
-): LastReceiptState {
-  return {
-    handle: terminal,
-    accepted: false,
-    turnStarted: false,
-    requestId: undefined,
-    warnings: undefined,
-    error: errorMessage,
-  };
-}
-
-function receiptForHandle(receipt: LastReceiptState | null, handle: string | null): LastReceiptState | null {
-  return receipt?.handle === handle ? receipt : null;
-}
-
-function creationMessage(error: Error | null, result: OrcaTerminalCreateResult | undefined): string | undefined {
+function creationMessage(
+  error: Error | null,
+  result: OrcaTerminalCreateResult | undefined,
+): string | undefined {
   return error?.message ?? result?.terminal?.warning;
 }
 
-function OrcaQueryError({ errors }: { readonly errors: readonly (Error | null)[] }) {
+function OrcaQueryError({
+  errors,
+}: {
+  readonly errors: readonly (Error | null)[];
+}) {
   const error = errors.find(Boolean);
-  return error ? <p role="alert" className="px-4 py-2 text-ui-xs text-destructive">{error.message}</p> : null;
-}
-
-function getReceiptBannerClasses(receipt: LastReceiptState): string {
-  if (receipt.error !== undefined || !receipt.accepted) {
-    return "border-destructive/30 bg-destructive/10 text-destructive";
-  }
-  if (receipt.turnStarted) {
-    return "border-success/30 bg-success/10 text-success";
-  }
-  return "border-info/30 bg-info/10 text-info";
-}
-
-function getTerminalStatusBadgeVariant(
-  status: string | undefined,
-): "success" | "destructive" {
-  if (status === "running") {
-    return "success";
-  }
-  return "destructive";
+  return error ? (
+    <p role="alert" className="px-4 py-2 text-ui-xs text-destructive">
+      {error.message}
+    </p>
+  ) : null;
 }
 
 function matchesWorktree(
@@ -147,7 +104,11 @@ function matchesWorktree(
   if (worktree.branch.toLowerCase().includes(q)) return true;
   if (worktree.path.toLowerCase().includes(q)) return true;
   if (worktree.repo.toLowerCase().includes(q)) return true;
-  if (worktree.status !== undefined && worktree.status.toLowerCase().includes(q)) return true;
+  if (
+    worktree.status !== undefined &&
+    worktree.status.toLowerCase().includes(q)
+  )
+    return true;
   if (String(worktree.liveTerminalCount).includes(q)) return true;
   return false;
 }
@@ -174,17 +135,6 @@ function findActiveTerminal(
   return terminals.at(0);
 }
 
-function checkSessionUnusable(
-  terminal: OrcaTerminalSummary | undefined,
-  screenStatus: string | undefined,
-): boolean {
-  if (!terminal) return true;
-  if (!terminal.connected) return true;
-  if (!terminal.writable) return true;
-  if (screenStatus !== "running") return true;
-  return false;
-}
-
 interface OrcaSubHeaderProps {
   readonly isReachable: boolean;
   readonly runtimeState: string;
@@ -206,7 +156,8 @@ function OrcaSubHeader(props: OrcaSubHeaderProps) {
     onRefresh,
   } = props;
 
-  const versionLabel = appVersion !== undefined ? appVersion : "version unknown";
+  const versionLabel =
+    appVersion !== undefined ? appVersion : "version unknown";
   const statusLabel = isReachable
     ? `Orca live (${versionLabel})`
     : `Orca offline (${runtimeState})`;
@@ -314,9 +265,7 @@ function OrcaOfflineCard(props: OrcaOfflineCardProps) {
           <span>Start Orca Runtime</span>
         </Button>
         {openError !== undefined && (
-          <p className="mt-3 text-micro text-destructive">
-            Orca: {openError}
-          </p>
+          <p className="mt-3 text-micro text-destructive">Orca: {openError}</p>
         )}
       </div>
     </div>
@@ -360,7 +309,9 @@ function OrcaWorktreeItem(props: OrcaWorktreeItemProps) {
           <Badge variant="outline" size="xs">
             {worktree.liveTerminalCount} term
           </Badge>
-          <Badge variant="outline" size="xs">{worktree.status ?? "unknown"}</Badge>
+          <Badge variant="outline" size="xs">
+            {worktree.status ?? "unknown"}
+          </Badge>
         </div>
       </div>
 
@@ -523,9 +474,11 @@ function OrcaTerminalItem(props: OrcaTerminalItemProps) {
         ) : null}
       </div>
 
-      {terminal.preview ? <div className="mt-1 truncate font-mono text-micro text-muted-foreground/70">
+      {terminal.preview ? (
+        <div className="mt-1 truncate font-mono text-micro text-muted-foreground/70">
           {terminal.preview}
-        </div> : null}
+        </div>
+      ) : null}
     </button>
   );
 }
@@ -607,9 +560,7 @@ function OrcaTerminalsSidebar(props: OrcaTerminalsSidebarProps) {
         </div>
 
         {createError !== undefined && (
-          <p className="text-micro text-destructive">
-            Orca: {createError}
-          </p>
+          <p className="text-micro text-destructive">Orca: {createError}</p>
         )}
       </div>
 
@@ -632,326 +583,6 @@ function OrcaTerminalsSidebar(props: OrcaTerminalsSidebarProps) {
         )}
       </div>
     </section>
-  );
-}
-
-interface OrcaScreenHeaderProps {
-  readonly terminalTitle: string;
-  readonly source: string;
-  readonly status: string;
-  readonly statusBadgeVariant: "success" | "destructive";
-  readonly isTruncated: boolean;
-  readonly isFetching: boolean;
-  readonly onRefresh: () => void;
-}
-
-function OrcaScreenHeader(props: OrcaScreenHeaderProps) {
-  const {
-    terminalTitle,
-    source,
-    status,
-    statusBadgeVariant,
-    isTruncated,
-    isFetching,
-    onRefresh,
-  } = props;
-
-  return (
-    <div className="flex shrink-0 items-center justify-between border-b border-border/30 bg-card/60 px-4 py-2 text-micro">
-      <div className="flex items-center gap-2">
-        <TerminalIcon className="size-3.5 text-primary" />
-        <span className="font-heading font-semibold text-foreground">
-          {terminalTitle}
-        </span>
-        <Badge variant="outline" size="xs">
-          source: {source}
-        </Badge>
-        <Badge variant={statusBadgeVariant} size="xs">
-          status: {status}
-        </Badge>
-        {isTruncated ? (
-          <Badge variant="warning" size="xs">
-            Truncated (limit 300)
-          </Badge>
-        ) : null}
-      </div>
-
-      <div className="flex items-center gap-2 font-mono text-muted-foreground">
-        <span>{isFetching ? "Refreshing…" : "Screen polled"}</span>
-        <Button
-          variant="ghost"
-          size="xs"
-          onClick={onRefresh}
-          disabled={isFetching}
-          aria-label="Refresh terminal screen"
-        >
-          {isFetching ? <AgentSpinningDots tone="muted" /> : <RefreshCw className="size-3" />}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-interface OrcaReceiptBannerProps {
-  readonly receipt: LastReceiptState;
-  readonly onDismiss: () => void;
-}
-
-function OrcaReceiptBanner(props: OrcaReceiptBannerProps) {
-  const { receipt, onDismiss } = props;
-
-  function renderReceiptContent() {
-    if (receipt.error !== undefined || !receipt.accepted) {
-      return (
-        <>
-          <XCircle className="size-3" />
-          <span>Send failed: {receipt.error ?? "Input was not accepted"}</span>
-        </>
-      );
-    }
-    if (receipt.turnStarted) {
-      return (
-        <>
-          <CheckCircle2 className="size-3" />
-          <span>Turn started (Receipt: {receipt.requestId ?? "received"})</span>
-        </>
-      );
-    }
-    return (
-      <>
-        <CheckCircle2 className="size-3" />
-        <span>Input accepted</span>
-      </>
-    );
-  }
-
-  return (
-    <div
-      role="status"
-      className={cn(
-        "flex shrink-0 items-center justify-between border-t px-4 py-1.5 text-micro",
-        getReceiptBannerClasses(receipt),
-      )}
-    >
-      <div className="flex items-center gap-2">
-        {renderReceiptContent()}
-        {receipt.warnings !== undefined && receipt.warnings.length > 0 && (
-          <span className="font-semibold text-warning">
-            [Warning: {receipt.warnings.join("; ")}]
-          </span>
-        )}
-      </div>
-
-      <button
-        type="button"
-        onClick={onDismiss}
-        className="text-muted-foreground hover:text-foreground"
-      >
-        Dismiss
-      </button>
-    </div>
-  );
-}
-
-interface OrcaComposerProps {
-  readonly currentDraft: string;
-  readonly isSessionUnusable: boolean;
-  readonly isSendPending: boolean;
-  readonly onDraftChange: (text: string) => void;
-  readonly onSend: () => void;
-  readonly onInterrupt: () => void;
-}
-
-function OrcaComposer(props: OrcaComposerProps) {
-  const {
-    currentDraft,
-    isSessionUnusable,
-    isSendPending,
-    onDraftChange,
-    onSend,
-    onInterrupt,
-  } = props;
-
-  const canSend = !isSessionUnusable && !isSendPending && currentDraft.trim().length > 0;
-
-  return (
-    <div className="flex shrink-0 flex-col gap-2 border-t border-border/40 bg-card/40 p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <label htmlFor="orca-terminal-prompt-composer" className="sr-only">
-          Command or prompt
-        </label>
-        <input
-          id="orca-terminal-prompt-composer"
-          type="text"
-          value={currentDraft}
-          onChange={(e) => onDraftChange(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && canSend) {
-              e.preventDefault();
-              onSend();
-            }
-          }}
-          disabled={isSessionUnusable || isSendPending}
-          placeholder={
-            isSessionUnusable
-              ? "Session disconnected / unwritable"
-              : "Type a prompt or command (Enter to send)…"
-          }
-          className="flex-1 rounded-md border border-border/60 bg-foreground/5 px-3 py-1.5 font-mono text-ui-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-        />
-
-        <Button
-          variant="default"
-          size="sm"
-          onClick={onSend}
-          disabled={!canSend}
-        >
-          {isSendPending ? (
-            <AgentSpinningDots tone="primary" />
-          ) : (
-            <Send className="size-3.5" />
-          )}
-          <span>Send</span>
-        </Button>
-
-        <Button
-          variant="destructive-ghost"
-          size="sm"
-          onClick={onInterrupt}
-          disabled={isSessionUnusable || isSendPending}
-          aria-label="Send interrupt signal"
-        >
-          <Square className="size-3" />
-          <span>Interrupt</span>
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-interface OrcaTerminalScreenViewerProps {
-  readonly activeTerminal: OrcaTerminalSummary | undefined;
-  readonly isFetching: boolean;
-  readonly isError: boolean;
-  readonly errorMessage: string | undefined;
-  readonly tail: readonly string[] | undefined;
-  readonly source: string | undefined;
-  readonly status: string | undefined;
-  readonly truncated: boolean | undefined;
-  readonly isTerminalSessionUnusable: boolean;
-  readonly lastReceipt: LastReceiptState | null;
-  readonly currentDraft: string;
-  readonly isSendPending: boolean;
-  readonly onRefetch: () => void;
-  readonly onDismissReceipt: () => void;
-  readonly onDraftChange: (text: string) => void;
-  readonly onSend: () => void;
-  readonly onInterrupt: () => void;
-}
-
-function OrcaTerminalScreenViewer(props: OrcaTerminalScreenViewerProps) {
-  const {
-    activeTerminal,
-    isFetching,
-    isError,
-    errorMessage,
-    tail,
-    source,
-    status,
-    truncated,
-    isTerminalSessionUnusable,
-    lastReceipt,
-    currentDraft,
-    isSendPending,
-    onRefetch,
-    onDismissReceipt,
-    onDraftChange,
-    onSend,
-    onInterrupt,
-  } = props;
-
-  if (!activeTerminal) {
-    return (
-      <main
-        aria-label="Terminal screen and composer"
-        className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center text-ui-sm text-muted-foreground"
-      >
-        Select a terminal or create a new one to inspect its rendered screen.
-      </main>
-    );
-  }
-
-  const resolvedSource = source !== undefined ? source : "unknown";
-  const defaultStatus = activeTerminal.connected ? "running" : "disconnected";
-  const resolvedStatus = status !== undefined ? status : defaultStatus;
-
-  function renderScreenContent() {
-    if (isError) {
-      return (
-        <div className="text-destructive">
-          Failed to read screen: {errorMessage ?? "Unknown error"}
-        </div>
-      );
-    }
-    if (tail !== undefined && tail.length > 0) {
-      return <pre className="whitespace-pre-wrap">{tail.join("\n")}</pre>;
-    }
-    return (
-      <div className="text-muted-foreground">
-        (No screen output rendered yet)
-      </div>
-    );
-  }
-
-  return (
-    <main
-      aria-label="Terminal screen and composer"
-      className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background"
-    >
-      <div className="flex h-full flex-col overflow-hidden">
-        <OrcaScreenHeader
-          terminalTitle={activeTerminal.title || activeTerminal.handle}
-          source={resolvedSource}
-          status={resolvedStatus}
-          statusBadgeVariant={getTerminalStatusBadgeVariant(resolvedStatus)}
-          isTruncated={truncated === true}
-          isFetching={isFetching}
-          onRefresh={onRefetch}
-        />
-
-        {isTerminalSessionUnusable ? (
-          <div
-            role="alert"
-            className="flex shrink-0 items-center gap-2 border-b border-warning/30 bg-warning/10 px-4 py-1.5 text-ui-xs text-warning"
-          >
-            <AlertTriangle className="size-3.5" />
-            <span>
-              Terminal session is disconnected, unwritable, or exited. Input
-              controls are disabled.
-            </span>
-          </div>
-        ) : null}
-
-        <div
-          role="region"
-          aria-label="Rendered screen content"
-          className="flex-1 overflow-auto bg-black p-3 font-mono text-ui-xs text-success select-text"
-        >
-          {renderScreenContent()}
-        </div>
-
-        {lastReceipt ? <OrcaReceiptBanner receipt={lastReceipt} onDismiss={onDismissReceipt} /> : null}
-
-        <OrcaComposer
-          currentDraft={currentDraft}
-          isSessionUnusable={isTerminalSessionUnusable}
-          isSendPending={isSendPending}
-          onDraftChange={onDraftChange}
-          onSend={onSend}
-          onInterrupt={onInterrupt}
-        />
-      </div>
-    </main>
   );
 }
 
@@ -1004,11 +635,7 @@ function OrcaWorkspacesConnectedPane(props: OrcaWorkspacesConnectedPaneProps) {
   const [selectedTerminalHandle, setSelectedTerminalHandle] = useState<
     string | null
   >(null);
-  const [draftsByHandle, setDraftsByHandle] = useState<Record<string, string>>(
-    {},
-  );
   const [agentChoice, setAgentChoice] = useState<OrcaAllowedAgent>("shell");
-  const [lastReceipt, setLastReceipt] = useState<LastReceiptState | null>(null);
 
   const filteredWorktrees = useMemo(() => {
     const trimmed = search.trim();
@@ -1024,10 +651,10 @@ function OrcaWorkspacesConnectedPane(props: OrcaWorkspacesConnectedPaneProps) {
   const resolvedWorktreeId = activeWorktree ? activeWorktree.worktreeId : null;
 
   // 2. Terminals for Selected Workspace
-  const {
-    data: terminalsData,
-    error: terminalsError,
-  } = useQuery({ ...uaoQueryOptions.orcaTerminals(resolvedWorktreeId), enabled: isPageVisible });
+  const { data: terminalsData, error: terminalsError } = useQuery({
+    ...uaoQueryOptions.orcaTerminals(resolvedWorktreeId),
+    enabled: isPageVisible,
+  });
   const terminals: readonly OrcaTerminalSummary[] =
     terminalsData ?? EMPTY_TERMINALS;
 
@@ -1037,74 +664,7 @@ function OrcaWorkspacesConnectedPane(props: OrcaWorkspacesConnectedPaneProps) {
 
   const resolvedTerminalHandle = activeTerminal ? activeTerminal.handle : null;
 
-  // 3. Terminal Rendered Screen
-  const {
-    data: screenData,
-    isFetching: isScreenFetching,
-    isError: isScreenError,
-    error: screenError,
-    refetch: refetchScreen,
-  } = useQuery(
-    uaoQueryOptions.orcaTerminalScreen(resolvedTerminalHandle, isPageVisible),
-  );
-
-  const currentDraft =
-    resolvedTerminalHandle !== null
-      ? (draftsByHandle[resolvedTerminalHandle] ?? "")
-      : "";
-
-  const handleDraftChange = useCallback(
-    (text: string) => {
-      if (resolvedTerminalHandle === null) return;
-      setDraftsByHandle((prev) => ({
-        ...prev,
-        [resolvedTerminalHandle]: text,
-      }));
-    },
-    [resolvedTerminalHandle],
-  );
-
-  // 4. Send Input Mutation (never auto-retry)
-  const {
-    mutate: mutateSend,
-    isPending: isSendPending,
-  } = useMutation<
-    OrcaTerminalSendResult,
-    Error,
-    {
-      readonly terminal: string;
-      readonly text: string | undefined;
-      readonly enter: boolean | undefined;
-      readonly interrupt: boolean | undefined;
-    }
-  >({
-    mutationKey: uaoQueryKeys.orcaTerminalSendMutation(),
-    retry: false,
-    mutationFn: async (payload) => {
-      return sendOrcaTerminalInput(payload, undefined);
-    },
-    onSuccess: (data, variables) => {
-      if (
-        data.ok &&
-        variables.text !== undefined &&
-        variables.terminal !== ""
-      ) {
-        setDraftsByHandle((prev) => ({
-          ...prev,
-          [variables.terminal]: prev[variables.terminal] === variables.text ? "" : (prev[variables.terminal] ?? ""),
-        }));
-      }
-      setLastReceipt(createSendReceipt(variables.terminal, data));
-      void refetchScreen();
-    },
-    onError: (err, variables) => {
-      setLastReceipt(
-        createErrorReceipt(variables.terminal, `${err.message}. Delivery may be uncertain; inspect the screen before resending.`),
-      );
-    },
-  });
-
-  // 5. Create Terminal Mutation
+  // 3. Create Terminal Mutation
   const {
     mutate: mutateCreateTerminal,
     data: createResult,
@@ -1125,17 +685,14 @@ function OrcaWorkspacesConnectedPane(props: OrcaWorkspacesConnectedPaneProps) {
     },
     onSuccess: async (data, variables) => {
       const workspaceId = variables.worktree.slice(3);
-      await queryClient.invalidateQueries({ queryKey: uaoQueryKeys.orcaTerminals(workspaceId) });
+      await queryClient.invalidateQueries({
+        queryKey: uaoQueryKeys.orcaTerminals(workspaceId),
+      });
       if (data.terminal?.handle && resolvedWorktreeId === workspaceId) {
         setSelectedTerminalHandle(data.terminal.handle);
       }
     },
   });
-
-  const isTerminalSessionUnusable = checkSessionUnusable(
-    activeTerminal,
-    screenData?.status,
-  );
 
   const handleRefresh = useCallback(() => {
     onRefetchStatus();
@@ -1153,32 +710,6 @@ function OrcaWorkspacesConnectedPane(props: OrcaWorkspacesConnectedPaneProps) {
       });
     }
   }, [resolvedWorktreeId, mutateCreateTerminal, agentChoice]);
-
-  const handleSendDraft = useCallback(() => {
-    if (resolvedTerminalHandle !== null && currentDraft.trim().length > 0) {
-      mutateSend({
-        terminal: resolvedTerminalHandle,
-        text: currentDraft,
-        enter: true,
-        interrupt: undefined,
-      });
-    }
-  }, [resolvedTerminalHandle, currentDraft, mutateSend]);
-
-  const handleInterrupt = useCallback(() => {
-    if (resolvedTerminalHandle !== null) {
-      mutateSend({
-        terminal: resolvedTerminalHandle,
-        text: undefined,
-        enter: undefined,
-        interrupt: true,
-      });
-    }
-  }, [resolvedTerminalHandle, mutateSend]);
-
-  const handleDismissReceipt = useCallback(() => {
-    setLastReceipt(null);
-  }, []);
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
@@ -1219,31 +750,36 @@ function OrcaWorkspacesConnectedPane(props: OrcaWorkspacesConnectedPaneProps) {
           onCreateTerminal={handleCreateTerminal}
         />
 
-        <OrcaTerminalScreenViewer
-          activeTerminal={activeTerminal}
-          isFetching={isScreenFetching}
-          isError={isScreenError}
-          errorMessage={screenError?.message}
-          tail={screenData?.tail}
-          source={screenData?.source}
-          status={screenData?.status}
-          truncated={screenData?.truncated}
-          isTerminalSessionUnusable={isTerminalSessionUnusable}
-          lastReceipt={receiptForHandle(lastReceipt, resolvedTerminalHandle)}
-          currentDraft={currentDraft}
-          isSendPending={isSendPending}
-          onRefetch={() => void refetchScreen()}
-          onDismissReceipt={handleDismissReceipt}
-          onDraftChange={handleDraftChange}
-          onSend={handleSendDraft}
-          onInterrupt={handleInterrupt}
-        />
+        {activeTerminal ? (
+          <Suspense fallback={<AgentSpinningDots tone="muted" />}>
+            <UaoOrcaTerminalXterm
+              key={activeTerminal.handle}
+              handle={activeTerminal.handle}
+              title={activeTerminal.title || activeTerminal.handle}
+              connected={activeTerminal.connected}
+              writable={activeTerminal.writable}
+              active={isPageVisible}
+              agentIdentity={activeTerminal.agentIdentity}
+            />
+          </Suspense>
+        ) : (
+          <main
+            aria-label="Interactive terminal surface"
+            className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center text-ui-sm text-muted-foreground"
+          >
+            Select a terminal or create a new one to start streaming.
+          </main>
+        )}
       </div>
     </div>
   );
 }
 
-export function UaoOrcaWorkspacesPane({ active }: { readonly active: boolean }) {
+export function UaoOrcaWorkspacesPane({
+  active,
+}: {
+  readonly active: boolean;
+}) {
   const queryClient = useQueryClient();
 
   const {
@@ -1255,7 +791,8 @@ export function UaoOrcaWorkspacesPane({ active }: { readonly active: boolean }) 
 
   const runtime = statusData?.result?.runtime;
   const isReachable = runtime?.reachable === true;
-  const runtimeState = runtime?.state ?? (isStatusFetching ? "checking" : "unknown");
+  const runtimeState =
+    runtime?.state ?? (isStatusFetching ? "checking" : "unknown");
 
   const {
     mutate: mutateOpen,

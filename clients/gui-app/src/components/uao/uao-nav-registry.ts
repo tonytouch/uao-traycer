@@ -276,7 +276,13 @@ const paneRows: readonly (readonly [
     ],
   ],
   ["logs", "Live Logs", "terminal", "system", ["debug", "output"]],
-  ["terminal", "Terminal", "terminal", "system", ["console", "shell"]],
+  [
+    "terminal",
+    "Service Terminals",
+    "terminal",
+    "system",
+    ["console", "shell", "service", "backend"],
+  ],
   [
     "memory-wiki",
     "Memory Wiki",
@@ -308,6 +314,45 @@ export const ALL_NAV_PANES: readonly UaoNavPane[] = paneRows.map(
     keywords,
   }),
 );
+
+/**
+ * Feature ownership mapping consolidating child subviews into primary owner components:
+ * - mission-control -> command-center
+ * - memory-wiki, vault-graph, knowledge-galaxy -> second-brain
+ * - agent, swarm-orchestrator, coding-cli, agents-roster, hermes-webui, omnigent -> agent-cockpit
+ * - telemetry, logs, pwa-hitl -> operations-pulse
+ * - chat -> tasks-workspace
+ */
+export const FEATURE_OWNER_MAP: Readonly<Record<string, string>> = {
+  "mission-control": "command-center",
+  "memory-wiki": "second-brain",
+  "vault-graph": "second-brain",
+  "knowledge-galaxy": "second-brain",
+  agent: "agent-cockpit",
+  "swarm-orchestrator": "agent-cockpit",
+  "coding-cli": "agent-cockpit",
+  "agents-roster": "agent-cockpit",
+  "hermes-webui": "agent-cockpit",
+  omnigent: "agent-cockpit",
+  telemetry: "operations-pulse",
+  logs: "operations-pulse",
+  "pwa-hitl": "operations-pulse",
+  chat: WORKSPACE_PANE_ID,
+};
+
+export function getFeatureOwnerId(id: string): string {
+  return FEATURE_OWNER_MAP[id] ?? id;
+}
+
+export function isFeatureOwner(id: string): boolean {
+  return !(id in FEATURE_OWNER_MAP);
+}
+
+export function getFeatureOwnerPane(id: string): UaoNavPane | undefined {
+  const ownerId = getFeatureOwnerId(id);
+  return findNavPane(ownerId);
+}
+
 const groupRows: readonly (readonly [UaoNavGroupId, string, string])[] = [
   ["priority", "Priority Features", "rocket"],
   ["workspace", "Workspace", "boxes"],
@@ -320,7 +365,9 @@ export const NAV_GROUPS = groupRows.map(([id, label, iconName]) => ({
   id,
   label,
   iconName,
-  panes: ALL_NAV_PANES.filter((pane) => pane.group === id),
+  panes: ALL_NAV_PANES.filter(
+    (pane) => pane.group === id && isFeatureOwner(pane.id),
+  ),
 }));
 export function findNavPane(id: string): UaoNavPane | undefined {
   return ALL_NAV_PANES.find((pane) => pane.id === id);
@@ -330,6 +377,7 @@ export function isValidNavPaneId(id: string): boolean {
 }
 export function normalizeNavId(hashOrId: string): string {
   const id = hashOrId.replace(/^#\/?/, "").trim();
+  if (id === "chat") return WORKSPACE_PANE_ID;
   return isValidNavPaneId(id) ? id : DEFAULT_PANE_ID;
 }
 export function filterNavPanes(query: string): readonly UaoNavPane[] {
@@ -339,7 +387,7 @@ export function filterNavPanes(query: string): readonly UaoNavPane[] {
       pane.label,
       pane.id,
       ...pane.keywords,
-      NAV_GROUPS.find((group) => group.id === pane.group)?.label ?? "",
+      groupRows.find(([groupId]) => groupId === pane.group)?.[1] ?? "",
     ].some((value) => value.toLowerCase().includes(term)),
   );
 }

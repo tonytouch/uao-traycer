@@ -5,6 +5,9 @@ import {
   DEFAULT_PANE_ID,
   filterNavPanes,
   findNavPane,
+  getFeatureOwnerId,
+  getFeatureOwnerPane,
+  isFeatureOwner,
   isValidNavPaneId,
   NAV_GROUPS,
   normalizeNavId,
@@ -12,6 +15,7 @@ import {
   WORKSPACE_PANE_ID,
   ORCA_PANE_ID,
   isNativeUaoPane,
+  FEATURE_OWNER_MAP,
 } from "../uao-nav-registry";
 import {
   buildCspDirectives,
@@ -64,7 +68,9 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(orca?.group).toBe("workspace");
     expect(isNativeUaoPane(ORCA_PANE_ID)).toBe(true);
     expect(isNativeUaoPane(WORKSPACE_PANE_ID)).toBe(true);
-    expect(ALL_NAV_PANES.filter((pane) => !isNativeUaoPane(pane.id))).toHaveLength(34);
+    expect(
+      ALL_NAV_PANES.filter((pane) => !isNativeUaoPane(pane.id)),
+    ).toHaveLength(34);
   });
 
   it("validates and normalizes route hashes correctly", () => {
@@ -79,8 +85,48 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(normalizeNavId("#second-brain")).toBe("second-brain");
     expect(normalizeNavId("second-brain")).toBe("second-brain");
     expect(normalizeNavId("#/orca-workspaces")).toBe("orca-workspaces");
+    expect(normalizeNavId("#/chat")).toBe("tasks-workspace");
+    expect(normalizeNavId("chat")).toBe("tasks-workspace");
     expect(normalizeNavId("")).toBe("command-center");
     expect(normalizeNavId("#/invalid-slug")).toBe("command-center");
+  });
+
+  it("maps consolidated features to their canonical component owners", () => {
+    expect(FEATURE_OWNER_MAP["mission-control"]).toBe("command-center");
+    // mission-control inside command-center
+    expect(getFeatureOwnerId("mission-control")).toBe("command-center");
+    expect(isFeatureOwner("mission-control")).toBe(false);
+
+    // memory-wiki/vault-graph/knowledge-galaxy inside second-brain
+    expect(getFeatureOwnerId("memory-wiki")).toBe("second-brain");
+    expect(getFeatureOwnerId("vault-graph")).toBe("second-brain");
+    expect(getFeatureOwnerId("knowledge-galaxy")).toBe("second-brain");
+
+    // agent/swarm-orchestrator/coding-cli/agents-roster/hermes-webui/omnigent inside agent-cockpit
+    expect(getFeatureOwnerId("agent")).toBe("agent-cockpit");
+    expect(getFeatureOwnerId("swarm-orchestrator")).toBe("agent-cockpit");
+    expect(getFeatureOwnerId("coding-cli")).toBe("agent-cockpit");
+    expect(getFeatureOwnerId("agents-roster")).toBe("agent-cockpit");
+    expect(getFeatureOwnerId("hermes-webui")).toBe("agent-cockpit");
+    expect(getFeatureOwnerId("omnigent")).toBe("agent-cockpit");
+
+    // telemetry/logs/pwa-hitl inside operations-pulse
+    expect(getFeatureOwnerId("telemetry")).toBe("operations-pulse");
+    expect(getFeatureOwnerId("logs")).toBe("operations-pulse");
+    expect(getFeatureOwnerId("pwa-hitl")).toBe("operations-pulse");
+
+    // chat inside tasks-workspace
+    expect(getFeatureOwnerId("chat")).toBe(WORKSPACE_PANE_ID);
+
+    // canonical owners are feature owners
+    expect(isFeatureOwner("command-center")).toBe(true);
+    expect(isFeatureOwner("second-brain")).toBe(true);
+    expect(isFeatureOwner("agent-cockpit")).toBe(true);
+    expect(isFeatureOwner("operations-pulse")).toBe(true);
+    expect(isFeatureOwner("tasks-workspace")).toBe(true);
+
+    const wikiOwnerPane = getFeatureOwnerPane("memory-wiki");
+    expect(wikiOwnerPane?.id).toBe("second-brain");
   });
 
   it("filters panes accurately by label, id, and keywords", () => {
@@ -101,13 +147,20 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(filterNavPanes("")).toHaveLength(36);
   });
 
-  it("organizes panes into 6 structured navigation groups", () => {
+  it("labels backend terminal as Service Terminals vs Orca Workspaces", () => {
+    const terminal = findNavPane("terminal");
+    expect(terminal).toBeDefined();
+    expect(terminal?.label).toBe("Service Terminals");
+    expect(terminal?.keywords).toContain("service");
+  });
+
+  it("organizes consolidated primary owner panes into 6 navigation groups (22 total default sidebar entries)", () => {
     expect(NAV_GROUPS).toHaveLength(6);
     const totalGroupPanes = NAV_GROUPS.reduce(
       (sum, g) => sum + g.panes.length,
       0,
     );
-    expect(totalGroupPanes).toBe(36);
+    expect(totalGroupPanes).toBe(22);
   });
 });
 

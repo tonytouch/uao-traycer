@@ -28,6 +28,9 @@ import { cn } from "@/lib/utils";
 import {
   ALL_NAV_PANES,
   filterNavPanes,
+  getFeatureOwnerId,
+  getFeatureOwnerPane,
+  isFeatureOwner,
   NAV_GROUPS,
   type UaoNavPane,
 } from "./uao-nav-registry";
@@ -49,6 +52,10 @@ const icons: Readonly<Record<string, LucideIcon>> = {
   terminal: Terminal,
   users: Users,
 };
+
+const DEFAULT_COLLAPSED_PANES = ALL_NAV_PANES.filter((pane) =>
+  isFeatureOwner(pane.id),
+);
 
 interface UaoSidebarProps {
   readonly activePaneId: string;
@@ -84,12 +91,19 @@ export function UaoSidebar({
 
   const renderPane = (pane: UaoNavPane) => {
     const Icon = icons[pane.iconName] ?? Boxes;
-    const active = activePaneId === pane.id;
+    const isOwner = isFeatureOwner(pane.id);
+    const owner = !isOwner ? getFeatureOwnerPane(pane.id) : undefined;
+    const livesIn = owner && owner.id !== pane.id ? owner.label : undefined;
+    const active =
+      activePaneId === pane.id ||
+      (isOwner && getFeatureOwnerId(activePaneId) === pane.id);
+    const tooltipText = livesIn ? `${pane.label} (in ${livesIn})` : pane.label;
+
     return (
-      <TooltipWrapper key={pane.id} label={pane.label} side="right">
+      <TooltipWrapper key={pane.id} label={tooltipText} side="right">
         <button
           type="button"
-          aria-label={pane.label}
+          aria-label={tooltipText}
           aria-current={active ? "page" : undefined}
           onClick={() => onSelectPane(pane.id)}
           className={cn(
@@ -101,7 +115,16 @@ export function UaoSidebar({
           )}
         >
           <Icon className={cn("size-3.5 shrink-0", active && "text-primary")} />
-          {!collapsed && <span className="truncate">{pane.label}</span>}
+          {!collapsed && (
+            <div className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate">{pane.label}</span>
+              {livesIn ? (
+                <span className="truncate text-micro text-muted-foreground">
+                  in {livesIn}
+                </span>
+              ) : null}
+            </div>
+          )}
         </button>
       </TooltipWrapper>
     );
@@ -152,7 +175,7 @@ export function UaoSidebar({
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {collapsed ? ALL_NAV_PANES.map(renderPane) : null}
+        {collapsed ? DEFAULT_COLLAPSED_PANES.map(renderPane) : null}
         {!collapsed && search.trim() && (
           <>
             <p

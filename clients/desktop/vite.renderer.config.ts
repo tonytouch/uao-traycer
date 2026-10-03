@@ -11,7 +11,10 @@ import {
   CONTENT_SECURITY_POLICY,
   isUaoDevMode,
 } from "./src/shared/content-security-policy";
-import { handleOrcaHttpRequest } from "./src/electron-main/uao-orca-adapter";
+import {
+  handleOrcaHttpRequest,
+  handleOrcaTerminalStreamUpgrade,
+} from "./src/electron-main/uao-orca-adapter";
 
 const rendererEnvPrefix = [
   "VITE_APP_",
@@ -95,6 +98,56 @@ export default defineConfig((): UserConfig => {
         name: "uao-orca-dev-middleware",
         configureServer(server) {
           if (!isUaoDev) return;
+          const serverOrigin = `http://127.0.0.1:${port}`;
+
+          server.httpServer?.prependListener("upgrade", (req, socket, head) => {
+            const rawUrl = req.url ?? "/";
+            if (rawUrl.split("?")[0] === "/uao-api/orca/terminal/stream") {
+              let parsed: URL;
+              try {
+                parsed = new URL(rawUrl, serverOrigin);
+              } catch {
+                socket.destroy();
+                return;
+              }
+              const host = req.headers.host;
+              const origin = req.headers.origin;
+              const referer = req.headers.referer;
+              const isCrossSite =
+                req.headers["sec-fetch-site"] === "cross-site";
+              const validHost =
+                host === `127.0.0.1:${port}` || host === `localhost:${port}`;
+              const validOrigin =
+                origin === undefined ||
+                origin === serverOrigin ||
+                origin === `http://localhost:${port}`;
+              let validReferer = true;
+              if (referer) {
+                try {
+                  const refUrl = new URL(referer);
+                  validReferer =
+                    refUrl.origin === serverOrigin ||
+                    refUrl.origin === `http://localhost:${port}`;
+                } catch {
+                  validReferer = false;
+                }
+              }
+              if (!validHost || !validOrigin || !validReferer || isCrossSite) {
+                socket.destroy();
+                return;
+              }
+              void handleOrcaTerminalStreamUpgrade(req, socket, head, {
+                port,
+                serverOrigin,
+                parsedUrl: parsed,
+                userDataPath: undefined,
+                subscribeRuntimeImpl: undefined,
+              }).catch(() => {
+                socket.destroy();
+              });
+            }
+          });
+
           server.middlewares.use(async (req, res, next) => {
             const rawUrl = req.url ?? "/";
             if (
@@ -104,7 +157,7 @@ export default defineConfig((): UserConfig => {
               try {
                 const handled = await handleOrcaHttpRequest(req, res, {
                   port,
-                  serverOrigin: `http://127.0.0.1:${port}`,
+                  serverOrigin,
                 });
                 if (handled) return;
               } catch (err) {
@@ -152,7 +205,7 @@ export default defineConfig((): UserConfig => {
       hmr: noWatch ? false : true,
       watch: noWatch ? null : undefined,
       proxy: {
-        "/uao-api": {
+        "^/uao-api(?:/(?!orca(?:/|$))|$)": {
           target: "http://127.0.0.1:5050",
           changeOrigin: true,
           ws: true,

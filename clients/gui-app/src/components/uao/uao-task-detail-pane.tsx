@@ -202,18 +202,18 @@ function TaskCommentsSection({
                 key={commentKey}
                 className="flex flex-col gap-1 rounded-lg border border-border/40 bg-card p-2.5 text-ui-xs"
               >
-              <div className="flex items-center justify-between font-mono text-micro text-muted-foreground">
-                <span className="font-semibold text-foreground">
-                  {comment.author}
-                </span>
-                <span>{formatTimestamp(comment.created_at)}</span>
+                <div className="flex items-center justify-between font-mono text-micro text-muted-foreground">
+                  <span className="font-semibold text-foreground">
+                    {comment.author}
+                  </span>
+                  <span>{formatTimestamp(comment.created_at)}</span>
+                </div>
+                <p className="whitespace-pre-wrap text-foreground">
+                  {comment.body}
+                </p>
               </div>
-              <p className="whitespace-pre-wrap text-foreground">
-                {comment.body}
-              </p>
-            </div>
-          );
-        })}
+            );
+          })}
         </div>
       )}
     </div>
@@ -229,7 +229,7 @@ export function UaoTaskDetailPane(props: UaoTaskDetailPaneProps) {
 
   if (taskId === null) {
     return (
-      <aside className="hidden h-full w-[85vw] shrink-0 flex-col items-center justify-center border-l border-border/40 bg-card/20 p-6 text-center md:flex md:w-1/3 md:max-w-sm">
+      <aside className="flex h-full w-full min-w-0 flex-col items-center justify-center border-l border-border/40 bg-card/20 p-6 text-center">
         <div className="mb-3 flex size-12 items-center justify-center rounded-2xl border border-border/60 bg-foreground/5 text-muted-foreground">
           <FileText className="size-6 opacity-60" />
         </div>
@@ -354,7 +354,7 @@ export function UaoTaskDetailPane(props: UaoTaskDetailPaneProps) {
   }
 
   return (
-    <aside className="flex h-full w-[85vw] shrink-0 flex-col border-l border-border/40 bg-card/30 backdrop-blur-xs md:w-1/3 md:max-w-sm">
+    <aside className="flex h-full w-full min-w-0 flex-col border-l border-border/40 bg-card/30 backdrop-blur-xs">
       {/* Pane Header */}
       <div className="flex items-center justify-between border-b border-border/40 px-3 py-2.5">
         <div className="flex items-center gap-2">

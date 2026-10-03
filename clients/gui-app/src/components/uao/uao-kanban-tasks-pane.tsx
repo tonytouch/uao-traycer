@@ -12,16 +12,16 @@ import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import {
-  type KanbanStatus,
-  type KanbanTask,
-} from "@/lib/uao/adapter";
+import { type KanbanStatus, type KanbanTask } from "@/lib/uao/adapter";
 import { uaoQueryOptions } from "@/lib/uao/query-options";
 
 export interface UaoKanbanTasksPaneProps {
   readonly selectedTaskId: string | null;
   readonly selectedBoardSlug: string | undefined;
-  readonly onSelectTask: (taskId: string, boardSlug: string | undefined) => void;
+  readonly onSelectTask: (
+    taskId: string,
+    boardSlug: string | undefined,
+  ) => void;
   readonly activeBoard: string | undefined;
 }
 
@@ -113,8 +113,7 @@ export function UaoKanbanTasksPane(props: UaoKanbanTasksPaneProps) {
         {filteredTasks.map((task) => {
           const taskBoard = task.board_slug ?? activeBoard;
           const isSelected =
-            task.id === selectedTaskId &&
-            taskBoard === selectedBoardSlug;
+            task.id === selectedTaskId && taskBoard === selectedBoardSlug;
           return (
             <button
               key={`${taskBoard ?? "board"}-${task.id}`}
@@ -172,7 +171,7 @@ export function UaoKanbanTasksPane(props: UaoKanbanTasksPaneProps) {
   }
 
   return (
-    <aside className="flex h-full w-[85vw] shrink-0 flex-col border-r border-border/40 bg-card/40 backdrop-blur-xs md:w-1/4 md:max-w-xs">
+    <aside className="flex h-full w-full min-w-0 flex-col border-r border-border/40 bg-card/40 backdrop-blur-xs">
       {/* Pane Header */}
       <div className="flex items-center justify-between border-b border-border/40 px-3 py-2.5">
         <div className="flex items-center gap-2">
