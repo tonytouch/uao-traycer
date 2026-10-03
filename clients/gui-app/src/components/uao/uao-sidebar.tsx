@@ -78,6 +78,7 @@ export function UaoSidebar({
   const matches = useMemo(() => filterNavPanes(search), [search]);
 
   const focusSearch = useEffectEvent((event: KeyboardEvent) => {
+    if (event.defaultPrevented) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       if (collapsed) onToggleCollapsed();
