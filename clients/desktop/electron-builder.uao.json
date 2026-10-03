@@ -1,0 +1,60 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "ai.uao.desktop",
+  "productName": "UAO",
+  "artifactName": "uao-desktop-${arch}.${ext}",
+  "asar": true,
+  "electronFuses": {
+    "runAsNode": false,
+    "enableCookieEncryption": true,
+    "enableEmbeddedAsarIntegrityValidation": true,
+    "onlyLoadAppFromAsar": true,
+    "enableNodeOptionsEnvironmentVariable": false,
+    "enableNodeCliInspectArguments": false
+  },
+  "directories": {
+    "buildResources": "resources/bundle",
+    "output": "release-uao"
+  },
+  "afterPack": null,
+  "protocols": [],
+  "publish": null,
+  "extraResources": [],
+  "files": [
+    "dist/main-uao/**/*",
+    "dist/renderer-uao/**/*",
+    "package.json",
+    "!**/*.map",
+    "!node_modules/**/*"
+  ],
+  "extraMetadata": {
+    "name": "uao-desktop",
+    "productName": "UAO",
+    "main": "dist/main-uao/index.js",
+    "description": "Ultimate Agent OS desktop",
+    "desktopName": "uao-desktop.desktop"
+  },
+  "linux": {
+    "executableName": "uao-desktop",
+    "artifactName": "uao-desktop-linux-${arch}.${ext}",
+    "category": "Development",
+    "icon": "icons",
+    "syncDesktopName": true,
+    "extraResources": [],
+    "target": [
+      {
+        "target": "AppImage",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "mac": {
+    "extraResources": []
+  },
+  "win": {
+    "extraResources": []
+  },
+  "npmRebuild": false
+}

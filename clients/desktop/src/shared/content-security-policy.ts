@@ -99,9 +99,11 @@ export function isUaoProxyDocument(
 // keep their own upstream policies through isUaoProxyDocument.
 export const UAO_EMBEDDED_TOOL_ORIGINS = "'self'";
 
-export function buildCspDirectives(env: NodeJS.ProcessEnv): readonly string[] {
-  const uaoDev = isUaoDevMode(env);
-  const frameSrc = uaoDev
+function computeCspDirectives(
+  env: NodeJS.ProcessEnv,
+  uao: boolean,
+): readonly string[] {
+  const frameSrc = uao
     ? `frame-src ${UAO_EMBEDDED_TOOL_ORIGINS}`
     : "frame-src 'none'";
 
@@ -121,6 +123,14 @@ export function buildCspDirectives(env: NodeJS.ProcessEnv): readonly string[] {
   ];
 }
 
+export function buildCspDirectives(env: NodeJS.ProcessEnv): readonly string[] {
+  return computeCspDirectives(env, isUaoDevMode(env));
+}
+
 export const CSP_DIRECTIVES = buildCspDirectives(process.env);
 
 export const CONTENT_SECURITY_POLICY = CSP_DIRECTIVES.join("; ");
+
+// Fixed packaged policy: development environment overrides must not change
+// runtime headers independently of the CSP baked into the HTML.
+export const UAO_CONTENT_SECURITY_POLICY = computeCspDirectives({}, true).join("; ");
