@@ -60,6 +60,8 @@ export const UAO_PROXY_DIR_PREFIXES: readonly string[] = [
 export interface UaoServerOptions {
   readonly staticDir: string;
   readonly backendPort: number | undefined;
+  /** Backend host the proxy dials; defaults to loopback. Set for a remote UAO backend. */
+  readonly backendHost?: string;
   readonly port?: number;
   /** Interface to bind. Defaults to loopback; anything else needs `pairingSecret`. */
   readonly host?: string;
@@ -127,6 +129,7 @@ export async function handleUaoFrameDocument(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   backendPort: number,
+  backendHost = "127.0.0.1",
 ): Promise<boolean> {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   if (
@@ -139,7 +142,7 @@ export async function handleUaoFrameDocument(
   const abort = () => controller.abort();
   res.once("close", abort);
   try {
-    const response = await fetch(`http://127.0.0.1:${backendPort}/${url.search}`, {
+    const response = await fetch(`http://${backendHost}:${backendPort}/${url.search}`, {
       headers: {
         Accept: "text/html",
         ...(process.env.AGENT_OS_TOKEN
@@ -452,7 +455,7 @@ export function matchUaoProxyRoute(pathname: string): {
 export function startUaoServer(
   options: UaoServerOptions,
 ): Promise<UaoServerInstance> {
-  const backendHost = "127.0.0.1";
+  const backendHost = options.backendHost ?? "127.0.0.1";
   const backendPort = options.backendPort ?? 5050;
   const staticDir = path.resolve(options.staticDir);
   const bindHost = options.host ?? "127.0.0.1";
@@ -782,7 +785,7 @@ export function startUaoServer(
           req.method === "GET" && pathname === "/uao-api/" &&
           parsed.searchParams.get("desktop-frame") === "1"
         ) {
-          void handleUaoFrameDocument(req, res, backendPort);
+          void handleUaoFrameDocument(req, res, backendPort, backendHost);
           return;
         }
 

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, session } from "electron";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { initLogger, log } from "./app/logger";
 import {
@@ -13,6 +14,30 @@ import {
 } from "../shared/content-security-policy";
 import { startUaoServer, type UaoServerInstance } from "./uao-server";
 import { prepareUaoOffice, attachUaoOffice } from "./uao-office";
+
+/**
+ * Remote backend, e.g. a Mac reaching the Linux box over Tailscale. Env wins;
+ * otherwise `<userData>/backend.json` ({"host": "...", "port": 5050}).
+ */
+function resolveBackendTarget(): { host?: string; port: number } {
+  let host = process.env.UAO_BACKEND_HOST;
+  let port = Number(process.env.UAO_BACKEND_PORT ?? "5050");
+  if (host === undefined) {
+    try {
+      const file = JSON.parse(
+        readFileSync(join(app.getPath("userData"), "backend.json"), "utf8"),
+      ) as { host?: unknown; port?: unknown };
+      if (typeof file.host === "string" && file.host !== "") host = file.host;
+      if (typeof file.port === "number") port = file.port;
+    } catch {
+      // No config: use the local backend.
+    }
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("UAO backend port must be a valid port.");
+  }
+  return { host, port };
+}
 
 let uaoWindow: BrowserWindow | null = null;
 let serverInstance: UaoServerInstance | null = null;
@@ -87,9 +112,11 @@ async function startUaoDesktop(): Promise<void> {
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error("UAO_DESKTOP_PORT must be a valid local port.");
   }
+  const backendTarget = resolveBackendTarget();
   serverInstance = await startUaoServer({
     staticDir,
-    backendPort: 5050,
+    backendPort: backendTarget.port,
+    backendHost: backendTarget.host,
     // Stable origin keeps the embedded UAO UI and worktab preferences across restarts.
     // The app's single-instance lock prevents two desktop shells sharing this port.
     port,

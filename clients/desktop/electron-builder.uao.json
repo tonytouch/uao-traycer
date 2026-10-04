@@ -19,7 +19,15 @@
   "afterPack": null,
   "protocols": [],
   "publish": null,
-  "extraResources": [{ "from": "resources/genoffice", "to": ".", "filter": ["**/*"] }],
+  "extraResources": [
+    {
+      "from": "resources/genoffice",
+      "to": ".",
+      "filter": [
+        "**/*"
+      ]
+    }
+  ],
   "files": [
     "dist/main-uao/**/*",
     "dist/renderer-uao/**/*",
@@ -40,7 +48,15 @@
     "category": "Development",
     "icon": "icons",
     "syncDesktopName": true,
-    "extraResources": [{ "from": "resources/genoffice", "to": ".", "filter": ["**/*"] }],
+    "extraResources": [
+      {
+        "from": "resources/genoffice",
+        "to": ".",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
     "target": [
       {
         "target": "AppImage",
@@ -51,7 +67,19 @@
     ]
   },
   "mac": {
-    "extraResources": []
+    "extraResources": [],
+    "artifactName": "uao-desktop-macos-${arch}.${ext}",
+    "category": "public.app-category.developer-tools",
+    "icon": "icon.icns",
+    "identity": null,
+    "target": [
+      {
+        "target": "zip",
+        "arch": [
+          "arm64"
+        ]
+      }
+    ]
   },
   "win": {
     "extraResources": []
