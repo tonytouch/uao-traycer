@@ -64,7 +64,7 @@ connection. CLI answers arrive as a completed turn rather than token-by-token.
 Stop cancels the request end to end. Each request carries an id, and the
 desktop calls `POST /v1/requests/<id>/cancel` on the gateway, which terminates
 the CLI's whole process group. This needs the gateway patch in
-`gateway-cancellation.patch` (tests: `python3 test_gateway_cancellation.py`);
+`gateway-cancellation.patch` (which also pins the Codex model, default `gpt-6-astra`, overridable with `LOCAL_GATEWAY_CODEX_MODEL`; tests: `python3 test_gateway_cancellation.py`);
 without it Stop only abandons the wait and the gateway's own timeout bounds the
 CLI. The HTTP-bridge model `freebuff` cannot be cancelled and reports
 `"cancellable": false` in `/v1/models`.
