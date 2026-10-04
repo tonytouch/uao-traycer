@@ -1,5 +1,18 @@
 apply plugin: 'com.android.application'
 
+def releaseSigningPropertiesFile = new File(System.getProperty('user.home'), '.config/uao-android/release-signing.properties')
+def releaseSigningProperties = new Properties()
+if (releaseSigningPropertiesFile.canRead()) {
+    releaseSigningPropertiesFile.withInputStream { stream ->
+        releaseSigningProperties.load(stream)
+    }
+}
+
+def requiredReleaseSigningProperties = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword']
+def releaseSigningConfigured = requiredReleaseSigningProperties.every { key ->
+    releaseSigningProperties.getProperty(key)?.trim()
+}
+
 android {
     namespace = "ai.uao.mobile"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,10 +29,32 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (releaseSigningConfigured) {
+                storeFile file(releaseSigningProperties.getProperty('storeFile'))
+                storePassword releaseSigningProperties.getProperty('storePassword')
+                keyAlias releaseSigningProperties.getProperty('keyAlias')
+                keyPassword releaseSigningProperties.getProperty('keyPassword')
+            } else {
+                // Point at a non-existent file so release tasks fail rather than emitting an unsigned APK.
+                storeFile file("${buildDir}/missing-release-keystore.jks")
+            }
+        }
+    }
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+tasks.matching { task -> task.name in ['assembleRelease', 'bundleRelease', 'packageRelease'] }.configureEach {
+    doFirst {
+        if (!releaseSigningConfigured) {
+            throw new GradleException("Release signing is not configured. Create ${releaseSigningPropertiesFile} with storeFile, storePassword, keyAlias, and keyPassword.")
         }
     }
 }

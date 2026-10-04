@@ -47,6 +47,33 @@ Check the host first (`cat /proc/pressure/memory`); Gradle is capped at 1 GB
 and two workers in `android/gradle.properties`. A debug build takes under a
 minute when the box is calm.
 
+## Build a signed release APK
+
+Release signing material lives outside this repository in
+`~/.config/uao-android/`: the `release-signing.properties` file is mode 600
+and the keystore is mode 600. Both are deliberately outside Git and must be
+backed up together in a password manager or encrypted archive. Losing either
+the keystore or its passwords prevents publishing updates signed as this app.
+
+The Android Gradle configuration fails closed: a release build cannot fall
+back to an unsigned APK if that config is missing.
+
+```bash
+cd integrations/uao-android/android
+export JAVA_HOME=/home/linuxbrew/.linuxbrew/opt/openjdk@21   # any JDK 21
+nice ./gradlew assembleRelease --no-daemon --max-workers=2
+# -> app/build/outputs/apk/release/app-release.apk
+```
+
+Inspect the artifact before distribution:
+
+```bash
+apksigner verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+```
+
+The release APK is not committed. It is the artifact to upload to a release
+channel or sideload after you have stored the keystore backup securely.
+
 ## Install (sideload)
 
 ```bash
