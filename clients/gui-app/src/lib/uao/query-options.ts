@@ -13,7 +13,30 @@ import {
 } from "@/lib/uao/orca-adapter";
 import { uaoQueryKeys } from "@/lib/query-keys/uao-query-keys";
 
+export interface UaoDesktopConfig {
+  /** https URL where Jarvis runs (the server's tailscale serve), or null to embed it. */
+  readonly jarvisUrl: string | null;
+}
+
 export const uaoQueryOptions = {
+  config: () =>
+    queryOptions({
+      queryKey: uaoQueryKeys.config(),
+      queryFn: async ({ signal }): Promise<UaoDesktopConfig> => {
+        const response = await fetch("/desktop/uao-config.json", {
+          signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+          cache: "no-store",
+        });
+        if (!response.ok) return { jarvisUrl: null };
+        const body = (await response.json()) as { jarvisUrl?: unknown };
+        return {
+          jarvisUrl:
+            typeof body.jarvisUrl === "string" ? body.jarvisUrl : null,
+        };
+      },
+      retry: false,
+      staleTime: Infinity,
+    }),
   builtUi: () =>
     queryOptions({
       queryKey: uaoQueryKeys.builtUi(),

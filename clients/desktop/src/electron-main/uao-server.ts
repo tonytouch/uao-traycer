@@ -61,7 +61,13 @@ export interface UaoServerOptions {
   readonly staticDir: string;
   readonly backendPort: number | undefined;
   /** Backend host the proxy dials; defaults to loopback. Set for a remote UAO backend. */
-  readonly backendHost?: string;
+  readonly backendHost?: string | undefined;
+  /**
+   * When set, Jarvis (voice) is served only from this https URL, normally the
+   * server's `tailscale serve` address, and the desktop shows a launcher
+   * instead of embedding it.
+   */
+  readonly jarvisUrl?: string | undefined;
   readonly port?: number;
   /** Interface to bind. Defaults to loopback; anything else needs `pairingSecret`. */
   readonly host?: string;
@@ -659,6 +665,16 @@ export function startUaoServer(
         if (isServiceWorkerRequest(pathname, req.headers)) {
           res.writeHead(404, { "Content-Type": "text/plain" });
           res.end("Not Found");
+          return;
+        }
+
+        // 2a. Runtime config for the renderer (read-only, no secrets).
+        if (pathname === "/desktop/uao-config.json" && req.method === "GET") {
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          });
+          res.end(JSON.stringify({ jarvisUrl: options.jarvisUrl ?? null }));
           return;
         }
 

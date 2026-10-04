@@ -14,6 +14,10 @@ SKIP_BUILD=1 ./install.sh                 # reinstall the last build
   (`:5050` accepts tailnet sources without a token). Config is written to
   `~/Library/Application Support/uao-desktop/backend.json`; `UAO_BACKEND_HOST`
   / `UAO_BACKEND_PORT` override it.
+- Jarvis runs only on the server. The Mac app's Jarvis tab shows a launcher that
+  opens the server's `tailscale serve` page (`https://<server>.ts.net:10000/uao-api/#/jarvis`)
+  in the browser, where the microphone works. Pair that browser once with the
+  pairing link from `../uao-serve/README.md`. `JARVIS_URL=` (empty) keeps Jarvis embedded.
 - Installs to `~/Applications/UAO.app`. An older Orca-based `/Applications/UAO.app`
   is left alone.
 - Requires key-based SSH to the Mac. Office/GenOffice is not bundled on macOS.

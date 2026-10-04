@@ -7,6 +7,8 @@
 #   MAC_HOST      ssh target of the Mac        (default tony@100.107.7.88)
 #   BACKEND_HOST  UAO backend the Mac app uses (default: this box's tailscale IPv4)
 #   BACKEND_PORT  backend port                 (default 5050)
+#   JARVIS_URL    https URL where Jarvis runs  (default: this box's `tailscale serve`
+#                 address on :10000; empty string = keep Jarvis embedded)
 #   SKIP_BUILD=1  reuse the existing release-uao/mac-arm64/UAO.app
 #   NO_LAUNCH=1   install but do not start it
 #   FORCE=1       build even when this box is under memory pressure
@@ -22,6 +24,11 @@ backend_host="${BACKEND_HOST:-$(tailscale ip -4 2>/dev/null | head -n1 || true)}
 if [ -z "$backend_host" ]; then
   echo "set BACKEND_HOST (could not read this box's tailscale IPv4)" >&2
   exit 1
+fi
+if [ -z "${JARVIS_URL+x}" ]; then
+  dns="$(tailscale status --json 2>/dev/null |
+    python3 -c 'import sys,json;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)"
+  JARVIS_URL="${dns:+https://$dns:10000/}"
 fi
 ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10)
 
@@ -44,9 +51,9 @@ tar -C "$(dirname "$app")" -czf "$tgz" UAO.app
 remote_tgz="/tmp/uao-mac-$$.tgz"
 scp -q "${ssh_opts[@]}" "$tgz" "$mac_host:$remote_tgz"
 
-ssh "${ssh_opts[@]}" "$mac_host" bash -s -- "$backend_host" "$backend_port" "$remote_tgz" "${NO_LAUNCH:-0}" <<'REMOTE'
+ssh "${ssh_opts[@]}" "$mac_host" bash -s -- "$backend_host" "$backend_port" "$remote_tgz" "${NO_LAUNCH:-0}" "$JARVIS_URL" <<'REMOTE'
 set -euo pipefail
-backend_host="$1"; backend_port="$2"; tgz="$3"; no_launch="$4"
+backend_host="$1"; backend_port="$2"; tgz="$3"; no_launch="$4"; jarvis_url="${5:-}"
 mkdir -p "$HOME/Applications"
 dest="$(cd "$HOME/Applications" && pwd -P)"
 
@@ -63,8 +70,12 @@ codesign -v "$dest/UAO.app"
 
 data="$HOME/Library/Application Support/uao-desktop"
 mkdir -p "$data"
-printf '{"host":"%s","port":%s}\n' "$backend_host" "$backend_port" > "$data/backend.json"
-echo "installed $dest/UAO.app -> backend $backend_host:$backend_port"
+if [ -n "$jarvis_url" ]; then
+  printf '{"host":"%s","port":%s,"jarvisUrl":"%s"}\n' "$backend_host" "$backend_port" "$jarvis_url" > "$data/backend.json"
+else
+  printf '{"host":"%s","port":%s}\n' "$backend_host" "$backend_port" > "$data/backend.json"
+fi
+echo "installed $dest/UAO.app -> backend $backend_host:$backend_port, Jarvis ${jarvis_url:-embedded}"
 
 if [ "$no_launch" != 1 ]; then
   open "$dest/UAO.app"

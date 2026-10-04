@@ -19,22 +19,36 @@ import { prepareUaoOffice, attachUaoOffice } from "./uao-office";
  * Remote backend, e.g. a Mac reaching the Linux box over Tailscale. Env wins;
  * otherwise `<userData>/backend.json` ({"host": "...", "port": 5050}).
  */
-function resolveBackendTarget(): { host?: string; port: number } {
+function resolveBackendTarget(): {
+  host?: string | undefined;
+  port: number;
+  jarvisUrl?: string | undefined;
+} {
   let host = process.env.UAO_BACKEND_HOST;
   let port = Number(process.env.UAO_BACKEND_PORT ?? "5050");
+  let jarvisUrl = process.env.UAO_JARVIS_URL;
   if (host === undefined) {
     try {
       const file = JSON.parse(
         readFileSync(join(app.getPath("userData"), "backend.json"), "utf8"),
-      ) as { host?: unknown; port?: unknown };
+      ) as { host?: unknown; port?: unknown; jarvisUrl?: unknown };
       if (typeof file.host === "string" && file.host !== "") host = file.host;
       if (typeof file.port === "number") port = file.port;
+      if (jarvisUrl === undefined && typeof file.jarvisUrl === "string")
+        jarvisUrl = file.jarvisUrl;
     } catch {
       // No config: use the local backend.
     }
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("UAO backend port must be a valid port.");
+  }
+  if (jarvisUrl !== undefined && jarvisUrl !== "") {
+    const parsed = new URL(jarvisUrl);
+    if (parsed.protocol !== "https:") {
+      throw new Error("UAO Jarvis URL must be https.");
+    }
+    return { host, port, jarvisUrl: parsed.href };
   }
   return { host, port };
 }
@@ -117,6 +131,7 @@ async function startUaoDesktop(): Promise<void> {
     staticDir,
     backendPort: backendTarget.port,
     backendHost: backendTarget.host,
+    jarvisUrl: backendTarget.jarvisUrl,
     // Stable origin keeps the embedded UAO UI and worktab preferences across restarts.
     // The app's single-instance lock prevents two desktop shells sharing this port.
     port,

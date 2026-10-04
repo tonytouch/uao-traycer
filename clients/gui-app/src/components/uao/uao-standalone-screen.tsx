@@ -22,6 +22,7 @@ import { UaoKanbanTasksPane } from "./uao-kanban-tasks-pane";
 import { UaoOrcaWorkspacesPane } from "./uao-orca-workspaces-pane";
 import { UaoPaneBoundary } from "./uao-pane-boundary";
 import { UaoOfficePane } from "./uao-office-pane";
+import { JARVIS_PANE_ID, UaoJarvisServerPane } from "./uao-jarvis-server-pane";
 import {
   DEFAULT_PANE_ID,
   findNavPane,
@@ -401,6 +402,8 @@ function UaoStandaloneScreenInner() {
   >(null);
 
   const boardsQuery = useQuery(uaoQueryOptions.boards());
+  const configQuery = useQuery(uaoQueryOptions.config());
+  const jarvisUrl = configQuery.data?.jarvisUrl ?? null;
   const boards: readonly KanbanBoard[] = boardsQuery.data ?? [];
   const activeBoard = activeBoardSelection ?? boards.at(0)?.slug;
 
@@ -665,12 +668,16 @@ function UaoStandaloneScreenInner() {
                 hidden={tabsState.activeOwnerId !== tab.ownerId}
                 className="h-full min-h-0"
               >
-                <UaoEmbeddedPane
-                  activePaneId={tab.routeTarget}
-                  onChildNavigate={(paneId) =>
-                    handleChildNavigate(tab.ownerId, paneId)
-                  }
-                />
+                {tab.ownerId === JARVIS_PANE_ID && configQuery.isPending ? null : tab.ownerId === JARVIS_PANE_ID && jarvisUrl !== null ? (
+                  <UaoJarvisServerPane jarvisUrl={jarvisUrl} />
+                ) : (
+                  <UaoEmbeddedPane
+                    activePaneId={tab.routeTarget}
+                    onChildNavigate={(paneId) =>
+                      handleChildNavigate(tab.ownerId, paneId)
+                    }
+                  />
+                )}
               </div>
             ))}
         </div>
