@@ -467,7 +467,7 @@ function OrcaTerminalItem(props: OrcaTerminalItemProps) {
             read-only
           </Badge>
         )}
-        {terminal.exitCause ? (
+        {typeof terminal.exitCause === "string" && terminal.exitCause ? (
           <Badge variant="destructive" size="xs">
             {terminal.exitCause}
           </Badge>

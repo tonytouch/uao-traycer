@@ -20,6 +20,7 @@ import { uaoQueryOptions } from "@/lib/uao/query-options";
 import { UaoEmbeddedPane } from "./uao-embedded-pane";
 import { UaoKanbanTasksPane } from "./uao-kanban-tasks-pane";
 import { UaoOrcaWorkspacesPane } from "./uao-orca-workspaces-pane";
+import { UaoPaneBoundary } from "./uao-pane-boundary";
 import { UaoOfficePane } from "./uao-office-pane";
 import {
   DEFAULT_PANE_ID,
@@ -248,12 +249,14 @@ function UaoTasksWorkspace({
           }}
           className="flex h-full min-h-0 flex-col overflow-hidden"
         >
-          <UaoKanbanTasksPane
-            selectedTaskId={selectedTaskId}
-            selectedBoardSlug={selectedBoardSlug}
-            onSelectTask={handleSelectTask}
-            activeBoard={activeBoard}
-          />
+          <UaoPaneBoundary label="Tasks">
+            <UaoKanbanTasksPane
+              selectedTaskId={selectedTaskId}
+              selectedBoardSlug={selectedBoardSlug}
+              onSelectTask={handleSelectTask}
+              activeBoard={activeBoard}
+            />
+          </UaoPaneBoundary>
         </div>
 
         {/* Divider 0: between Tasks and Chat */}
@@ -629,9 +632,11 @@ function UaoStandaloneScreenInner() {
             hidden={tabsState.activeOwnerId !== ORCA_PANE_ID}
             className="h-full min-h-0"
           >
-            <UaoOrcaWorkspacesPane
-              active={tabsState.activeOwnerId === ORCA_PANE_ID}
-            />
+            <UaoPaneBoundary label="Orca Workspaces">
+              <UaoOrcaWorkspacesPane
+                active={tabsState.activeOwnerId === ORCA_PANE_ID}
+              />
+            </UaoPaneBoundary>
           </div>
 
           {visitedOwners.has(OFFICE_PANE_ID) ? (
@@ -639,7 +644,9 @@ function UaoStandaloneScreenInner() {
               aria-labelledby={`uao-tab-${OFFICE_PANE_ID}`}
               hidden={tabsState.activeOwnerId !== OFFICE_PANE_ID}
               className="h-full min-h-0">
-              <UaoOfficePane active={tabsState.activeOwnerId === OFFICE_PANE_ID} />
+              <UaoPaneBoundary label="Office">
+                <UaoOfficePane active={tabsState.activeOwnerId === OFFICE_PANE_ID} />
+              </UaoPaneBoundary>
             </div>
           ) : null}
           {/* Stable feature documents preserve drafts, drawers and scroll. */}

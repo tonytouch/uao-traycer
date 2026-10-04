@@ -604,3 +604,26 @@ describe("Orca CLI Bounded Adapter", () => {
     });
   });
 });
+
+describe("Orca terminal exit cause", () => {
+  it("reduces Orca's exit-cause object to a short label the UI can render", async () => {
+    const { describeExitCause, normalizeTerminalList } = await import("../uao-orca-adapter");
+    expect(describeExitCause({ kind: "exited", exitCode: 0 })).toBe("exited (code 0)");
+    expect(describeExitCause({ kind: "operator_close" })).toBe("operator close");
+    expect(describeExitCause({ kind: "spawn_failed", reason: "no such shell" })).toBe("spawn failed: no such shell");
+    expect(describeExitCause("closed")).toBe("closed");
+    expect(describeExitCause(undefined)).toBeUndefined();
+    expect(describeExitCause(42)).toBeUndefined();
+    const out = normalizeTerminalList([
+      { handle: "a", exitCause: { kind: "exited", exitCode: 130 } },
+      { handle: "b" },
+      { handle: "c", exitCause: null },
+    ]);
+    expect(out).toEqual([
+      { handle: "a", exitCause: "exited (code 130)" },
+      { handle: "b" },
+      { handle: "c" },
+    ]);
+    expect(normalizeTerminalList(undefined)).toEqual([]);
+  });
+});

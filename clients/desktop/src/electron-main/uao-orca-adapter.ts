@@ -51,6 +51,31 @@ export function resolveOrcaBin(): string {
   return defaultLocalBin;
 }
 
+/**
+ * Orca reports why a terminal ended as an object ({ kind, exitCode?, reason? }).
+ * The UI shows it as a badge, so reduce it to a short string here; handing the
+ * object to React as a child unmounts the whole app.
+ */
+export function describeExitCause(cause: unknown): string | undefined {
+  if (typeof cause === "string") return cause.slice(0, 80) || undefined;
+  if (typeof cause !== "object" || cause === null) return undefined;
+  const record = cause as Record<string, unknown>;
+  const kind = typeof record.kind === "string" ? record.kind.replace(/_/g, " ") : "exited";
+  if (typeof record.exitCode === "number") return `${kind} (code ${String(record.exitCode)})`.slice(0, 80);
+  if (typeof record.reason === "string" && record.reason) return `${kind}: ${record.reason}`.slice(0, 80);
+  return kind.slice(0, 80);
+}
+
+export function normalizeTerminalList(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry: unknown) => {
+    if (typeof entry !== "object" || entry === null || !("exitCause" in entry)) return entry;
+    const { exitCause, ...rest } = entry as Record<string, unknown>;
+    const label = describeExitCause(exitCause);
+    return label === undefined ? rest : { ...rest, exitCause: label };
+  });
+}
+
 export function sanitizeOrcaError(raw: string): string {
   let sanitized = raw
     .replace(/(bearer\s+)[a-zA-Z0-9_\-.]+/gi, "$1[REDACTED]")
@@ -650,7 +675,7 @@ export async function handleOrcaHttpRequest(
       string,
       unknown
     > | null;
-    const terminals = inner?.terminals ?? [];
+    const terminals = normalizeTerminalList(inner?.terminals);
     sendJson(res, 200, {
       ok: true,
       terminals,
