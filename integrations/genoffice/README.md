@@ -54,12 +54,28 @@ This gateway fronts existing CLI logins, so no paid API key is needed, but
 those accounts' usage limits still apply. The gateway is text-only: Office
 supplies tool schemas in the prompt, validates the model's JSON tool names and
 argument shape, and runs edits through GenOffice's existing document tool loop.
-Tool results return on the next model turn. Malformed responses fail visibly.
-Text chat, writing, rewriting, and document edits are supported; image/video
-analysis and image generation are not supplied by this connection. CLI answers
-arrive as a completed turn rather than token-by-token. Cancel aborts the desktop
-request; the gateway's existing backend timeout still bounds any CLI work it
-has already started.
+Tool results return on the next model turn. A reply the editor cannot act on
+(not the JSON shape, or an unknown tool) is sent back to the model once with the
+reason; nothing has executed at that point. A second failure is shown in the
+panel and no edit is made. Text chat, writing, rewriting, and document edits are
+supported; image/video analysis and image generation are not supplied by this
+connection. CLI answers arrive as a completed turn rather than token-by-token.
+
+Stop cancels the request end to end. Each request carries an id, and the
+desktop calls `POST /v1/requests/<id>/cancel` on the gateway, which terminates
+the CLI's whole process group. This needs the gateway patch in
+`gateway-cancellation.patch` (tests: `python3 test_gateway_cancellation.py`);
+without it Stop only abandons the wait and the gateway's own timeout bounds the
+CLI. The HTTP-bridge model `freebuff` cannot be cancelled and reports
+`"cancellable": false` in `/v1/models`.
+
+Broken AI configuration never stops UAO from opening. An unreadable
+`ai-settings.json` is kept as `ai-settings.json.corrupt-<time>` and reset; an
+unreadable gateway file leaves the editors usable, logs a warning, and makes the
+AI panel report the configuration error instead of a Genspark sign-in prompt.
+The editors' release renderers hard-code a "Genspark" title, so Office rewrites
+it at runtime to `Local AI · <model>` while the gateway provider is selected
+(`branding.ts`).
 
 For isolated package verification, `UAO_DESKTOP_USER_DATA` can select a
 scratch profile and `UAO_DESKTOP_PORT` a separate local port. These leave the
