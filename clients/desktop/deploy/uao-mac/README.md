@@ -10,10 +10,14 @@ MAC_HOST=tony@other-mac BACKEND_HOST=100.90.167.20 ./install.sh
 SKIP_BUILD=1 ./install.sh                 # reinstall the last build
 ```
 
-- The Mac app dials the backend over the network, so it needs the backend up
-  (`:5050` accepts tailnet sources without a token). Config is written to
-  `~/Library/Application Support/uao-desktop/backend.json`; `UAO_BACKEND_HOST`
-  / `UAO_BACKEND_PORT` override it.
+- The Mac app reaches the backend through this box's `tailscale serve` gateway
+  (`uao-serve`, `:10000`) with the pairing secret, because the butler (Jarvis
+  /ask and /speak) answers loopback callers only and the gateway is one. The
+  secret is copied to `~/Library/Application Support/uao-desktop/pairing-secret`
+  (mode 600) and never printed. Config lives in `backend.json` next to it
+  (`{"upstream": "https://<name>.ts.net:10000/"}`); `UAO_UPSTREAM` /
+  `UAO_PAIRING_SECRET` override. `UPSTREAM=` (empty) dials the backend directly
+  instead, where everything except Jarvis' /ask and /speak works.
 - Installs to `~/Applications/UAO.app`. An older Orca-based `/Applications/UAO.app`
   is left alone.
 - Requires key-based SSH to the Mac. Office/GenOffice is not bundled on macOS.

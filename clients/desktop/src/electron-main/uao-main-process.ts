@@ -17,26 +17,50 @@ import { prepareUaoOffice, attachUaoOffice } from "./uao-office";
 
 /**
  * Remote backend, e.g. a Mac reaching the Linux box over Tailscale. Env wins;
- * otherwise `<userData>/backend.json` ({"host": "...", "port": 5050}).
+ * otherwise `<userData>/backend.json`:
+ *   {"host": "...", "port": 5050}          dial the backend directly, or
+ *   {"upstream": "https://<name>.ts.net:10000/"}   go through that machine's
+ *     uao-serve gateway, paired with `<userData>/pairing-secret`
+ *     (UAO_UPSTREAM / UAO_PAIRING_SECRET override). The butler's /ask and
+ *     /speak only accept loopback callers, which the gateway is.
  */
-function resolveBackendTarget(): { host?: string; port: number } {
+function resolveBackendTarget(): {
+  host?: string | undefined;
+  port: number;
+  upstream?: { url: string; pairingSecret: string } | undefined;
+} {
+  const userData = app.getPath("userData");
   let host = process.env.UAO_BACKEND_HOST;
   let port = Number(process.env.UAO_BACKEND_PORT ?? "5050");
-  if (host === undefined) {
-    try {
-      const file = JSON.parse(
-        readFileSync(join(app.getPath("userData"), "backend.json"), "utf8"),
-      ) as { host?: unknown; port?: unknown };
-      if (typeof file.host === "string" && file.host !== "") host = file.host;
-      if (typeof file.port === "number") port = file.port;
-    } catch {
-      // No config: use the local backend.
-    }
+  let upstream = process.env.UAO_UPSTREAM;
+  try {
+    const file = JSON.parse(
+      readFileSync(join(userData, "backend.json"), "utf8"),
+    ) as { host?: unknown; port?: unknown; upstream?: unknown };
+    if (host === undefined && typeof file.host === "string") host = file.host;
+    if (typeof file.port === "number") port = file.port;
+    if (upstream === undefined && typeof file.upstream === "string")
+      upstream = file.upstream;
+  } catch {
+    // No config file: use env or the local backend.
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("UAO backend port must be a valid port.");
   }
-  return { host, port };
+  if (upstream !== undefined && upstream !== "") {
+    let secret = process.env.UAO_PAIRING_SECRET;
+    if (secret === undefined) {
+      try {
+        secret = readFileSync(join(userData, "pairing-secret"), "utf8").trim();
+      } catch {
+        throw new Error(
+          "UAO upstream needs a pairing secret: put it in <userData>/pairing-secret.",
+        );
+      }
+    }
+    return { port, upstream: { url: upstream, pairingSecret: secret } };
+  }
+  return { host: host === "" ? undefined : host, port };
 }
 
 let uaoWindow: BrowserWindow | null = null;
@@ -117,6 +141,7 @@ async function startUaoDesktop(): Promise<void> {
     staticDir,
     backendPort: backendTarget.port,
     backendHost: backendTarget.host,
+    upstream: backendTarget.upstream,
     // Stable origin keeps the embedded UAO UI and worktab preferences across restarts.
     // The app's single-instance lock prevents two desktop shells sharing this port.
     port,

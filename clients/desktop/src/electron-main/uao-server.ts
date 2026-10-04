@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
+import https from "node:https";
 import fs from "node:fs";
 import path from "node:path";
 import { URL } from "node:url";
@@ -61,7 +62,15 @@ export interface UaoServerOptions {
   readonly staticDir: string;
   readonly backendPort: number | undefined;
   /** Backend host the proxy dials; defaults to loopback. Set for a remote UAO backend. */
-  readonly backendHost?: string;
+  readonly backendHost?: string | undefined;
+  /**
+   * Reach the backend through another machine's `uao-serve` (its `tailscale
+   * serve` https address) instead of dialing the backend directly. That
+   * gateway is the only path the backend treats as loopback, which the
+   * butler's /ask and /speak require. `pairingSecret` is sent as the
+   * pairing header and never reaches the renderer.
+   */
+  readonly upstream?: UaoUpstream | undefined;
   readonly port?: number;
   /** Interface to bind. Defaults to loopback; anything else needs `pairingSecret`. */
   readonly host?: string;
@@ -100,6 +109,22 @@ const CROSS_SITE_NAVIGATION_PATHS: ReadonlySet<string> = new Set([
 const PAIR_FAILURE_LIMIT = 10;
 const PAIR_FAILURE_WINDOW_MS = 60_000;
 
+export interface UaoUpstream {
+  readonly url: string;
+  readonly pairingSecret: string;
+}
+
+/** Where proxied requests go and which identity headers they carry. */
+interface BackendTarget {
+  readonly secure: boolean;
+  readonly hostname: string;
+  readonly port: number;
+  /** Origin the backend sees as itself; used to rewrite its redirects. */
+  readonly origin: string;
+  readonly hostHeader: string;
+  readonly pairingSecret: string | undefined;
+}
+
 export interface UaoServerInstance {
   readonly port: number;
   readonly origin: string;
@@ -128,8 +153,7 @@ const FRAME_BOOTSTRAP = `<script>
 export async function handleUaoFrameDocument(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  backendPort: number,
-  backendHost = "127.0.0.1",
+  backend: BackendTarget,
 ): Promise<boolean> {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   if (
@@ -142,11 +166,14 @@ export async function handleUaoFrameDocument(
   const abort = () => controller.abort();
   res.once("close", abort);
   try {
-    const response = await fetch(`http://${backendHost}:${backendPort}/${url.search}`, {
+    const response = await fetch(`${backend.origin}${backend.pairingSecret !== undefined ? "/uao-api" : ""}/${url.search}`, {
       headers: {
         Accept: "text/html",
         ...(process.env.AGENT_OS_TOKEN
           ? { "x-agent-os-token": process.env.AGENT_OS_TOKEN }
+          : {}),
+        ...(backend.pairingSecret !== undefined
+          ? { [UAO_PAIR_HEADER]: backend.pairingSecret }
           : {}),
       },
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
@@ -168,7 +195,12 @@ export async function handleUaoFrameDocument(
       }
     }
     let html = Buffer.concat(chunks).toString("utf8");
-    if (response.ok && response.headers.get("content-type")?.includes("text/html")) {
+    // A gateway has already injected the bootstrap into its document.
+    if (
+      backend.pairingSecret === undefined &&
+      response.ok &&
+      response.headers.get("content-type")?.includes("text/html")
+    ) {
       html = html.replace(/<head(?:\s[^>]*)?>/i, (head) => head + FRAME_BOOTSTRAP);
     }
     const headers = Object.fromEntries(response.headers);
@@ -318,13 +350,21 @@ function parseRequestUrl(rawUrl: string, origin: string): URL | null {
 
 function forwardHeaders(
   req: http.IncomingMessage,
-  backendPort: number,
+  backend: BackendTarget,
 ): http.OutgoingHttpHeaders {
   const headers: http.OutgoingHttpHeaders = {
     ...req.headers,
-    host: `127.0.0.1:${backendPort}`,
-    origin: `http://127.0.0.1:${backendPort}`,
+    host: backend.hostHeader,
+    origin: backend.origin,
   };
+  if (backend.pairingSecret !== undefined) {
+    // The gateway checks Referer against its own origins and refuses
+    // anything labelled cross-site; this proxy is not a browser page.
+    headers.referer = `${backend.origin}/`;
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase().startsWith("sec-fetch-")) delete headers[name];
+    }
+  }
   // Pairing credentials stop at this proxy, and client-asserted network
   // identity must not reach a backend that trusts such headers.
   delete headers[UAO_PAIR_HEADER];
@@ -349,6 +389,9 @@ function forwardHeaders(
   }
   if (process.env.AGENT_OS_TOKEN) {
     headers["x-agent-os-token"] = process.env.AGENT_OS_TOKEN;
+  }
+  if (backend.pairingSecret !== undefined) {
+    headers[UAO_PAIR_HEADER] = backend.pairingSecret;
   }
   return headers;
 }
@@ -455,8 +498,37 @@ export function matchUaoProxyRoute(pathname: string): {
 export function startUaoServer(
   options: UaoServerOptions,
 ): Promise<UaoServerInstance> {
-  const backendHost = options.backendHost ?? "127.0.0.1";
-  const backendPort = options.backendPort ?? 5050;
+  const upstreamUrl =
+    options.upstream !== undefined ? new URL(options.upstream.url) : undefined;
+  if (upstreamUrl !== undefined && upstreamUrl.protocol !== "https:") {
+    throw new Error("UAO upstream must be an https URL.");
+  }
+  const backendHost =
+    upstreamUrl?.hostname ?? options.backendHost ?? "127.0.0.1";
+  const backendPort =
+    upstreamUrl !== undefined
+      ? Number(upstreamUrl.port || 443)
+      : (options.backendPort ?? 5050);
+  const backend: BackendTarget =
+    upstreamUrl !== undefined && options.upstream !== undefined
+      ? {
+          secure: true,
+          hostname: backendHost,
+          port: backendPort,
+          origin: upstreamUrl.origin,
+          hostHeader: upstreamUrl.host,
+          pairingSecret: options.upstream.pairingSecret,
+        }
+      : {
+          secure: false,
+          hostname: backendHost,
+          port: backendPort,
+          origin: `http://${backendHost}:${backendPort}`,
+          hostHeader: `127.0.0.1:${backendPort}`,
+          pairingSecret: undefined,
+        };
+  const viaGateway = backend.pairingSecret !== undefined;
+  const requestBackend = backend.secure ? https.request : http.request;
   const staticDir = path.resolve(options.staticDir);
   const bindHost = options.host ?? "127.0.0.1";
   const orcaEnabled = options.orca !== false;
@@ -571,7 +643,9 @@ export function startUaoServer(
     res.end();
   }
   const trackedSockets = new Set<Socket>();
-  const backendAgent = new http.Agent({ keepAlive: false });
+  const backendAgent = backend.secure
+    ? new https.Agent({ keepAlive: false })
+    : new http.Agent({ keepAlive: false });
 
   return new Promise<UaoServerInstance>((resolveServer, rejectServer) => {
     const server = http.createServer();
@@ -785,7 +859,7 @@ export function startUaoServer(
           req.method === "GET" && pathname === "/uao-api/" &&
           parsed.searchParams.get("desktop-frame") === "1"
         ) {
-          void handleUaoFrameDocument(req, res, backendPort, backendHost);
+          void handleUaoFrameDocument(req, res, backend);
           return;
         }
 
@@ -796,11 +870,11 @@ export function startUaoServer(
           return;
         }
 
-        const targetBackendPath = `${proxyRoute.backendPath}${parsed.search}`;
-        const headers = forwardHeaders(req, backendPort);
+        const targetBackendPath = `${viaGateway ? pathname : proxyRoute.backendPath}${parsed.search}`;
+        const headers = forwardHeaders(req, backend);
         delete headers.connection;
 
-        const backendReq = http.request(
+        const backendReq = requestBackend(
           {
             hostname: backendHost,
             port: backendPort,
@@ -830,10 +904,10 @@ export function startUaoServer(
               try {
                 const target = new URL(
                   location,
-                  `http://${backendHost}:${backendPort}${targetBackendPath}`,
+                  `${backend.origin}${targetBackendPath}`,
                 );
-                if (target.origin === `http://${backendHost}:${backendPort}`) {
-                  responseHeaders.location = `${proxyRoute.isUaoApi ? "/uao-api" : ""}${target.pathname}${target.search}${target.hash}`;
+                if (target.origin === backend.origin) {
+                  responseHeaders.location = `${proxyRoute.isUaoApi && !viaGateway ? "/uao-api" : ""}${target.pathname}${target.search}${target.hash}`;
                 }
               } catch {
                 delete responseHeaders.location;
@@ -850,7 +924,7 @@ export function startUaoServer(
             res.end(
               JSON.stringify({
                 error: "UAO backend unreachable",
-                backend: `http://${backendHost}:${backendPort}`,
+                backend: backend.origin,
               }),
             );
           } else {
@@ -929,13 +1003,13 @@ export function startUaoServer(
           return;
         }
 
-        const targetBackendPath = `${proxyRoute.backendPath}${parsed.search}`;
-        const backendReq = http.request({
+        const targetBackendPath = `${viaGateway ? parsed.pathname : proxyRoute.backendPath}${parsed.search}`;
+        const backendReq = requestBackend({
           hostname: backendHost,
           port: backendPort,
           path: targetBackendPath,
           method: req.method,
-          headers: forwardHeaders(req, backendPort),
+          headers: forwardHeaders(req, backend),
           agent: backendAgent,
         });
         backendReq.on("socket", trackSocket);

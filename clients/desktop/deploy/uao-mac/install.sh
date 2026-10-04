@@ -5,8 +5,16 @@
 # app's own data folder on the Mac.
 #
 #   MAC_HOST      ssh target of the Mac        (default tony@100.107.7.88)
-#   BACKEND_HOST  UAO backend the Mac app uses (default: this box's tailscale IPv4)
-#   BACKEND_PORT  backend port                 (default 5050)
+#   UPSTREAM      https URL of this box's `tailscale serve` uao-serve gateway
+#                 (default https://<this box's tailnet name>:10000/). The Mac app
+#                 goes through it because the butler (Jarvis) only answers
+#                 loopback callers, which the gateway is. The pairing secret
+#                 (~/.config/uao-serve/pairing-secret) is copied to the Mac's app
+#                 data folder, mode 600, and is never printed.
+#                 UPSTREAM= (empty) dials BACKEND_HOST:BACKEND_PORT directly instead;
+#                 everything but Jarvis' /ask and /speak works that way.
+#   BACKEND_HOST  direct-mode backend host     (default: this box's tailscale IPv4)
+#   BACKEND_PORT  direct-mode backend port     (default 5050)
 #   SKIP_BUILD=1  reuse the existing release-uao/mac-arm64/UAO.app
 #   NO_LAUNCH=1   install but do not start it
 #   FORCE=1       build even when this box is under memory pressure
@@ -21,6 +29,16 @@ backend_port="${BACKEND_PORT:-5050}"
 backend_host="${BACKEND_HOST:-$(tailscale ip -4 2>/dev/null | head -n1 || true)}"
 if [ -z "$backend_host" ]; then
   echo "set BACKEND_HOST (could not read this box's tailscale IPv4)" >&2
+  exit 1
+fi
+if [ -z "${UPSTREAM+x}" ]; then
+  dns="$(tailscale status --json 2>/dev/null |
+    python3 -c 'import sys,json;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)"
+  UPSTREAM="${dns:+https://$dns:10000/}"
+fi
+secret_file="$HOME/.config/uao-serve/pairing-secret"
+if [ -n "$UPSTREAM" ] && [ ! -s "$secret_file" ]; then
+  echo "missing $secret_file - run deploy/uao-serve/install.sh first" >&2
   exit 1
 fi
 ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10)
@@ -44,9 +62,13 @@ tar -C "$(dirname "$app")" -czf "$tgz" UAO.app
 remote_tgz="/tmp/uao-mac-$$.tgz"
 scp -q "${ssh_opts[@]}" "$tgz" "$mac_host:$remote_tgz"
 
-ssh "${ssh_opts[@]}" "$mac_host" bash -s -- "$backend_host" "$backend_port" "$remote_tgz" "${NO_LAUNCH:-0}" <<'REMOTE'
+if [ -n "$UPSTREAM" ]; then
+  ssh "${ssh_opts[@]}" "$mac_host" 'd="$HOME/Library/Application Support/uao-desktop"; mkdir -p "$d" && umask 077 && cat > "$d/pairing-secret"' < "$secret_file"
+fi
+
+ssh "${ssh_opts[@]}" "$mac_host" bash -s -- "$backend_host" "$backend_port" "$remote_tgz" "${NO_LAUNCH:-0}" "$UPSTREAM" <<'REMOTE'
 set -euo pipefail
-backend_host="$1"; backend_port="$2"; tgz="$3"; no_launch="$4"
+backend_host="$1"; backend_port="$2"; tgz="$3"; no_launch="$4"; upstream="${5:-}"
 mkdir -p "$HOME/Applications"
 dest="$(cd "$HOME/Applications" && pwd -P)"
 
@@ -63,8 +85,14 @@ codesign -v "$dest/UAO.app"
 
 data="$HOME/Library/Application Support/uao-desktop"
 mkdir -p "$data"
-printf '{"host":"%s","port":%s}\n' "$backend_host" "$backend_port" > "$data/backend.json"
-echo "installed $dest/UAO.app -> backend $backend_host:$backend_port"
+if [ -n "$upstream" ]; then
+  printf '{"upstream":"%s"}\n' "$upstream" > "$data/backend.json"
+  target="$upstream (via uao-serve)"
+else
+  printf '{"host":"%s","port":%s}\n' "$backend_host" "$backend_port" > "$data/backend.json"
+  target="$backend_host:$backend_port (direct)"
+fi
+echo "installed $dest/UAO.app -> backend $target"
 
 if [ "$no_launch" != 1 ]; then
   open "$dest/UAO.app"
