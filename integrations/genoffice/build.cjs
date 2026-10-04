@@ -65,7 +65,27 @@ async function build() {
     banner: { js: 'const GENOFFICE_IMPORT_URL = require("node:url").pathToFileURL(__filename).href;' },
     external: ['electron', 'node:sqlite', 'jsdom', '*.node'],
     loader: { '.png': 'file', '.jpg': 'file', '.woff2': 'file' },
-    plugins: [{ name: 'genoffice-assets', setup(builder) {
+    plugins: [{ name: 'uao-local-gateway', setup(builder) {
+      const bridge = JSON.stringify(path.join(root, 'local-gateway.ts'));
+      builder.onLoad({ filter: /packages\/ai-provider\/src\/(stream|chat|custom-models)\.ts$/ }, args => {
+        let source = fs.readFileSync(args.path, 'utf8');
+        const name = path.basename(args.path);
+        let needle, insert;
+        if (name === 'stream.ts') {
+          needle = '  const endpoint = getProviderAdapter(provider).resolveEndpoint(config)';
+          insert = '  if (isGatewayConfig(provider, config)) return streamGateway(config, system, messages, tools, cb)\n';
+        } else if (name === 'chat.ts') {
+          needle = '  // non-streaming: the server generates';
+          insert = '  if (isGatewayConfig(provider, config)) return chatGateway(config, system, user, signal)\n';
+        } else {
+          needle = "  const base = baseUrl.trim().replace(/\\/+$/, '')";
+          insert = '  if (apiKey === GATEWAY_MARKER) return gatewayModels()\n';
+        }
+        if (!source.includes(needle)) throw new Error(`GenOffice gateway integration anchor missing: ${name}`);
+        source = `import { isGatewayConfig, streamGateway, chatGateway, GATEWAY_MARKER, gatewayModels } from ${bridge};\n` + source.replace(needle, insert + needle);
+        return { contents: source, loader: 'ts', resolveDir: path.dirname(args.path) };
+      });
+    } }, { name: 'genoffice-assets', setup(builder) {
       builder.onResolve({ filter: /\?(raw|asset)$/ }, async args => {
         const [specifier, kind] = args.path.split('?');
         const resolved = await builder.resolve(specifier, { resolveDir: args.resolveDir, kind: args.kind });

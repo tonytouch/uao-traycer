@@ -9,6 +9,7 @@ import { TabManager } from './upstream/apps/shell/src/main/tab-manager';
 import { blankPdfBuffer } from './upstream/apps/pdf/src/main/blank-pdf';
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { configureOfficeAi } from './local-gateway';
 import { readAppSettings, writeAppSettings } from './upstream/apps/shell/src/main/app-settings';
 import { normalizeAiPanelPrefs } from './upstream/packages/ui/src/ai-panel-prefs';
 import { buildOfficeSession, existingDocuments, readOfficeSession, writeOfficeSession, type SessionTab } from './office-session';
@@ -51,6 +52,7 @@ export function createOfficeHost(window: BrowserWindow, resources: string) {
   installRendererProtocol(Object.fromEntries(['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html']
     .map(kind => [kind, join(moduleRoot, kind, 'renderer')])));
   setUiLang('en');
+  configureOfficeAi(app.getPath('userData'));
   registerAiIpc(); registerProjectIpc(); registerDocsIpc();
   const settingsPath = join(app.getPath('userData'), 'app-settings.json');
   const prefs = () => {

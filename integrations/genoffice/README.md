@@ -25,10 +25,41 @@ the AppImage serves its compiled UAO renderer locally; it needs no Vite
 server, Traycer Host or Traycer cloud login. UAO's existing backend still
 supplies the UAO screens and Orca runtime.
 
-GenOffice's document AI handlers are retained. They use GenOffice's own
-provider configuration and optional Genspark login; UAO does not configure
-credentials or initiate paid AI requests. The original GenOffice Home,
-cloud file browser and MCP service are not started as a second app shell.
+GenOffice's document AI uses UAO's local CLI gateway by default. On the first
+launch with this integration, Office selects the custom provider, chooses
+`codex`, and disables Genspark cloud tools. Later explicit provider choices
+are retained. The original GenOffice Home, cloud file browser and MCP service
+are not started as a second app shell.
+
+The desktop reads `~/.config/uao-office/gateway.json` (keep it mode `0600`):
+
+```json
+{
+  "baseUrl": "http://127.0.0.1:8765/v1",
+  "model": "codex",
+  "token": "<existing local gateway token, or empty for anonymous gateways>"
+}
+```
+
+`UAO_OFFICE_GATEWAY_CONFIG` selects another config file;
+`UAO_OFFICE_GATEWAY_URL`, `UAO_OFFICE_GATEWAY_MODEL`, and
+`LOCAL_GATEWAY_TOKEN` override its values. The model setting initializes the
+Office selection; subsequent model changes in GenOffice settings persist.
+The real token stays in main. GenOffice settings contain only the non-secret
+`uao-local-gateway` marker. Requests carrying that marker use the configured
+main-process endpoint, ignoring renderer-supplied URLs; redirects are refused.
+The live model picker authenticates through the same main-process adapter.
+
+This gateway fronts existing CLI logins, so no paid API key is needed, but
+those accounts' usage limits still apply. The gateway is text-only: Office
+supplies tool schemas in the prompt, validates the model's JSON tool names and
+argument shape, and runs edits through GenOffice's existing document tool loop.
+Tool results return on the next model turn. Malformed responses fail visibly.
+Text chat, writing, rewriting, and document edits are supported; image/video
+analysis and image generation are not supplied by this connection. CLI answers
+arrive as a completed turn rather than token-by-token. Cancel aborts the desktop
+request; the gateway's existing backend timeout still bounds any CLI work it
+has already started.
 
 For isolated package verification, `UAO_DESKTOP_USER_DATA` can select a
 scratch profile and `UAO_DESKTOP_PORT` a separate local port. These leave the
