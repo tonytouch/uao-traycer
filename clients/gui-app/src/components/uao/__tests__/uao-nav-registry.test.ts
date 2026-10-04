@@ -165,8 +165,9 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(terminal?.keywords).toContain("service");
   });
 
-  it("organizes consolidated owner panes into six navigation groups", () => {
-    expect(NAV_GROUPS).toHaveLength(6);
+  it("organizes consolidated owner panes into the non-empty navigation groups", () => {
+    expect(NAV_GROUPS.map((group) => group.id)).toEqual(["priority", "workspace", "pinned", "agents", "system"]);
+    expect(NAV_GROUPS.every((group) => group.panes.length > 0)).toBe(true);
     const totalGroupPanes = NAV_GROUPS.reduce(
       (sum, g) => sum + g.panes.length,
       0,

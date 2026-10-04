@@ -375,14 +375,18 @@ const groupRows: readonly (readonly [UaoNavGroupId, string, string])[] = [
   ["agents", "Agents Fleet", "users"],
   ["system", "System & Tools", "sliders"],
 ];
-export const NAV_GROUPS = groupRows.map(([id, label, iconName]) => ({
-  id,
-  label,
-  iconName,
-  panes: ALL_NAV_PANES.filter(
-    (pane) => pane.group === id && isFeatureOwner(pane.id),
-  ),
-}));
+// Groups whose screens were all folded into an owner are dropped, so the
+// sidebar never shows a header with nothing under it.
+export const NAV_GROUPS = groupRows
+  .map(([id, label, iconName]) => ({
+    id,
+    label,
+    iconName,
+    panes: ALL_NAV_PANES.filter(
+      (pane) => pane.group === id && isFeatureOwner(pane.id),
+    ),
+  }))
+  .filter((group) => group.panes.length > 0);
 export function findNavPane(id: string): UaoNavPane | undefined {
   return ALL_NAV_PANES.find((pane) => pane.id === id);
 }
