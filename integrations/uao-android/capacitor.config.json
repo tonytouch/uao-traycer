@@ -1,0 +1,14 @@
+{
+  "appId": "ai.uao.mobile",
+  "appName": "UAO",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "allowNavigation": ["server.tail85e19.ts.net"],
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false
+  }
+}

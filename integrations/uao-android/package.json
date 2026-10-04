@@ -1,0 +1,17 @@
+{
+  "name": "uao-android",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Android shell for UAO: a Capacitor WebView that opens the tailnet-hosted uao-serve with microphone access.",
+  "scripts": {
+    "sync": "cap sync android",
+    "build:debug": "cap sync android && cd android && ./gradlew assembleDebug --no-daemon --max-workers=2"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.4.2",
+    "@capacitor/core": "8.4.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.4.2"
+  }
+}
