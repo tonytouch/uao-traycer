@@ -196,7 +196,7 @@ function OrcaSubHeader(props: OrcaSubHeaderProps) {
             disabled={isOpenPending}
           >
             {isOpenPending ? (
-              <AgentSpinningDots tone="primary" />
+              <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="inherit" />
             ) : (
               <Play className="size-3" />
             )}
@@ -212,7 +212,7 @@ function OrcaSubHeader(props: OrcaSubHeaderProps) {
           aria-label="Refresh Orca status"
         >
           {isStatusFetching ? (
-            <AgentSpinningDots tone="muted" />
+            <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="muted" />
           ) : (
             <RefreshCw className="size-3 text-muted-foreground" />
           )}
@@ -258,7 +258,7 @@ function OrcaOfflineCard(props: OrcaOfflineCardProps) {
           className="w-full"
         >
           {isOpenPending ? (
-            <AgentSpinningDots tone="primary" />
+            <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="inherit" />
           ) : (
             <Play className="size-3.5" />
           )}
@@ -399,7 +399,7 @@ function OrcaWorkspacesSidebar(props: OrcaWorkspacesSidebarProps) {
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         <div className="mb-1 flex items-center justify-between px-1 text-micro text-muted-foreground">
           <span>Workspaces ({worktrees.length})</span>
-          {isFetching ? <AgentSpinningDots tone="muted" /> : null}
+          {isFetching ? <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="muted" /> : null}
         </div>
 
         {worktrees.length === 0 ? (
@@ -551,7 +551,7 @@ function OrcaTerminalsSidebar(props: OrcaTerminalsSidebarProps) {
             className="shrink-0"
           >
             {isCreating ? (
-              <AgentSpinningDots tone="primary" />
+              <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="inherit" />
             ) : (
               <Plus className="size-3" />
             )}
@@ -751,7 +751,7 @@ function OrcaWorkspacesConnectedPane(props: OrcaWorkspacesConnectedPaneProps) {
         />
 
         {activeTerminal ? (
-          <Suspense fallback={<AgentSpinningDots tone="muted" />}>
+          <Suspense fallback={<AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="muted" />}>
             <UaoOrcaTerminalXterm
               key={activeTerminal.handle}
               handle={activeTerminal.handle}

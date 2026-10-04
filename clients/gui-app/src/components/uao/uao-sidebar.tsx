@@ -101,7 +101,7 @@ export function UaoSidebar({
     const tooltipText = livesIn ? `${pane.label} (in ${livesIn})` : pane.label;
 
     return (
-      <TooltipWrapper key={pane.id} label={tooltipText} side="right">
+      <TooltipWrapper key={pane.id} label={tooltipText} side="right" sideOffset={undefined} align={undefined}>
         <button
           type="button"
           aria-label={tooltipText}

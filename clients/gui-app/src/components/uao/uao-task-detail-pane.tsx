@@ -248,7 +248,7 @@ export function UaoTaskDetailPane(props: UaoTaskDetailPaneProps) {
     if (loading && activeDetail === null) {
       return (
         <div className="flex h-60 flex-col items-center justify-center gap-2 text-muted-foreground">
-          <AgentSpinningDots tone="muted" />
+          <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="muted" />
           <span className="text-ui-xs">Loading task details...</span>
         </div>
       );

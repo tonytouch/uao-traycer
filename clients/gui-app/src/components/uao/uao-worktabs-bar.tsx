@@ -108,7 +108,7 @@ function UaoWorktabItem({
           : "border-b-2 border-transparent text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
       )}
     >
-      <TooltipWrapper label={fullTitle} side="bottom">
+      <TooltipWrapper label={fullTitle} side="bottom" sideOffset={undefined} align={undefined}>
         <button
           ref={(el) => registerRef(tab.ownerId, el)}
           type="button"

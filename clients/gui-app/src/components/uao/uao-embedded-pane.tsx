@@ -225,7 +225,7 @@ export function UaoEmbeddedPane({
           role="status"
           className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background p-6"
         >
-          <AgentSpinningDots tone="muted" />
+          <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="muted" />
           <p className="text-ui-sm text-muted-foreground">
             Loading UAO interface…
           </p>

@@ -116,7 +116,7 @@ function ConnectionStatusIndicator({
   if (connState === "connecting") {
     return (
       <div className="flex items-center gap-1 text-micro text-muted-foreground">
-        <AgentSpinningDots tone="muted" />
+        <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="muted" />
         <span>Attaching…</span>
       </div>
     );

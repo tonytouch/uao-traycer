@@ -70,7 +70,7 @@ export function UaoKanbanTasksPane(props: UaoKanbanTasksPaneProps) {
     if (loading) {
       return (
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-muted-foreground">
-          <AgentSpinningDots tone="muted" />
+          <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="muted" />
           <span className="text-ui-xs">Loading tasks...</span>
         </div>
       );
@@ -191,7 +191,7 @@ export function UaoKanbanTasksPane(props: UaoKanbanTasksPaneProps) {
           aria-label="Refresh tasks"
         >
           {loading ? (
-            <AgentSpinningDots tone="muted" />
+            <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="muted" />
           ) : (
             <RefreshCw className="size-3.5" />
           )}

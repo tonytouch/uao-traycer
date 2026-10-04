@@ -66,7 +66,7 @@ export function UaoOfficePane({ active }: { readonly active: boolean }) {
           <div><h2 className="font-heading text-ui-md font-semibold">Office</h2>
             <p className="text-ui-xs text-muted-foreground">Local documents · Powered by GenOffice</p></div>
         </div>
-        {editors.map(editor => <TooltipWrapper key={editor.kind} label={`New ${editor.format} document`}>
+        {editors.map(editor => <TooltipWrapper key={editor.kind} label={`New ${editor.format} document`} side="bottom" sideOffset={undefined} align={undefined}>
           <Button size="sm" variant="outline"
           disabled={action.isPending || documents.isError}
           onClick={() => { action.mutate({ action: "create", kind: editor.kind }); }}>
@@ -76,7 +76,7 @@ export function UaoOfficePane({ active }: { readonly active: boolean }) {
           onClick={() => { action.mutate({ action: "browse" }); }}>
           <FolderOpen /> Open file
         </Button>
-        {action.isPending ? <AgentSpinningDots /> : null}
+        {action.isPending ? <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} /> : null}
       </div>
       {error ? <div role="alert" className="border-b p-3 text-ui-sm text-destructive">
         {error.message}
@@ -84,7 +84,7 @@ export function UaoOfficePane({ active }: { readonly active: boolean }) {
       </div> : null}
       <div role="tablist" aria-label="Office documents" className="flex shrink-0 gap-1 overflow-x-auto border-b p-2">
         {tabs.map(tab => <div key={tab.id} className="flex shrink-0 items-center gap-1">
-          <TooltipWrapper label={tab.filePath ?? tab.title}><button type="button" role="tab" aria-selected={tab.active}
+          <TooltipWrapper label={tab.filePath ?? tab.title} side="bottom" sideOffset={undefined} align={undefined}><button type="button" role="tab" aria-selected={tab.active}
             className={cn("rounded-md px-3 py-2 text-ui-xs", tab.active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent")}
             disabled={action.isPending} onClick={() => { action.mutate({ action: "activate", id: tab.id }); }}
             >{tab.kind === "home" ? "Office home" : tab.title}</button></TooltipWrapper>
@@ -93,7 +93,7 @@ export function UaoOfficePane({ active }: { readonly active: boolean }) {
         </div>)}
       </div>
       <div ref={surface} className="relative min-h-0 flex-1">
-        {documents.isPending ? <div role="status" className="flex h-full items-center justify-center"><AgentSpinningDots /></div> : null}
+        {documents.isPending ? <div role="status" className="flex h-full items-center justify-center"><AgentSpinningDots className={undefined} testId={undefined} variant={undefined} /></div> : null}
         {!documents.isPending && (!selected || selected.kind === "home") ? (
           <div className="flex h-full flex-col items-center justify-center gap-5 overflow-auto p-6 text-center">
             <FileText className="size-10 text-muted-foreground" />

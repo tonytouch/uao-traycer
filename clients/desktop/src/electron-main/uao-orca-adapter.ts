@@ -1332,7 +1332,7 @@ export async function handleOrcaTerminalStreamUpgrade(
             const wsFrame = encodeWebSocketFrame(bytes, WsOpcode.Binary);
             socket.write(wsFrame);
           } catch {
-            closeClient();
+            closeClient(undefined);
           }
         },
         onError: () => {
@@ -1452,14 +1452,14 @@ export async function handleOrcaTerminalStreamUpgrade(
   const handleClientFrames = (frames: readonly WsParsedFrame[]): void => {
     for (const frame of frames) {
       if (frame.opcode === WsOpcode.Close) {
-        closeClient();
+        closeClient(undefined);
         return;
       }
       if (frame.opcode === WsOpcode.Ping) {
         try {
           socket.write(encodeWebSocketFrame(frame.payload, WsOpcode.Pong));
         } catch {
-          closeClient();
+          closeClient(undefined);
         }
         continue;
       }
@@ -1477,7 +1477,7 @@ export async function handleOrcaTerminalStreamUpgrade(
         if (!allowedOpcodes) continue;
 
         if (termFrame.opcode === TerminalStreamOpcode.Unsubscribe) {
-          closeClient();
+          closeClient(undefined);
           return;
         }
 

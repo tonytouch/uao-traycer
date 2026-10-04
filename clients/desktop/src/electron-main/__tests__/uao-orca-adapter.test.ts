@@ -28,7 +28,7 @@ function createMockSpawn(response: {
 } {
   const calls: MockSpawnCall[] = [];
 
-  const spawnImpl: SpawnFn = (command, args) => {
+  const spawnImpl = ((command: unknown, args: unknown) => {
     calls.push({
       command: String(command),
       args: Array.isArray(args) ? [...args] : [],
@@ -57,7 +57,7 @@ function createMockSpawn(response: {
     });
 
     return proc;
-  };
+  }) as SpawnFn;
 
   return { spawnImpl, calls };
 }

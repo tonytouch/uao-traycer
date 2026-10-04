@@ -120,6 +120,12 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(getFeatureOwnerId("logs")).toBe("operations-pulse");
     expect(getFeatureOwnerId("pwa-hitl")).toBe("operations-pulse");
 
+    // screens whose function another owner already provides
+    expect(getFeatureOwnerId("mission-stream")).toBe("command-center");
+    expect(getFeatureOwnerId("ai-studio")).toBe("creation-studio");
+    expect(getFeatureOwnerId("claude-code")).toBe("agent-cockpit");
+    expect(getFeatureOwnerId("mavis")).toBe("agent-cockpit");
+
     // chat inside tasks-workspace
     expect(getFeatureOwnerId("chat")).toBe(WORKSPACE_PANE_ID);
 
@@ -165,7 +171,7 @@ describe("UAO Navigation Registry & Inventory", () => {
       (sum, g) => sum + g.panes.length,
       0,
     );
-    expect(totalGroupPanes).toBe(23);
+    expect(totalGroupPanes).toBe(19);
   });
 });
 

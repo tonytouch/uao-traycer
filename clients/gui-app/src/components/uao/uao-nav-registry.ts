@@ -325,14 +325,20 @@ export const ALL_NAV_PANES: readonly UaoNavPane[] = paneRows.map(
 
 /**
  * Feature ownership mapping consolidating child subviews into primary owner components:
- * - mission-control -> command-center
+ * - mission-control, mission-stream -> command-center (mission dispatch and its event stream)
  * - memory-wiki, vault-graph, knowledge-galaxy -> second-brain
  * - agent, swarm-orchestrator, coding-cli, agents-roster, hermes-webui, omnigent -> agent-cockpit
+ * - claude-code, mavis -> agent-cockpit (Agent Console already runs both through its unified adapters)
+ * - ai-studio -> creation-studio (already a tab of Creation Studio)
  * - telemetry, logs, pwa-hitl -> operations-pulse
  * - chat -> tasks-workspace
  */
 export const FEATURE_OWNER_MAP: Readonly<Record<string, string>> = {
   "mission-control": "command-center",
+  "mission-stream": "command-center",
+  "ai-studio": "creation-studio",
+  "claude-code": "agent-cockpit",
+  mavis: "agent-cockpit",
   "memory-wiki": "second-brain",
   "vault-graph": "second-brain",
   "knowledge-galaxy": "second-brain",

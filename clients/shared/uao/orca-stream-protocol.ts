@@ -58,7 +58,7 @@ export function isTerminalStreamOpcode(
 
 export function encodeTerminalStreamFrame(
   frame: TerminalStreamFrame,
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(HEADER_BYTES + frame.payload.length);
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
   view.setUint8(0, TERMINAL_STREAM_KIND);

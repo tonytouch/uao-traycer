@@ -15,7 +15,9 @@ function copyEvent(event: Event): Event {
     : new Event(event.type);
 }
 
-export class UaoActivitySource extends EventTarget implements EventSource {
+// Installed in place of the browser EventSource, so it mirrors the handler and
+// state surface but cannot structurally implement EventTarget's typed overloads.
+export class UaoActivitySource extends EventTarget {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
   static readonly CLOSED = 2;
@@ -24,9 +26,9 @@ export class UaoActivitySource extends EventTarget implements EventSource {
   readonly CLOSED = 2;
   readonly url = new URL("/api/agents/activity", window.location.href).href;
   readonly withCredentials = false;
-  onopen: EventSource["onopen"] = null;
-  onerror: EventSource["onerror"] = null;
-  onmessage: EventSource["onmessage"] = null;
+  onopen: ((this: UaoActivitySource, event: Event) => unknown) | null = null;
+  onerror: ((this: UaoActivitySource, event: Event) => unknown) | null = null;
+  onmessage: ((this: UaoActivitySource, event: MessageEvent) => unknown) | null = null;
   private closed = false;
 
   constructor() {

@@ -553,7 +553,7 @@ function UaoStandaloneScreenInner() {
             aria-label="Refresh connection status"
           >
             {boardsQuery.isFetching ? (
-              <AgentSpinningDots tone="muted" />
+              <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="muted" />
             ) : (
               <RefreshCw className="size-3 text-muted-foreground" />
             )}
