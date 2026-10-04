@@ -1,0 +1,45 @@
+# systemd USER unit for the headless UAO server (phone UI).
+#
+# Binds loopback only; `tailscale serve` terminates HTTPS on the tailnet and
+# forwards here (see README.md). Pairing is mandatory because the Agent OS
+# backend on :5050 treats everything this proxy forwards as local.
+#
+# Install with ./install.sh (copies this file, does not start it).
+[Unit]
+Description=UAO headless server (phone UI, loopback behind tailscale serve)
+Documentation=file://%h/uao-traycer/clients/desktop/deploy/uao-serve/README.md
+# Refuse to run without a pairing secret instead of serving unauthenticated.
+ConditionPathExists=%h/.config/uao-serve/pairing-secret
+ConditionPathExists=%h/uao-traycer/clients/desktop/dist/serve-uao/index.js
+ConditionPathExists=%h/uao-traycer/clients/desktop/dist/renderer-uao/uao.html
+
+[Service]
+Type=simple
+WorkingDirectory=%h/uao-traycer/clients/desktop
+# Host-specific values (allowed origin, ports). No "-" prefix on purpose: a
+# missing file fails the start rather than falling back to defaults.
+EnvironmentFile=%h/.config/uao-serve/uao-serve.env
+Environment=UAO_SERVE_HOST=127.0.0.1
+Environment=UAO_PAIRING_SECRET_FILE=%h/.config/uao-serve/pairing-secret
+ExecStart=/usr/bin/node dist/serve-uao/index.js
+Restart=on-failure
+RestartSec=5
+# Fail fast and stay small: this host shares 22 GB with the whole agent fleet.
+MemoryMax=256M
+TasksMax=64
+Nice=5
+
+# Hardening. The server reads the built UI and the secret file and writes
+# nothing, so the filesystem can be read-only.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target
