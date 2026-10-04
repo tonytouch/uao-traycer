@@ -36,6 +36,10 @@ function hardenUaoSession(serverOrigin: string): void {
 }
 
 app.setName("UAO");
+// UAO keeps no secrets in the OS keyring. Chromium otherwise asks the desktop
+// keyring for its cookie key at startup and blocks every window behind that
+// prompt when the keyring is locked, missing or being set up.
+app.commandLine.appendSwitch("password-store", "basic");
 app.setPath("userData", process.env.UAO_DESKTOP_USER_DATA ?? join(app.getPath("appData"), "uao-desktop"));
 const officeRuntime = prepareUaoOffice();
 
