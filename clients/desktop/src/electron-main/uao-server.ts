@@ -85,6 +85,16 @@ export const UAO_PAIR_PATH = "/uao-pair";
 export const UAO_PAIR_COOKIE = "uao_pair";
 export const UAO_PAIR_HEADER = "x-uao-pairing";
 export const UAO_PAIRING_SECRET_MIN_LENGTH = 32;
+/**
+ * The Android shell's launcher page lives on another origin and hands off with
+ * a top-level navigation, which browsers label `Sec-Fetch-Site: cross-site`.
+ * Only these two paths may be loaded that way: the pairing hand-off and the
+ * static shell it redirects to (the redirect keeps the cross-site label).
+ */
+const CROSS_SITE_NAVIGATION_PATHS: ReadonlySet<string> = new Set([
+  UAO_PAIR_PATH,
+  "/desktop/uao.html",
+]);
 const PAIR_FAILURE_LIMIT = 10;
 const PAIR_FAILURE_WINDOW_MS = 60_000;
 
@@ -225,6 +235,18 @@ function isValidReferer(
   } catch {
     return false;
   }
+}
+
+function isCrossSiteNavigationAllowed(req: http.IncomingMessage): boolean {
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  if (
+    req.headers["sec-fetch-mode"] !== "navigate" ||
+    req.headers["sec-fetch-dest"] !== "document"
+  ) {
+    return false;
+  }
+  const pathname = (req.url ?? "").split("?")[0] ?? "";
+  return CROSS_SITE_NAVIGATION_PATHS.has(pathname);
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -539,7 +561,7 @@ export function startUaoServer(
     );
     res.writeHead(303, {
       Location: "/desktop/uao.html",
-      "Set-Cookie": `${UAO_PAIR_COOKIE}=${sessionToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000${secure ? "; Secure" : ""}`,
+      "Set-Cookie": `${UAO_PAIR_COOKIE}=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000${secure ? "; Secure" : ""}`,
       "Cache-Control": "no-store",
       "Referrer-Policy": "no-referrer",
     });
@@ -573,16 +595,19 @@ export function startUaoServer(
           return;
         }
 
+        const crossSiteNavigation =
+          pairingSecret !== undefined && isCrossSiteNavigationAllowed(req);
         if (
           !isValidOrigin(req.headers.origin, allow) ||
-          req.headers["sec-fetch-site"] === "cross-site"
+          (req.headers["sec-fetch-site"] === "cross-site" &&
+            !crossSiteNavigation)
         ) {
           res.writeHead(403, { "Content-Type": "text/plain" });
           res.end("Forbidden: Invalid Origin");
           return;
         }
 
-        if (!isValidReferer(req.headers.referer, allow)) {
+        if (!crossSiteNavigation && !isValidReferer(req.headers.referer, allow)) {
           res.writeHead(403, { "Content-Type": "text/plain" });
           res.end("Forbidden: Invalid Referer");
           return;

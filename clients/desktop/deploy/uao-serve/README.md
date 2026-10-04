@@ -73,7 +73,10 @@ echo "https://$(tailscale status --json | python3 -c 'import sys,json;print(json
 ```
 
 Open it once in the phone browser (or the APK shell). It sets a one-year
-`HttpOnly`, `SameSite=Strict`, `Secure` cookie and redirects to the UI.
+`HttpOnly`, `SameSite=Lax`, `Secure` cookie and redirects to the UI. `Lax`
+(not `Strict`) is needed so the Android app, whose launcher page is another
+origin, can hand off with a top-level navigation. The server still rejects every
+cross-site request except that navigation to `/uao-pair` and `/desktop/uao.html`.
 
 ## Rotate the secret
 

@@ -249,7 +249,7 @@ describe("UAO server remote hosting options", () => {
       expect(seen.length).toBe(before);
     });
 
-    it("sets an HttpOnly SameSite=Strict cookie that is not the raw secret", async () => {
+    it("sets an HttpOnly SameSite=Lax cookie that is not the raw secret", async () => {
       const res = await getWith(
         server.port,
         `${UAO_PAIR_PATH}?token=${SECRET}`,
@@ -260,7 +260,7 @@ describe("UAO server remote hosting options", () => {
       const raw = res.headers["set-cookie"]?.[0] ?? "";
       expect(raw).toContain(`${UAO_PAIR_COOKIE}=`);
       expect(raw).toContain("HttpOnly");
-      expect(raw).toContain("SameSite=Strict");
+      expect(raw).toContain("SameSite=Lax");
       expect(raw).toContain("Secure");
       expect(raw).not.toContain(SECRET);
       expect(res.headers["cache-control"]).toBe("no-store");
@@ -326,6 +326,78 @@ describe("UAO server remote hosting options", () => {
         Cookie: cookie,
       });
       expect(res.status).toBe(200);
+    });
+  });
+
+  describe("cross-site navigation from the app launcher", () => {
+    const nav = {
+      "Sec-Fetch-Site": "cross-site",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Dest": "document",
+      Referer: "https://localhost/",
+    };
+    let server: UaoServerInstance;
+    beforeAll(async () => {
+      server = await start({});
+    });
+
+    it("allows the pairing hand-off and the shell it redirects to", async () => {
+      const paired = await getWith(
+        server.port,
+        `${UAO_PAIR_PATH}?token=${SECRET}`,
+        { Host: TAILNET_HOST, ...nav },
+      );
+      expect(paired.status).toBe(303);
+      expect(paired.headers["set-cookie"]?.[0]).toContain("SameSite=Lax");
+      const shell = await getWith(server.port, "/desktop/uao.html", {
+        Host: TAILNET_HOST,
+        Cookie: cookieFrom(paired),
+        ...nav,
+      });
+      expect(shell.status).toBe(200);
+    });
+
+    it("rejects cross-site navigation to anything else", async () => {
+      for (const p of [
+        "/uao-api/api/hermes/kanban/boards",
+        "/desktop/assets/app.js",
+        "/api/health",
+      ]) {
+        const res = await getWith(server.port, p, {
+          [UAO_PAIR_HEADER]: SECRET,
+          ...nav,
+        });
+        expect(res.status, p).toBe(403);
+      }
+    });
+
+    it("rejects cross-site subresource requests to the pairing path", async () => {
+      const res = await getWith(
+        server.port,
+        `${UAO_PAIR_PATH}?token=${SECRET}`,
+        { "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors" },
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("rejects cross-site non-GET requests to the pairing path", async () => {
+      const res = await send(
+        server.port,
+        `${UAO_PAIR_PATH}?token=${SECRET}`,
+        nav,
+        "POST",
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("keeps rejecting cross-site navigation when pairing is off", async () => {
+      const open = await startUaoServer({
+        staticDir,
+        backendPort,
+      } as Parameters<typeof startUaoServer>[0]);
+      instances.push(open);
+      const res = await getWith(open.port, "/desktop/uao.html", nav);
+      expect(res.status).toBe(403);
     });
   });
 
