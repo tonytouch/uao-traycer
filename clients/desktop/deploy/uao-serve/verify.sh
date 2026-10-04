@@ -31,6 +31,9 @@ if [ "${1:-}" = "--tailnet" ]; then
   origin="${UAO_SERVE_ALLOWED_ORIGINS%%,*}"
   check "tailnet unpaired UI"     401 "$(code "$origin/desktop/uao.html")"
   check "tailnet paired UI"       200 "$(code -H "x-uao-pairing: $secret" "$origin/desktop/uao.html")"
+  # A route outside /api/hermes/* only passes the backend's perimeter if no
+  # forwarding or tailscale-* headers reach it (regression guard).
+  check "tailnet paired backend API" 200 "$(code -H "x-uao-pairing: $secret" "$origin/uao-api/api/system/status")"
   # Cookie flags on the pairing redirect (the secret is in the URL, not printed).
   hdr="$(curl -s -m 10 -D - -o /dev/null "$origin/uao-pair?token=$secret" | tr -d '\r')"
   case "$hdr" in *"HttpOnly"*"Secure"*|*"Secure"*"HttpOnly"*) echo "ok    pairing cookie is HttpOnly + Secure" ;; *) echo "FAIL  pairing cookie flags"; fail=1 ;; esac

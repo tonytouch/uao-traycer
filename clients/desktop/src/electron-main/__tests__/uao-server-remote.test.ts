@@ -342,6 +342,9 @@ describe("UAO server remote hosting options", () => {
         Forwarded: "for=100.64.0.9",
         "X-Forwarded-Proto": "https",
         "X-Forwarded-Host": "evil.example.com",
+        "Tailscale-User-Login": "someone@example.com",
+        "Tailscale-User-Name": "Someone",
+        "Tailscale-App-Capabilities": "{}",
       });
       expect(res.status).toBe(200);
       expect(seen).toHaveLength(1);
@@ -353,6 +356,9 @@ describe("UAO server remote hosting options", () => {
       expect(h.forwarded).toBeUndefined();
       expect(h["x-forwarded-proto"]).toBeUndefined();
       expect(h["x-forwarded-host"]).toBeUndefined();
+      expect(Object.keys(h).filter((k) => k.startsWith("tailscale-"))).toEqual(
+        [],
+      );
       expect(h["x-agent-os-token"]).toBe("backend-token");
     });
 

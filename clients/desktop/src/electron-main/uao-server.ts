@@ -308,6 +308,12 @@ function forwardHeaders(
   delete headers["x-forwarded-proto"];
   delete headers["x-real-ip"];
   delete headers.forwarded;
+  // `tailscale serve` adds identity headers (tailscale-user-login, ...). The
+  // backend counts tailscale-user-login as a forwarding header and then
+  // refuses the loopback exemption, so none of them may pass through.
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase().startsWith("tailscale-")) delete headers[name];
+  }
   if (typeof headers.cookie === "string") {
     const kept = headers.cookie
       .split(";")
