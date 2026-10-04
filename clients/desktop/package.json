@@ -24,6 +24,8 @@
     "build:uao:main": "bun scripts/build-uao-main-bundle.cjs",
     "build:uao:renderer": "vite build --config vite.renderer.uao.config.ts",
     "build:uao": "bun run build:uao:main && bun run build:uao:renderer",
+    "build:uao:serve": "bun scripts/build-uao-serve-bundle.cjs",
+    "uao:serve": "node dist/serve-uao/index.js",
     "package": "bun run build:app && bun run prepack:check-cli && bun run prepack:check-icons && bun run prepack:check-tray && bun x electron-builder --publish never",
     "package:dir": "bun run build:app && bun run prepack:check-cli && bun run prepack:check-icons && bun run prepack:check-tray && bun x electron-builder --dir --publish never",
     "package:uao": "bun run build:uao && bun x electron-builder --config electron-builder.uao.json --publish never",

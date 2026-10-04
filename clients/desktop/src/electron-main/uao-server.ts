@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -60,7 +61,32 @@ export interface UaoServerOptions {
   readonly staticDir: string;
   readonly backendPort: number | undefined;
   readonly port?: number;
+  /** Interface to bind. Defaults to loopback; anything else needs `pairingSecret`. */
+  readonly host?: string;
+  /**
+   * Extra browser origins (scheme + host[:port], no path) allowed in the
+   * Host/Origin/Referer boundary checks, e.g. a tailnet HTTPS origin.
+   * Requires `pairingSecret`.
+   */
+  readonly allowedOrigins?: readonly string[];
+  /**
+   * When set, every request except `GET /uao-pair?token=...` must carry the
+   * pairing cookie or the `x-uao-pairing` header. At least 32 characters.
+   */
+  readonly pairingSecret?: string;
+  /**
+   * Serve the Orca terminal routes (`/uao-api/orca/*`). They run local
+   * processes, so remote deployments should turn them off. Default true.
+   */
+  readonly orca?: boolean;
 }
+
+export const UAO_PAIR_PATH = "/uao-pair";
+export const UAO_PAIR_COOKIE = "uao_pair";
+export const UAO_PAIR_HEADER = "x-uao-pairing";
+export const UAO_PAIRING_SECRET_MIN_LENGTH = 32;
+const PAIR_FAILURE_LIMIT = 10;
+const PAIR_FAILURE_WINDOW_MS = 60_000;
 
 export interface UaoServerInstance {
   readonly port: number;
@@ -152,30 +178,104 @@ export async function handleUaoFrameDocument(
   return true;
 }
 
-function isValidHost(host: string | undefined, port: number): boolean {
+interface BoundaryAllowList {
+  readonly hosts: ReadonlySet<string>;
+  readonly origins: ReadonlySet<string>;
+}
+
+function buildAllowList(
+  port: number,
+  extraOrigins: readonly string[],
+): BoundaryAllowList {
+  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  const origins = new Set([
+    `http://127.0.0.1:${port}`,
+    `http://localhost:${port}`,
+  ]);
+  for (const origin of extraOrigins) {
+    origins.add(origin);
+    hosts.add(new URL(origin).host);
+  }
+  return { hosts, origins };
+}
+
+function isValidHost(
+  host: string | undefined,
+  allow: BoundaryAllowList,
+): boolean {
   if (host === undefined || host.length === 0) return false;
-  return host === `127.0.0.1:${port}` || host === `localhost:${port}`;
+  return allow.hosts.has(host);
 }
 
-function isValidOrigin(origin: string | undefined, port: number): boolean {
+function isValidOrigin(
+  origin: string | undefined,
+  allow: BoundaryAllowList,
+): boolean {
   if (origin === undefined || origin.length === 0) return true;
-  return (
-    origin === `http://127.0.0.1:${port}` ||
-    origin === `http://localhost:${port}`
-  );
+  return allow.origins.has(origin);
 }
 
-function isValidReferer(referer: string | undefined, port: number): boolean {
+function isValidReferer(
+  referer: string | undefined,
+  allow: BoundaryAllowList,
+): boolean {
   if (referer === undefined || referer.length === 0) return true;
   try {
-    const parsed = new URL(referer);
-    return (
-      parsed.origin === `http://127.0.0.1:${port}` ||
-      parsed.origin === `http://localhost:${port}`
-    );
+    return allow.origins.has(new URL(referer).origin);
   } catch {
     return false;
   }
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "::1" || host === "localhost";
+}
+
+/** Normalises and validates `allowedOrigins`; throws on anything but origin-only http(s). */
+function normalizeAllowedOrigins(origins: readonly string[]): string[] {
+  return origins.map((raw) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw new Error(`Invalid allowed origin: ${raw}`);
+    }
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.pathname !== "/" ||
+      parsed.search !== "" ||
+      parsed.hash !== "" ||
+      parsed.username !== "" ||
+      parsed.password !== ""
+    ) {
+      throw new Error(`Allowed origin must be scheme://host[:port]: ${raw}`);
+    }
+    return parsed.origin;
+  });
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ha = crypto.createHash("sha256").update(a).digest();
+  const hb = crypto.createHash("sha256").update(b).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
+function readCookie(header: string | undefined, name: string): string | null {
+  if (header === undefined) return null;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return null;
+}
+
+/** Cookie value derived from the secret, so the raw secret never sits in the cookie jar. */
+function pairingSessionToken(secret: string): string {
+  return crypto
+    .createHmac("sha256", secret)
+    .update("uao-pairing-session-v1")
+    .digest("hex");
 }
 
 function parseRequestUrl(rawUrl: string, origin: string): URL | null {
@@ -200,6 +300,22 @@ function forwardHeaders(
     host: `127.0.0.1:${backendPort}`,
     origin: `http://127.0.0.1:${backendPort}`,
   };
+  // Pairing credentials stop at this proxy, and client-asserted network
+  // identity must not reach a backend that trusts such headers.
+  delete headers[UAO_PAIR_HEADER];
+  delete headers["x-forwarded-for"];
+  delete headers["x-forwarded-host"];
+  delete headers["x-forwarded-proto"];
+  delete headers["x-real-ip"];
+  delete headers.forwarded;
+  if (typeof headers.cookie === "string") {
+    const kept = headers.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .filter((part) => !part.startsWith(`${UAO_PAIR_COOKIE}=`));
+    if (kept.length > 0) headers.cookie = kept.join("; ");
+    else delete headers.cookie;
+  }
   if (process.env.AGENT_OS_TOKEN) {
     headers["x-agent-os-token"] = process.env.AGENT_OS_TOKEN;
   }
@@ -311,6 +427,118 @@ export function startUaoServer(
   const backendHost = "127.0.0.1";
   const backendPort = options.backendPort ?? 5050;
   const staticDir = path.resolve(options.staticDir);
+  const bindHost = options.host ?? "127.0.0.1";
+  const orcaEnabled = options.orca !== false;
+  const pairingSecret = options.pairingSecret;
+
+  let extraOrigins: string[];
+  try {
+    extraOrigins = normalizeAllowedOrigins(options.allowedOrigins ?? []);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  if (
+    pairingSecret === undefined &&
+    (!isLoopbackHost(bindHost) || extraOrigins.length > 0)
+  ) {
+    return Promise.reject(
+      new Error(
+        "A pairing secret is required when binding a non-loopback host or allowing extra origins.",
+      ),
+    );
+  }
+  if (
+    pairingSecret !== undefined &&
+    pairingSecret.length < UAO_PAIRING_SECRET_MIN_LENGTH
+  ) {
+    return Promise.reject(
+      new Error(
+        `The pairing secret must be at least ${UAO_PAIRING_SECRET_MIN_LENGTH} characters.`,
+      ),
+    );
+  }
+  const sessionToken =
+    pairingSecret === undefined ? null : pairingSessionToken(pairingSecret);
+  const pairFailures = new Map<string, { count: number; resetAt: number }>();
+
+  function pairingThrottled(remote: string | undefined): boolean {
+    const entry = pairFailures.get(remote ?? "");
+    if (entry === undefined) return false;
+    if (Date.now() >= entry.resetAt) {
+      pairFailures.delete(remote ?? "");
+      return false;
+    }
+    return entry.count >= PAIR_FAILURE_LIMIT;
+  }
+
+  function recordPairFailure(remote: string | undefined): void {
+    const key = remote ?? "";
+    const now = Date.now();
+    const entry = pairFailures.get(key);
+    if (entry === undefined || now >= entry.resetAt) {
+      pairFailures.set(key, {
+        count: 1,
+        resetAt: now + PAIR_FAILURE_WINDOW_MS,
+      });
+    } else {
+      entry.count += 1;
+    }
+  }
+
+  /** "ok", "missing" (no credential), or "bad" (a credential that did not match). */
+  function checkPairing(req: http.IncomingMessage): "ok" | "missing" | "bad" {
+    if (pairingSecret === undefined || sessionToken === null) return "ok";
+    const header = req.headers[UAO_PAIR_HEADER];
+    if (typeof header === "string" && header.length > 0) {
+      return safeEqual(header, pairingSecret) ? "ok" : "bad";
+    }
+    const cookie = readCookie(req.headers.cookie, UAO_PAIR_COOKIE);
+    if (cookie === null) return "missing";
+    return safeEqual(cookie, sessionToken) ? "ok" : "missing";
+  }
+
+  function handlePairRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    parsed: URL,
+    allow: BoundaryAllowList,
+  ): void {
+    const remote = req.socket.remoteAddress;
+    if (req.method !== "GET") {
+      res.writeHead(405, { Allow: "GET", "Content-Type": "text/plain" });
+      res.end("Method Not Allowed");
+      return;
+    }
+    if (pairingThrottled(remote)) {
+      res.writeHead(429, { "Content-Type": "text/plain", "Retry-After": "60" });
+      res.end("Too many pairing attempts");
+      return;
+    }
+    const token = parsed.searchParams.get("token") ?? "";
+    if (
+      pairingSecret === undefined ||
+      sessionToken === null ||
+      !safeEqual(token, pairingSecret)
+    ) {
+      recordPairFailure(remote);
+      res.writeHead(401, { "Content-Type": "text/plain" });
+      res.end("Pairing failed");
+      return;
+    }
+    pairFailures.delete(remote ?? "");
+    const hostHeader = req.headers.host ?? "";
+    const secure = [...allow.origins].some(
+      (origin) =>
+        origin.startsWith("https://") && new URL(origin).host === hostHeader,
+    );
+    res.writeHead(303, {
+      Location: "/desktop/uao.html",
+      "Set-Cookie": `${UAO_PAIR_COOKIE}=${sessionToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000${secure ? "; Secure" : ""}`,
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+    });
+    res.end();
+  }
   const trackedSockets = new Set<Socket>();
   const backendAgent = new http.Agent({ keepAlive: false });
 
@@ -330,16 +558,17 @@ export function startUaoServer(
         const addr = server.address() as AddressInfo | null;
         const port = addr !== null ? addr.port : 0;
         const serverOrigin = `http://127.0.0.1:${port}`;
+        const allow = buildAllowList(port, extraOrigins);
 
         // 1. Boundary check: Host and Origin
-        if (!isValidHost(req.headers.host, port)) {
+        if (!isValidHost(req.headers.host, allow)) {
           res.writeHead(403, { "Content-Type": "text/plain" });
           res.end("Forbidden: Invalid Host");
           return;
         }
 
         if (
-          !isValidOrigin(req.headers.origin, port) ||
+          !isValidOrigin(req.headers.origin, allow) ||
           req.headers["sec-fetch-site"] === "cross-site"
         ) {
           res.writeHead(403, { "Content-Type": "text/plain" });
@@ -347,7 +576,7 @@ export function startUaoServer(
           return;
         }
 
-        if (!isValidReferer(req.headers.referer, port)) {
+        if (!isValidReferer(req.headers.referer, allow)) {
           res.writeHead(403, { "Content-Type": "text/plain" });
           res.end("Forbidden: Invalid Referer");
           return;
@@ -376,6 +605,22 @@ export function startUaoServer(
           return;
         }
 
+        // 1b. Pairing gate: nothing past this point is reachable unpaired.
+        if (pairingSecret !== undefined && pathname === UAO_PAIR_PATH) {
+          handlePairRequest(req, res, parsed, allow);
+          return;
+        }
+        const pairing = checkPairing(req);
+        if (pairing !== "ok") {
+          if (pairing === "bad") recordPairFailure(req.socket.remoteAddress);
+          res.writeHead(401, {
+            "Content-Type": "text/plain",
+            "Cache-Control": "no-store",
+          });
+          res.end("Pairing required");
+          return;
+        }
+
         // 2. Prevent service worker takeover at root
         if (isServiceWorkerRequest(pathname, req.headers)) {
           res.writeHead(404, { "Content-Type": "text/plain" });
@@ -388,6 +633,11 @@ export function startUaoServer(
           pathname === "/uao-api/orca" ||
           pathname.startsWith("/uao-api/orca/")
         ) {
+          if (!orcaEnabled) {
+            res.writeHead(404, { "Content-Type": "text/plain" });
+            res.end("Not Found");
+            return;
+          }
           void handleOrcaHttpRequest(req, res, {
             port,
             serverOrigin,
@@ -597,12 +847,13 @@ export function startUaoServer(
         const addr = server.address() as AddressInfo | null;
         const port = addr !== null ? addr.port : 0;
         const serverOrigin = `http://127.0.0.1:${port}`;
+        const allow = buildAllowList(port, extraOrigins);
 
         const parsed = parseRequestUrl(req.url ?? "/", serverOrigin);
         if (
-          !isValidHost(req.headers.host, port) ||
-          !isValidOrigin(req.headers.origin, port) ||
-          !isValidReferer(req.headers.referer, port) ||
+          !isValidHost(req.headers.host, allow) ||
+          !isValidOrigin(req.headers.origin, allow) ||
+          !isValidReferer(req.headers.referer, allow) ||
           req.headers["sec-fetch-site"] === "cross-site" ||
           req.method !== "GET" ||
           req.headers.upgrade?.toLowerCase() !== "websocket" ||
@@ -612,7 +863,20 @@ export function startUaoServer(
           return;
         }
 
+        const pairing = checkPairing(req);
+        if (pairing !== "ok") {
+          if (pairing === "bad") recordPairFailure(req.socket.remoteAddress);
+          socket.end(
+            "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+          );
+          return;
+        }
+
         if (parsed.pathname === "/uao-api/orca/terminal/stream") {
+          if (!orcaEnabled) {
+            socket.destroy();
+            return;
+          }
           void handleOrcaTerminalStreamUpgrade(req, socket, head, {
             port,
             serverOrigin,
@@ -689,14 +953,14 @@ export function startUaoServer(
       },
     );
 
-    server.listen(options.port ?? 0, "127.0.0.1", () => {
+    server.listen(options.port ?? 0, bindHost, () => {
       const addr = server.address() as AddressInfo | null;
       if (addr === null) {
         rejectServer(new Error("Failed to bind UAO runtime server address"));
         return;
       }
       const port = addr.port;
-      const origin = `http://127.0.0.1:${port}`;
+      const origin = `http://${bindHost.includes(":") ? `[${bindHost}]` : bindHost}:${port}`;
 
       resolveServer({
         port,
