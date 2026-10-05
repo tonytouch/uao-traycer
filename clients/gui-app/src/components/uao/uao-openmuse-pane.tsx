@@ -17,6 +17,10 @@ import {
 } from "@traycer-clients/shared/openmuse";
 import { mountRemoteHttpGuest } from "@/lib/uao/remote-guest";
 import { UaoOpenMuseEndpoints } from "./uao-openmuse-endpoints";
+import {
+  useReportEndpointsChrome,
+  type UaoEndpointsChrome,
+} from "./uao-endpoints-chrome";
 
 function queryErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message !== "") return error.message;
@@ -378,22 +382,34 @@ function useOpenMusePaneModel() {
   };
 }
 
-export function UaoOpenMusePane() {
+export function UaoOpenMusePane({
+  endpointsChrome,
+}: {
+  readonly endpointsChrome: UaoEndpointsChrome | null;
+}) {
   const model = useOpenMusePaneModel();
+  useReportEndpointsChrome(
+    endpointsChrome,
+    model.settingsOpen,
+    model.settingsLabel,
+    model.toggleSettings,
+  );
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
-      <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1">
-        <h1 className="font-heading text-ui-sm font-bold">OpenMuse</h1>
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          aria-expanded={model.settingsOpen}
-          onClick={model.toggleSettings}
-        >
-          {model.settingsLabel}
-        </Button>
-      </div>
+      {endpointsChrome === null ? (
+        <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1">
+          <h1 className="font-heading text-ui-sm font-bold">OpenMuse</h1>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            aria-expanded={model.settingsOpen}
+            onClick={model.toggleSettings}
+          >
+            {model.settingsLabel}
+          </Button>
+        </div>
+      ) : null}
       <OpenMuseSettingsForm
         open={model.settingsOpen}
         config={model.config}

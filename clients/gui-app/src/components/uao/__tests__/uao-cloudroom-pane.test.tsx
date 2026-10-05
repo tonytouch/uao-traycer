@@ -18,7 +18,7 @@ function renderPane(): void {
   });
   render(
     <QueryClientProvider client={client}>
-      <UaoCloudroomPane />
+      <UaoCloudroomPane endpointsChrome={null} />
     </QueryClientProvider>,
   );
 }

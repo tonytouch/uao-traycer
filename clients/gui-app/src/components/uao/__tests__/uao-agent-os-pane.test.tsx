@@ -29,7 +29,7 @@ function renderPane(): void {
   });
   render(
     <QueryClientProvider client={client}>
-      <UaoAgentOsPane />
+      <UaoAgentOsPane endpointsChrome={null} />
     </QueryClientProvider>,
   );
 }

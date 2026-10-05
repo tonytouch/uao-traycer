@@ -1,6 +1,10 @@
 /** Navigation snapshot from ultimate-agent-os/agent-os-ui/src/panes/registry.ts.
  * Screens stay owned by the backend-served UAO UI; refresh this inventory when it changes.
  */
+import { isUaoAgentsTabId, UAO_AGENTS_PANE_ID } from "./uao-agents-tabs";
+
+export { UAO_AGENTS_PANE_ID };
+
 export type UaoNavGroupId =
   | "priority"
   | "workspace"
@@ -24,34 +28,15 @@ export const PRIORITY_PANE_IDS = [
 export const WORKSPACE_PANE_ID = "tasks-workspace";
 export const WORKSPACES_PANE_ID = "workspaces";
 export const OFFICE_PANE_ID = "office";
-export const AGENT_OS_PANE_ID = "agent-os";
-export const CLOUDROOM_PANE_ID = "cloudroom";
-export const OPENMUSE_PANE_ID = "openmuse";
 export function isNativeUaoPane(id: string): boolean {
   return (
     id === WORKSPACE_PANE_ID ||
     id === WORKSPACES_PANE_ID ||
     id === OFFICE_PANE_ID ||
-    id === AGENT_OS_PANE_ID ||
-    id === CLOUDROOM_PANE_ID ||
-    id === OPENMUSE_PANE_ID
+    id === UAO_AGENTS_PANE_ID
   );
 }
 
-/**
- * A blank web URL hides the sidebar row while an OpenMuse worktab is open.
- * With no worktab, the row stays so the URL can be set again: this repo's
- * Agent OS form does not edit OpenMuse. Unknown config (still loading) stays
- * visible so the row does not flash away.
- */
-export function isOpenMuseSidebarVisible(input: {
-  readonly webUrl: string | null;
-  readonly worktabOpen: boolean;
-}): boolean {
-  if (input.webUrl === null) return true;
-  if (input.webUrl.trim() !== "") return true;
-  return !input.worktabOpen;
-}
 const paneRows: readonly (readonly [
   string,
   string,
@@ -60,34 +45,28 @@ const paneRows: readonly (readonly [
   readonly string[],
 ])[] = [
   [
-    "agent-os",
-    "Agent OS",
-    "monitor",
-    "priority",
-    ["agent os", "embed", "tailscale", "remote", "hermes", "omniroute", "5050"],
-  ],
-  [
-    "cloudroom",
-    "CloudRoom",
-    "server",
+    UAO_AGENTS_PANE_ID,
+    "Agents",
+    "users",
     "priority",
     [
+      "agents",
+      "agent os",
       "cloudroom",
+      "openmuse",
+      "embed",
+      "webview",
+      "tailscale",
+      "remote",
+      "hermes",
+      "omniroute",
+      "5050",
+      "9840",
+      "8081",
+      "8797",
       "session",
       "codex",
-      "claude",
-      "cursor",
-      "pi",
-      "9840",
-      "tailscale",
     ],
-  ],
-  [
-    "openmuse",
-    "OpenMuse",
-    "globe",
-    "priority",
-    ["openmuse", "embed", "webview", "tailscale", "8081", "8797"],
   ],
   [
     "command-center",
@@ -463,6 +442,7 @@ export function isValidNavPaneId(id: string): boolean {
 export function normalizeNavId(hashOrId: string): string {
   const id = hashOrId.replace(/^#\/?/, "").trim();
   if (id === "chat") return WORKSPACE_PANE_ID;
+  if (isUaoAgentsTabId(id)) return UAO_AGENTS_PANE_ID;
   return isValidNavPaneId(id) ? id : DEFAULT_PANE_ID;
 }
 export function filterNavPanes(query: string): readonly UaoNavPane[] {
