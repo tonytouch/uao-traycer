@@ -2,6 +2,12 @@ export const uaoQueryKeys = {
   workspace: () => ["uao", "workspace"] as const,
   office: () => ["uao", "office"] as const,
   officeAction: () => ["uao", "office", "action"] as const,
+  agentOs: () => ["uao", "agent-os"] as const,
+  agentOsConfig: () => [...uaoQueryKeys.agentOs(), "config"] as const,
+  agentOsProbe: (embedUrl: string) =>
+    [...uaoQueryKeys.agentOs(), "probe", embedUrl] as const,
+  agentOsSave: () => [...uaoQueryKeys.agentOs(), "save"] as const,
+  agentOsToken: () => [...uaoQueryKeys.agentOs(), "token"] as const,
   config: () => ["uao", "config"] as const,
   builtUi: () => ["uao", "built-ui"] as const,
   boards: () => ["uao", "boards"] as const,
@@ -19,6 +25,5 @@ export const uaoQueryKeys = {
     [...uaoQueryKeys.workspace(), "terminal", "send"] as const,
   workspaceTerminalCreateMutation: () =>
     [...uaoQueryKeys.workspace(), "terminal", "create"] as const,
-  workspaceOpenMutation: () =>
-    [...uaoQueryKeys.workspace(), "open"] as const,
+  workspaceOpenMutation: () => [...uaoQueryKeys.workspace(), "open"] as const,
 };
