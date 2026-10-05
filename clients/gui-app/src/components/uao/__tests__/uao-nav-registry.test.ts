@@ -16,6 +16,7 @@ import {
   WORKSPACES_PANE_ID,
   OFFICE_PANE_ID,
   isNativeUaoPane,
+  isOpenMuseSidebarVisible,
   FEATURE_OWNER_MAP,
 } from "../uao-nav-registry";
 import {
@@ -27,9 +28,9 @@ import {
 
 describe("UAO Navigation Registry & Inventory", () => {
   it("contains the original UAO panes plus tasks, Workspace and Office workspaces", () => {
-    expect(ALL_NAV_PANES).toHaveLength(39);
+    expect(ALL_NAV_PANES).toHaveLength(40);
     const uniqueIds = new Set(ALL_NAV_PANES.map((p) => p.id));
-    expect(uniqueIds.size).toBe(39);
+    expect(uniqueIds.size).toBe(40);
   });
 
   it("sets command-center as the default pane", () => {
@@ -82,6 +83,24 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(isNativeUaoPane("cloudroom")).toBe(true);
     expect(findNavPane("cloudroom")?.label).toBe("CloudRoom");
     expect(findNavPane("cloudroom")?.group).toBe("priority");
+    expect(isNativeUaoPane("openmuse")).toBe(true);
+    expect(findNavPane("openmuse")?.label).toBe("OpenMuse");
+    expect(findNavPane("openmuse")?.group).toBe("priority");
+    expect(isOpenMuseSidebarVisible({ webUrl: null, worktabOpen: false })).toBe(
+      true,
+    );
+    expect(
+      isOpenMuseSidebarVisible({
+        webUrl: "http://100.90.167.20:8081",
+        worktabOpen: false,
+      }),
+    ).toBe(true);
+    expect(isOpenMuseSidebarVisible({ webUrl: " ", worktabOpen: true })).toBe(
+      false,
+    );
+    expect(isOpenMuseSidebarVisible({ webUrl: "", worktabOpen: false })).toBe(
+      true,
+    );
     expect(normalizeNavId("#/office")).toBe(OFFICE_PANE_ID);
     expect(filterNavPanes("genoffice").map((pane) => pane.id)).toEqual([
       OFFICE_PANE_ID,
@@ -163,7 +182,10 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(workspaceSearch.some((p) => p.id === "workspaces")).toBe(true);
 
     // Empty search returns all panes
-    expect(filterNavPanes("")).toHaveLength(39);
+    expect(filterNavPanes("")).toHaveLength(40);
+    expect(filterNavPanes("openmuse").map((pane) => pane.id)).toEqual([
+      "openmuse",
+    ]);
     expect(filterNavPanes("cloudroom").map((pane) => pane.id)).toEqual([
       "cloudroom",
     ]);
@@ -189,7 +211,7 @@ describe("UAO Navigation Registry & Inventory", () => {
       (sum, g) => sum + g.panes.length,
       0,
     );
-    expect(totalGroupPanes).toBe(21);
+    expect(totalGroupPanes).toBe(22);
   });
 });
 

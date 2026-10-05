@@ -10,6 +10,7 @@ import {
   decideAgentOsAttach,
   isAllowedAgentOsGuestUrl,
 } from "@traycer-clients/shared/agent-os-endpoints";
+import { OPENMUSE_PARTITION } from "@traycer-clients/shared/openmuse";
 import { log } from "./app/logger";
 import { installPermissionHandlers, safelyOpenExternal } from "./app/security";
 
@@ -58,9 +59,15 @@ export function installAgentOsWebviewGuard(
       webPreferences: WebPreferences,
       params: Record<string, string>,
     ) => {
+      const partition = params.partition ?? "";
+      if (partition === OPENMUSE_PARTITION) {
+        // OpenMuse is a sibling guest on its own partition. Its guard admits
+        // that origin; this one still denies every other partition.
+        return;
+      }
       const decision = decideAgentOsAttach({
         src: params.src ?? "",
-        partition: params.partition ?? "",
+        partition,
         allowedBaseUrl: readAllowedBaseUrl(),
       });
       if (decision === "deny") {
@@ -72,6 +79,9 @@ export function installAgentOsWebviewGuard(
     },
   );
   host.on("did-attach-webview", (_event: Event, guest: WebContents) => {
+    if (guest.session !== session.fromPartition(AGENT_OS_WEBVIEW_PARTITION)) {
+      return;
+    }
     const blockForeign = (event: Event, url: string): void => {
       if (isAllowedAgentOsGuestUrl(url, readAllowedBaseUrl())) return;
       event.preventDefault();

@@ -19,6 +19,11 @@ export const uaoQueryKeys = {
   cloudroomSave: () => [...uaoQueryKeys.cloudroom(), "save"] as const,
   cloudroomToken: () => [...uaoQueryKeys.cloudroom(), "token"] as const,
   cloudroomStart: () => [...uaoQueryKeys.cloudroom(), "start"] as const,
+  openmuse: () => ["uao", "openmuse"] as const,
+  openmuseConfig: () => [...uaoQueryKeys.openmuse(), "config"] as const,
+  openmuseHealth: (webUrl: string, apiUrl: string) =>
+    [...uaoQueryKeys.openmuse(), "health", webUrl, apiUrl] as const,
+  openmuseSave: () => [...uaoQueryKeys.openmuse(), "save"] as const,
   config: () => ["uao", "config"] as const,
   builtUi: () => ["uao", "built-ui"] as const,
   boards: () => ["uao", "boards"] as const,

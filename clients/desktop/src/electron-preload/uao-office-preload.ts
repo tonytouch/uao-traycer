@@ -16,6 +16,12 @@ import {
   type UaoCloudroomApi,
 } from "../ipc-contracts/cloudroom";
 import {
+  parseOpenMuseHealth,
+  parseOpenMusePublicConfig,
+  UaoOpenMuseChannel,
+  type UaoOpenMuseApi,
+} from "../ipc-contracts/openmuse";
+import {
   parseOfficeTabs,
   type UaoOfficeApi,
 } from "../ipc-contracts/uao-office";
@@ -95,3 +101,17 @@ const cloudroom: UaoCloudroomApi = {
     ),
 };
 contextBridge.exposeInMainWorld("uaoCloudroom", cloudroom);
+
+const openmuse: UaoOpenMuseApi = {
+  getConfig: async () =>
+    parseOpenMusePublicConfig(
+      await ipcRenderer.invoke(UaoOpenMuseChannel.getConfig),
+    ),
+  setConfig: async (draft) =>
+    parseOpenMusePublicConfig(
+      await ipcRenderer.invoke(UaoOpenMuseChannel.setConfig, draft),
+    ),
+  health: async () =>
+    parseOpenMuseHealth(await ipcRenderer.invoke(UaoOpenMuseChannel.health)),
+};
+contextBridge.exposeInMainWorld("uaoOpenMuse", openmuse);

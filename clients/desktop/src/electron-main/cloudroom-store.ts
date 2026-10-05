@@ -12,8 +12,13 @@ import {
   type CloudroomPublicConfig,
 } from "@traycer-clients/shared/cloudroom";
 import {
+  OPENMUSE_DEFAULT_API_URL,
+  OPENMUSE_DEFAULT_WEB_URL,
+} from "@traycer-clients/shared/openmuse";
+import {
   collectTailscaleCleartextSwitch,
   hasAgentOsToken,
+  readOpenMuseEndpoints,
 } from "./agent-os-endpoint-store";
 
 const CONFIG_FILE = "cloudroom.json";
@@ -52,11 +57,16 @@ export function readCloudroomPublicConfig(
   };
 }
 
-/** Agent OS origins plus the CloudRoom origin, for the one Chromium switch. */
+/** Agent OS, CloudRoom, and OpenMuse origins, for the one Chromium switch. */
 export function collectUaoCleartextSwitch(directory: string): string {
   const baseUrl = readCloudroomBaseUrl(directory);
+  const openmuse = readOpenMuseEndpoints(directory);
   return collectTailscaleCleartextSwitch(directory, [
     baseUrl,
     CLOUDROOM_DEFAULT_BASE_URL,
+    openmuse.webUrl,
+    openmuse.apiUrl,
+    OPENMUSE_DEFAULT_WEB_URL,
+    OPENMUSE_DEFAULT_API_URL,
   ]);
 }
