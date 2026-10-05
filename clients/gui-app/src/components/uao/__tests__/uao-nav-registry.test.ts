@@ -27,9 +27,9 @@ import {
 
 describe("UAO Navigation Registry & Inventory", () => {
   it("contains the original UAO panes plus tasks, Workspace and Office workspaces", () => {
-    expect(ALL_NAV_PANES).toHaveLength(38);
+    expect(ALL_NAV_PANES).toHaveLength(39);
     const uniqueIds = new Set(ALL_NAV_PANES.map((p) => p.id));
-    expect(uniqueIds.size).toBe(38);
+    expect(uniqueIds.size).toBe(39);
   });
 
   it("sets command-center as the default pane", () => {
@@ -79,6 +79,9 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(isNativeUaoPane("agent-os")).toBe(true);
     expect(findNavPane("agent-os")?.label).toBe("Agent OS");
     expect(findNavPane("agent-os")?.group).toBe("priority");
+    expect(isNativeUaoPane("cloudroom")).toBe(true);
+    expect(findNavPane("cloudroom")?.label).toBe("CloudRoom");
+    expect(findNavPane("cloudroom")?.group).toBe("priority");
     expect(normalizeNavId("#/office")).toBe(OFFICE_PANE_ID);
     expect(filterNavPanes("genoffice").map((pane) => pane.id)).toEqual([
       OFFICE_PANE_ID,
@@ -160,7 +163,10 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(workspaceSearch.some((p) => p.id === "workspaces")).toBe(true);
 
     // Empty search returns all panes
-    expect(filterNavPanes("")).toHaveLength(38);
+    expect(filterNavPanes("")).toHaveLength(39);
+    expect(filterNavPanes("cloudroom").map((pane) => pane.id)).toEqual([
+      "cloudroom",
+    ]);
   });
 
   it("labels backend terminal as Service Terminals vs Workspaces & Agent Terminals", () => {
@@ -183,7 +189,7 @@ describe("UAO Navigation Registry & Inventory", () => {
       (sum, g) => sum + g.panes.length,
       0,
     );
-    expect(totalGroupPanes).toBe(20);
+    expect(totalGroupPanes).toBe(21);
   });
 });
 

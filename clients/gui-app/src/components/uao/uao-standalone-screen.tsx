@@ -32,9 +32,11 @@ import {
   WORKSPACES_PANE_ID,
   OFFICE_PANE_ID,
   AGENT_OS_PANE_ID,
+  CLOUDROOM_PANE_ID,
   WORKSPACE_PANE_ID,
 } from "./uao-nav-registry";
 import { UaoAgentOsPane } from "./uao-agent-os-pane";
+import { UaoCloudroomPane } from "./uao-cloudroom-pane";
 import { UaoSidebar } from "./uao-sidebar";
 import { UaoTaskDetailPane } from "./uao-task-detail-pane";
 import { UaoWorktabsBar } from "./uao-worktabs-bar";
@@ -56,6 +58,29 @@ import {
 } from "./uao-worktabs-state";
 import { WorkspaceResizeDivider } from "./uao-workspace-divider";
 import { UaoActivitySource } from "@/lib/uao/activity-source";
+
+function UaoCloudroomPanel({
+  visited,
+  active,
+}: {
+  readonly visited: boolean;
+  readonly active: boolean;
+}) {
+  if (!visited) return null;
+  return (
+    <div
+      id={`uao-panel-${CLOUDROOM_PANE_ID}`}
+      role="tabpanel"
+      aria-labelledby={`uao-tab-${CLOUDROOM_PANE_ID}`}
+      hidden={!active}
+      className="h-full min-h-0"
+    >
+      <UaoPaneBoundary label="CloudRoom">
+        <UaoCloudroomPane />
+      </UaoPaneBoundary>
+    </div>
+  );
+}
 
 function getConnectionDotClass(
   checking: boolean,
@@ -659,6 +684,10 @@ function UaoStandaloneScreenInner() {
               </UaoPaneBoundary>
             </div>
           ) : null}
+          <UaoCloudroomPanel
+            visited={visitedOwners.has(CLOUDROOM_PANE_ID)}
+            active={tabsState.activeOwnerId === CLOUDROOM_PANE_ID}
+          />
           {visitedOwners.has(OFFICE_PANE_ID) ? (
             <div
               id={`uao-panel-${OFFICE_PANE_ID}`}

@@ -8,6 +8,17 @@ export const uaoQueryKeys = {
     [...uaoQueryKeys.agentOs(), "probe", embedUrl] as const,
   agentOsSave: () => [...uaoQueryKeys.agentOs(), "save"] as const,
   agentOsToken: () => [...uaoQueryKeys.agentOs(), "token"] as const,
+  cloudroom: () => ["uao", "cloudroom"] as const,
+  cloudroomConfig: () => [...uaoQueryKeys.cloudroom(), "config"] as const,
+  cloudroomHealth: (baseUrl: string, tokenSaved: boolean) =>
+    [...uaoQueryKeys.cloudroom(), "health", baseUrl, tokenSaved] as const,
+  cloudroomSessions: (baseUrl: string) =>
+    [...uaoQueryKeys.cloudroom(), "sessions", baseUrl] as const,
+  cloudroomEvents: (sessionId: string) =>
+    [...uaoQueryKeys.cloudroom(), "events", sessionId] as const,
+  cloudroomSave: () => [...uaoQueryKeys.cloudroom(), "save"] as const,
+  cloudroomToken: () => [...uaoQueryKeys.cloudroom(), "token"] as const,
+  cloudroomStart: () => [...uaoQueryKeys.cloudroom(), "start"] as const,
   config: () => ["uao", "config"] as const,
   builtUi: () => ["uao", "built-ui"] as const,
   boards: () => ["uao", "boards"] as const,

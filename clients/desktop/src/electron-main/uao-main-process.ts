@@ -7,6 +7,7 @@ import {
   AGENT_OS_DEFAULT_OMNIROUTE_URL,
   tailscaleCleartextOrigins,
 } from "@traycer-clients/shared/agent-os-endpoints";
+import { CLOUDROOM_DEFAULT_BASE_URL } from "@traycer-clients/shared/cloudroom";
 import { initLogger, log } from "./app/logger";
 import {
   clampSessionTls,
@@ -20,8 +21,9 @@ import {
 } from "../shared/content-security-policy";
 import { startUaoServer, type UaoServerInstance } from "./uao-server";
 import { prepareUaoOffice, attachUaoOffice } from "./uao-office";
-import { collectTailscaleCleartextSwitch } from "./agent-os-endpoint-store";
 import { attachAgentOs } from "./agent-os-service";
+import { attachCloudroom } from "./cloudroom-service";
+import { collectUaoCleartextSwitch } from "./cloudroom-store";
 
 /**
  * Remote backend, e.g. a Mac reaching the Linux box over Tailscale. Env wins;
@@ -76,17 +78,18 @@ let serverInstance: UaoServerInstance | null = null;
 
 /**
  * Linux Electron treats a plain-http Tailscale address as an insecure origin.
- * Mark the saved 100.64/10 http origins secure before ready so the Agent OS
- * guest can run. This does not allow arbitrary cleartext.
+ * Mark the saved 100.64/10 http origins secure before ready so Agent OS and
+ * CloudRoom can use them. This does not allow arbitrary cleartext.
  */
-function installAgentOsCleartext(): void {
+function installUaoCleartext(): void {
   let value = tailscaleCleartextOrigins([
     AGENT_OS_DEFAULT_BASE_URL,
     AGENT_OS_DEFAULT_HERMES_URL,
     AGENT_OS_DEFAULT_OMNIROUTE_URL,
+    CLOUDROOM_DEFAULT_BASE_URL,
   ]);
   try {
-    value = collectTailscaleCleartextSwitch(app.getPath("userData"));
+    value = collectUaoCleartextSwitch(app.getPath("userData"));
   } catch {
     // Defaults above still cover Keith's host when userData cannot be read yet.
   }
@@ -123,14 +126,14 @@ function hardenUaoSession(serverOrigin: string): void {
 app.setName("UAO");
 // Cookie encryption stays off the OS keyring. Chromium otherwise asks for that
 // key at startup and blocks every window when the keyring is locked or missing.
-// Agent OS tokens use safeStorage only when the user saves one, after ready.
+// Agent OS and CloudRoom tokens use safeStorage only when the user saves one, after ready.
 app.commandLine.appendSwitch("password-store", "basic");
 app.setPath(
   "userData",
   process.env.UAO_DESKTOP_USER_DATA ??
     join(app.getPath("appData"), "uao-desktop"),
 );
-installAgentOsCleartext();
+installUaoCleartext();
 const officeRuntime = prepareUaoOffice();
 
 const gotLock = app.requestSingleInstanceLock();
@@ -211,6 +214,7 @@ async function startUaoDesktop(): Promise<void> {
 
   attachUaoOffice(uaoWindow, serverInstance.origin, officeRuntime);
   attachAgentOs(uaoWindow, serverInstance.origin, app.getPath("userData"));
+  attachCloudroom(uaoWindow, serverInstance.origin, app.getPath("userData"));
 
   uaoWindow.on("closed", () => {
     uaoWindow = null;
