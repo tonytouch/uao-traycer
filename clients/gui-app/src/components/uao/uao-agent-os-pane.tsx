@@ -16,6 +16,11 @@ import {
 } from "@traycer-clients/shared/agent-os-endpoints";
 import { mountRemoteHttpGuest } from "@/lib/uao/remote-guest";
 import { UaoAgentOsEndpoints } from "./uao-agent-os-endpoints";
+import {
+  endpointsChromeLabel,
+  useReportEndpointsChrome,
+  type UaoEndpointsChrome,
+} from "./uao-endpoints-chrome";
 
 function queryErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message !== "") return error.message;
@@ -105,7 +110,11 @@ function UaoAgentOsGuest({
   return <div ref={containerRef} className="h-full w-full" />;
 }
 
-export function UaoAgentOsPane() {
+export function UaoAgentOsPane({
+  endpointsChrome,
+}: {
+  readonly endpointsChrome: UaoEndpointsChrome | null;
+}) {
   const queryClient = useQueryClient();
   const configQuery = useQuery(agentOsConfigQueryOptions());
   const embedUrl =
@@ -142,20 +151,31 @@ export function UaoAgentOsPane() {
   const refresh = async (): Promise<void> => {
     await queryClient.invalidateQueries({ queryKey: uaoQueryKeys.agentOs() });
   };
+  const toggleSettings = (): void => {
+    setShowSettings((open) => !open);
+  };
+  useReportEndpointsChrome(
+    endpointsChrome,
+    showSettings,
+    endpointsChromeLabel(showSettings),
+    toggleSettings,
+  );
 
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
-      <div className="flex shrink-0 justify-end border-b border-border px-3 py-1">
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          aria-expanded={showSettings}
-          onClick={() => setShowSettings((open) => !open)}
-        >
-          {showSettings ? "Hide endpoints" : "Endpoints"}
-        </Button>
-      </div>
+      {endpointsChrome === null ? (
+        <div className="flex shrink-0 justify-end border-b border-border px-3 py-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            aria-expanded={showSettings}
+            onClick={toggleSettings}
+          >
+            {endpointsChromeLabel(showSettings)}
+          </Button>
+        </div>
+      ) : null}
       {showSettings && configQuery.data !== undefined ? (
         <UaoAgentOsEndpoints config={configQuery.data} onSaved={refresh} />
       ) : null}

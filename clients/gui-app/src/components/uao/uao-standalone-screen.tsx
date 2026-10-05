@@ -16,7 +16,6 @@ import { ThemeProvider } from "@/providers/theme-provider";
 import { cn } from "@/lib/utils";
 import type { KanbanBoard } from "@/lib/uao/adapter";
 import { discardDrafts } from "@/lib/uao/draft-persistence";
-import { openmuseConfigQueryOptions } from "@/lib/uao/openmuse";
 import { uaoQueryOptions } from "@/lib/uao/query-options";
 import { UaoEmbeddedPane } from "./uao-embedded-pane";
 import { UaoKanbanTasksPane } from "./uao-kanban-tasks-pane";
@@ -32,15 +31,11 @@ import {
   normalizeNavId,
   WORKSPACES_PANE_ID,
   OFFICE_PANE_ID,
-  AGENT_OS_PANE_ID,
-  CLOUDROOM_PANE_ID,
-  OPENMUSE_PANE_ID,
+  UAO_AGENTS_PANE_ID,
   WORKSPACE_PANE_ID,
-  isOpenMuseSidebarVisible,
 } from "./uao-nav-registry";
-import { UaoAgentOsPane } from "./uao-agent-os-pane";
-import { UaoCloudroomPane } from "./uao-cloudroom-pane";
-import { UaoOpenMusePane } from "./uao-openmuse-pane";
+import { rememberUaoAgentsTab } from "./uao-agents-tabs";
+import { UaoAgentsHub } from "./uao-agents-hub";
 import { UaoSidebar } from "./uao-sidebar";
 import { UaoTaskDetailPane } from "./uao-task-detail-pane";
 import { UaoWorktabsBar } from "./uao-worktabs-bar";
@@ -62,52 +57,6 @@ import {
 } from "./uao-worktabs-state";
 import { WorkspaceResizeDivider } from "./uao-workspace-divider";
 import { UaoActivitySource } from "@/lib/uao/activity-source";
-
-function UaoOpenMusePanel({
-  visited,
-  active,
-}: {
-  readonly visited: boolean;
-  readonly active: boolean;
-}) {
-  if (!visited) return null;
-  return (
-    <div
-      id={`uao-panel-${OPENMUSE_PANE_ID}`}
-      role="tabpanel"
-      aria-labelledby={`uao-tab-${OPENMUSE_PANE_ID}`}
-      hidden={!active}
-      className="h-full min-h-0"
-    >
-      <UaoPaneBoundary label="OpenMuse">
-        <UaoOpenMusePane />
-      </UaoPaneBoundary>
-    </div>
-  );
-}
-
-function UaoCloudroomPanel({
-  visited,
-  active,
-}: {
-  readonly visited: boolean;
-  readonly active: boolean;
-}) {
-  if (!visited) return null;
-  return (
-    <div
-      id={`uao-panel-${CLOUDROOM_PANE_ID}`}
-      role="tabpanel"
-      aria-labelledby={`uao-tab-${CLOUDROOM_PANE_ID}`}
-      hidden={!active}
-      className="h-full min-h-0"
-    >
-      <UaoPaneBoundary label="CloudRoom">
-        <UaoCloudroomPane />
-      </UaoPaneBoundary>
-    </div>
-  );
-}
 
 function getConnectionDotClass(
   checking: boolean,
@@ -386,20 +335,21 @@ function UaoStandaloneScreenInner() {
   });
 
   const [tabsState, setTabsState] = useState<PersistedWorktabsState>(() => {
-    const initialHash =
-      typeof window !== "undefined" && window.location.hash
-        ? normalizeNavId(window.location.hash)
-        : null;
+    const rawHash = typeof window !== "undefined" ? window.location.hash : "";
+    const initialHash = rawHash !== "" ? normalizeNavId(rawHash) : null;
 
-    let savedParsed: PersistedWorktabsState | null = null;
+    let persisted: unknown = null;
     if (typeof window !== "undefined") {
       try {
         const raw = localStorage.getItem(WORKTABS_STORAGE_KEY);
-        if (raw) savedParsed = sanitizePersistedWorktabs(JSON.parse(raw));
+        if (raw) persisted = JSON.parse(raw);
       } catch {
-        // ignore parse error
+        persisted = null;
       }
+      rememberUaoAgentsTab(rawHash, persisted, localStorage);
     }
+    const savedParsed =
+      persisted === null ? null : sanitizePersistedWorktabs(persisted);
 
     if (initialHash) {
       // New nav hash takes precedence over restore
@@ -455,21 +405,6 @@ function UaoStandaloneScreenInner() {
   >(null);
 
   const boardsQuery = useQuery(uaoQueryOptions.boards());
-  const openmuseConfigQuery = useQuery(openmuseConfigQueryOptions());
-  const hiddenPaneIds = useMemo(() => {
-    const configuredWebUrl = openmuseConfigQuery.isSuccess
-      ? openmuseConfigQuery.data.webUrl
-      : null;
-    const worktabOpen = tabsState.tabs.some(
-      (tab) => tab.ownerId === OPENMUSE_PANE_ID,
-    );
-    return isOpenMuseSidebarVisible({
-      webUrl: configuredWebUrl,
-      worktabOpen,
-    })
-      ? []
-      : [OPENMUSE_PANE_ID];
-  }, [openmuseConfigQuery.isSuccess, openmuseConfigQuery.data, tabsState.tabs]);
   const boards: readonly KanbanBoard[] = boardsQuery.data ?? [];
   const activeBoard = activeBoardSelection ?? boards.at(0)?.slug;
 
@@ -549,6 +484,7 @@ function UaoStandaloneScreenInner() {
   // Listen to browser / Electron back/forward navigation
   useEffect(() => {
     const handleHashChange = () => {
+      rememberUaoAgentsTab(window.location.hash, null, window.localStorage);
       const target = normalizeNavId(window.location.hash);
       setTabsState((prev) => {
         if (prev.activeRouteId === target) return prev;
@@ -652,7 +588,6 @@ function UaoStandaloneScreenInner() {
           onSelectPane={handleSelectPane}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={handleToggleSidebar}
-          hiddenPaneIds={hiddenPaneIds}
         />
 
         {/* Content Area with Worktabs Bar */}
@@ -714,27 +649,19 @@ function UaoStandaloneScreenInner() {
             </UaoPaneBoundary>
           </div>
 
-          {visitedOwners.has(AGENT_OS_PANE_ID) ? (
+          {visitedOwners.has(UAO_AGENTS_PANE_ID) ? (
             <div
-              id={`uao-panel-${AGENT_OS_PANE_ID}`}
+              id={`uao-panel-${UAO_AGENTS_PANE_ID}`}
               role="tabpanel"
-              aria-labelledby={`uao-tab-${AGENT_OS_PANE_ID}`}
-              hidden={tabsState.activeOwnerId !== AGENT_OS_PANE_ID}
+              aria-labelledby={`uao-tab-${UAO_AGENTS_PANE_ID}`}
+              hidden={tabsState.activeOwnerId !== UAO_AGENTS_PANE_ID}
               className="h-full min-h-0"
             >
-              <UaoPaneBoundary label="Agent OS">
-                <UaoAgentOsPane />
+              <UaoPaneBoundary label="Agents">
+                <UaoAgentsHub />
               </UaoPaneBoundary>
             </div>
           ) : null}
-          <UaoCloudroomPanel
-            visited={visitedOwners.has(CLOUDROOM_PANE_ID)}
-            active={tabsState.activeOwnerId === CLOUDROOM_PANE_ID}
-          />
-          <UaoOpenMusePanel
-            visited={visitedOwners.has(OPENMUSE_PANE_ID)}
-            active={tabsState.activeOwnerId === OPENMUSE_PANE_ID}
-          />
           {visitedOwners.has(OFFICE_PANE_ID) ? (
             <div
               id={`uao-panel-${OFFICE_PANE_ID}`}

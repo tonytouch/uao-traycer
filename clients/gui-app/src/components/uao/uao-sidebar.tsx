@@ -64,15 +64,6 @@ interface UaoSidebarProps {
   readonly onSelectPane: (paneId: string) => void;
   readonly collapsed: boolean;
   readonly onToggleCollapsed: () => void;
-  readonly hiddenPaneIds: readonly string[];
-}
-
-function visiblePanes(
-  panes: readonly UaoNavPane[],
-  hiddenPaneIds: ReadonlySet<string>,
-): readonly UaoNavPane[] {
-  if (hiddenPaneIds.size === 0) return panes;
-  return panes.filter((pane) => !hiddenPaneIds.has(pane.id));
 }
 
 export function UaoSidebar({
@@ -80,25 +71,13 @@ export function UaoSidebar({
   onSelectPane,
   collapsed,
   onToggleCollapsed,
-  hiddenPaneIds,
 }: UaoSidebarProps) {
   const [search, setSearch] = useState("");
   const [closedGroups, setClosedGroups] = useState<ReadonlySet<string>>(
     new Set(),
   );
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const hiddenPaneIdSet = useMemo(
-    () => new Set(hiddenPaneIds),
-    [hiddenPaneIds],
-  );
-  const matches = useMemo(
-    () => visiblePanes(filterNavPanes(search), hiddenPaneIdSet),
-    [search, hiddenPaneIdSet],
-  );
-  const collapsedPanes = useMemo(
-    () => visiblePanes(DEFAULT_COLLAPSED_PANES, hiddenPaneIdSet),
-    [hiddenPaneIdSet],
-  );
+  const matches = useMemo(() => filterNavPanes(search), [search]);
 
   const focusSearch = useEffectEvent((event: KeyboardEvent) => {
     if (event.defaultPrevented) return;
@@ -205,7 +184,7 @@ export function UaoSidebar({
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {collapsed ? collapsedPanes.map(renderPane) : null}
+        {collapsed ? DEFAULT_COLLAPSED_PANES.map(renderPane) : null}
         {!collapsed && search.trim() && (
           <>
             <p
@@ -245,7 +224,7 @@ export function UaoSidebar({
                   )}
                 </button>
                 <div id={`uao-nav-${group.id}`} hidden={!open}>
-                  {visiblePanes(group.panes, hiddenPaneIdSet).map(renderPane)}
+                  {group.panes.map(renderPane)}
                 </div>
               </section>
             );

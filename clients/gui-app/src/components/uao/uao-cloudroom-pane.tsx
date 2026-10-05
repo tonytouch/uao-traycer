@@ -26,6 +26,11 @@ import {
   type CloudroomSessionSummary,
 } from "@traycer-clients/shared/cloudroom";
 import { UaoCloudroomEndpoints } from "./uao-cloudroom-endpoints";
+import {
+  endpointsChromeLabel,
+  useReportEndpointsChrome,
+  type UaoEndpointsChrome,
+} from "./uao-endpoints-chrome";
 
 function queryErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message !== "") return error.message;
@@ -414,7 +419,11 @@ function CloudroomFailure({
   );
 }
 
-export function UaoCloudroomPane() {
+export function UaoCloudroomPane({
+  endpointsChrome,
+}: {
+  readonly endpointsChrome: UaoEndpointsChrome | null;
+}) {
   const {
     configQuery,
     healthQuery,
@@ -426,21 +435,32 @@ export function UaoCloudroomPane() {
     setShowSettings,
     refresh,
   } = useCloudroomPaneState();
+  const toggleSettings = (): void => {
+    setShowSettings((open) => !open);
+  };
+  useReportEndpointsChrome(
+    endpointsChrome,
+    showSettings,
+    endpointsChromeLabel(showSettings),
+    toggleSettings,
+  );
 
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
-      <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1">
-        <h1 className="font-heading text-ui-sm font-bold">CloudRoom</h1>
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          aria-expanded={showSettings}
-          onClick={() => setShowSettings((open) => !open)}
-        >
-          {showSettings ? "Hide endpoints" : "Endpoints"}
-        </Button>
-      </div>
+      {endpointsChrome === null ? (
+        <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-1">
+          <h1 className="font-heading text-ui-sm font-bold">CloudRoom</h1>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            aria-expanded={showSettings}
+            onClick={toggleSettings}
+          >
+            {endpointsChromeLabel(showSettings)}
+          </Button>
+        </div>
+      ) : null}
       {showSettings && configQuery.data !== undefined ? (
         <UaoCloudroomEndpoints config={configQuery.data} onSaved={refresh} />
       ) : null}

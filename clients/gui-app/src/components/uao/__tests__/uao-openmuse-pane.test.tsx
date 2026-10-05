@@ -27,7 +27,7 @@ function renderPane(): void {
   });
   render(
     <QueryClientProvider client={client}>
-      <UaoOpenMusePane />
+      <UaoOpenMusePane endpointsChrome={null} />
     </QueryClientProvider>,
   );
 }
