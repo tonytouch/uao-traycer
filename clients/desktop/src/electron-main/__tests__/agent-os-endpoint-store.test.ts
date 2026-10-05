@@ -54,7 +54,7 @@ describe("Agent OS endpoint store", () => {
       hermes: false,
       omniroute: false,
     });
-    expect(collectTailscaleCleartextSwitch(dir)).toBe(
+    expect(collectTailscaleCleartextSwitch(dir, [])).toBe(
       "http://100.90.167.20:5050,http://100.90.167.20:8787,http://100.90.167.20:20128",
     );
   });

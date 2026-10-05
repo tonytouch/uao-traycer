@@ -25,12 +25,14 @@ export const WORKSPACE_PANE_ID = "tasks-workspace";
 export const WORKSPACES_PANE_ID = "workspaces";
 export const OFFICE_PANE_ID = "office";
 export const AGENT_OS_PANE_ID = "agent-os";
+export const CLOUDROOM_PANE_ID = "cloudroom";
 export function isNativeUaoPane(id: string): boolean {
   return (
     id === WORKSPACE_PANE_ID ||
     id === WORKSPACES_PANE_ID ||
     id === OFFICE_PANE_ID ||
-    id === AGENT_OS_PANE_ID
+    id === AGENT_OS_PANE_ID ||
+    id === CLOUDROOM_PANE_ID
   );
 }
 const paneRows: readonly (readonly [
@@ -46,6 +48,22 @@ const paneRows: readonly (readonly [
     "monitor",
     "priority",
     ["agent os", "embed", "tailscale", "remote", "hermes", "omniroute", "5050"],
+  ],
+  [
+    "cloudroom",
+    "CloudRoom",
+    "server",
+    "priority",
+    [
+      "cloudroom",
+      "session",
+      "codex",
+      "claude",
+      "cursor",
+      "pi",
+      "9840",
+      "tailscale",
+    ],
   ],
   [
     "command-center",

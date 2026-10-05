@@ -19,8 +19,8 @@ import {
   tailscaleCleartextOrigins,
   type AgentOsEndpointConfig,
   type AgentOsPublicConfig,
-  type AgentOsTokenService,
   type AgentOsTokenWriteResult,
+  type UaoStoredTokenService,
 } from "@traycer-clients/shared/agent-os-endpoints";
 
 const ENDPOINT_FILE = "agent-os-endpoints.json";
@@ -51,7 +51,7 @@ function endpointPath(directory: string): string {
   return join(directory, ENDPOINT_FILE);
 }
 
-function tokenPath(directory: string, service: AgentOsTokenService): string {
+function tokenPath(directory: string, service: UaoStoredTokenService): string {
   return join(directory, TOKEN_DIR, service);
 }
 
@@ -95,7 +95,7 @@ export function writeAgentOsEndpoints(
 
 export function hasAgentOsToken(
   directory: string,
-  service: AgentOsTokenService,
+  service: UaoStoredTokenService,
 ): boolean {
   return existsSync(tokenPath(directory, service));
 }
@@ -122,7 +122,7 @@ export function readAgentOsPublicConfig(
 export function writeAgentOsToken(
   directory: string,
   secrets: AgentOsSecretStore,
-  service: AgentOsTokenService,
+  service: UaoStoredTokenService,
   token: string,
 ): AgentOsTokenWriteResult {
   const path = tokenPath(directory, service);
@@ -153,7 +153,7 @@ export function writeAgentOsToken(
 export function readAgentOsToken(
   directory: string,
   secrets: AgentOsSecretStore,
-  service: AgentOsTokenService,
+  service: UaoStoredTokenService,
 ): string | null {
   const path = tokenPath(directory, service);
   if (!existsSync(path) || !secrets.isEncryptionAvailable()) return null;
@@ -165,12 +165,16 @@ export function readAgentOsToken(
 }
 
 /** Saved Tailscale http origins plus the built-in defaults, for one Chromium switch. */
-export function collectTailscaleCleartextSwitch(directory: string): string {
+export function collectTailscaleCleartextSwitch(
+  directory: string,
+  extraUrls: readonly string[],
+): string {
   const saved = readAgentOsEndpoints(directory);
   return tailscaleCleartextOrigins([
     saved.baseUrl,
     saved.hermesUrl,
     saved.omnirouteUrl,
+    ...extraUrls,
     AGENT_OS_DEFAULT_BASE_URL,
     AGENT_OS_DEFAULT_HERMES_URL,
     AGENT_OS_DEFAULT_OMNIROUTE_URL,

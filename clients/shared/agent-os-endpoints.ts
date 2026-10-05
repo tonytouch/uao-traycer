@@ -16,6 +16,13 @@ export const AGENT_OS_TOKEN_SERVICES = [
 ] as const;
 export type AgentOsTokenService = (typeof AGENT_OS_TOKEN_SERVICES)[number];
 
+/** Same on-disk token directory as Phase 1. CloudRoom is a file in that directory. */
+export const UAO_STORED_TOKEN_SERVICES = [
+  ...AGENT_OS_TOKEN_SERVICES,
+  "cloudroom",
+] as const;
+export type UaoStoredTokenService = (typeof UAO_STORED_TOKEN_SERVICES)[number];
+
 export interface AgentOsEndpointConfig {
   readonly baseUrl: string;
   readonly hermesUrl: string;
@@ -62,6 +69,12 @@ export function isAgentOsTokenService(
   value: unknown,
 ): value is AgentOsTokenService {
   return AGENT_OS_TOKEN_SERVICES.some((service) => service === value);
+}
+
+export function isUaoStoredTokenService(
+  value: unknown,
+): value is UaoStoredTokenService {
+  return UAO_STORED_TOKEN_SERVICES.some((service) => service === value);
 }
 
 /** 100.64.0.0/10 — Tailscale CGNAT, not a general private range. */
