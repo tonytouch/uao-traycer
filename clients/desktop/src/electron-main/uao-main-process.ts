@@ -1,6 +1,12 @@
 import { app, BrowserWindow, session } from "electron";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  AGENT_OS_DEFAULT_BASE_URL,
+  AGENT_OS_DEFAULT_HERMES_URL,
+  AGENT_OS_DEFAULT_OMNIROUTE_URL,
+  tailscaleCleartextOrigins,
+} from "@traycer-clients/shared/agent-os-endpoints";
 import { initLogger, log } from "./app/logger";
 import {
   clampSessionTls,
@@ -14,6 +20,8 @@ import {
 } from "../shared/content-security-policy";
 import { startUaoServer, type UaoServerInstance } from "./uao-server";
 import { prepareUaoOffice, attachUaoOffice } from "./uao-office";
+import { collectTailscaleCleartextSwitch } from "./agent-os-endpoint-store";
+import { attachAgentOs } from "./agent-os-service";
 
 /**
  * Remote backend, e.g. a Mac reaching the Linux box over Tailscale. Env wins;
@@ -66,6 +74,30 @@ function resolveBackendTarget(): {
 let uaoWindow: BrowserWindow | null = null;
 let serverInstance: UaoServerInstance | null = null;
 
+/**
+ * Linux Electron treats a plain-http Tailscale address as an insecure origin.
+ * Mark the saved 100.64/10 http origins secure before ready so the Agent OS
+ * guest can run. This does not allow arbitrary cleartext.
+ */
+function installAgentOsCleartext(): void {
+  let value = tailscaleCleartextOrigins([
+    AGENT_OS_DEFAULT_BASE_URL,
+    AGENT_OS_DEFAULT_HERMES_URL,
+    AGENT_OS_DEFAULT_OMNIROUTE_URL,
+  ]);
+  try {
+    value = collectTailscaleCleartextSwitch(app.getPath("userData"));
+  } catch {
+    // Defaults above still cover Keith's host when userData cannot be read yet.
+  }
+  if (value.length > 0) {
+    app.commandLine.appendSwitch(
+      "unsafely-treat-insecure-origin-as-secure",
+      value,
+    );
+  }
+}
+
 function hardenUaoSession(serverOrigin: string): void {
   const defaultSession = session.defaultSession;
   installPermissionHandlers(defaultSession);
@@ -73,9 +105,13 @@ function hardenUaoSession(serverOrigin: string): void {
 
   defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const headers = details.responseHeaders ?? {};
-    if (isUaoProxyDocument(details.url, serverOrigin) ||
-      details.url.startsWith("genoffice-app:") || details.url.startsWith("genoffice-docx-media:") ||
-      details.url.startsWith("html-preview:") || details.url.startsWith("html-asset:")) {
+    if (
+      isUaoProxyDocument(details.url, serverOrigin) ||
+      details.url.startsWith("genoffice-app:") ||
+      details.url.startsWith("genoffice-docx-media:") ||
+      details.url.startsWith("html-preview:") ||
+      details.url.startsWith("html-asset:")
+    ) {
       callback({ responseHeaders: headers });
       return;
     }
@@ -85,11 +121,16 @@ function hardenUaoSession(serverOrigin: string): void {
 }
 
 app.setName("UAO");
-// UAO keeps no secrets in the OS keyring. Chromium otherwise asks the desktop
-// keyring for its cookie key at startup and blocks every window behind that
-// prompt when the keyring is locked, missing or being set up.
+// Cookie encryption stays off the OS keyring. Chromium otherwise asks for that
+// key at startup and blocks every window when the keyring is locked or missing.
+// Agent OS tokens use safeStorage only when the user saves one, after ready.
 app.commandLine.appendSwitch("password-store", "basic");
-app.setPath("userData", process.env.UAO_DESKTOP_USER_DATA ?? join(app.getPath("appData"), "uao-desktop"));
+app.setPath(
+  "userData",
+  process.env.UAO_DESKTOP_USER_DATA ??
+    join(app.getPath("appData"), "uao-desktop"),
+);
+installAgentOsCleartext();
 const officeRuntime = prepareUaoOffice();
 
 const gotLock = app.requestSingleInstanceLock();
@@ -163,10 +204,13 @@ async function startUaoDesktop(): Promise<void> {
       nodeIntegration: false,
       sandbox: true,
       devTools: true,
+      // The Agent OS page is a guest. will-attach-webview admits only its origin.
+      webviewTag: true,
     },
   });
 
   attachUaoOffice(uaoWindow, serverInstance.origin, officeRuntime);
+  attachAgentOs(uaoWindow, serverInstance.origin, app.getPath("userData"));
 
   uaoWindow.on("closed", () => {
     uaoWindow = null;

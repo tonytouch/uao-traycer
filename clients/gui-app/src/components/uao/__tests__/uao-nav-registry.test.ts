@@ -27,9 +27,9 @@ import {
 
 describe("UAO Navigation Registry & Inventory", () => {
   it("contains the original UAO panes plus tasks, Workspace and Office workspaces", () => {
-    expect(ALL_NAV_PANES).toHaveLength(37);
+    expect(ALL_NAV_PANES).toHaveLength(38);
     const uniqueIds = new Set(ALL_NAV_PANES.map((p) => p.id));
-    expect(uniqueIds.size).toBe(37);
+    expect(uniqueIds.size).toBe(38);
   });
 
   it("sets command-center as the default pane", () => {
@@ -76,8 +76,13 @@ describe("UAO Navigation Registry & Inventory", () => {
 
   it("validates and normalizes route hashes correctly", () => {
     expect(isNativeUaoPane(OFFICE_PANE_ID)).toBe(true);
+    expect(isNativeUaoPane("agent-os")).toBe(true);
+    expect(findNavPane("agent-os")?.label).toBe("Agent OS");
+    expect(findNavPane("agent-os")?.group).toBe("priority");
     expect(normalizeNavId("#/office")).toBe(OFFICE_PANE_ID);
-    expect(filterNavPanes("genoffice").map(pane => pane.id)).toEqual([OFFICE_PANE_ID]);
+    expect(filterNavPanes("genoffice").map((pane) => pane.id)).toEqual([
+      OFFICE_PANE_ID,
+    ]);
     expect(getFeatureOwnerId(OFFICE_PANE_ID)).toBe(OFFICE_PANE_ID);
     expect(isValidNavPaneId("command-center")).toBe(true);
     expect(isValidNavPaneId("agent-cockpit")).toBe(true);
@@ -155,7 +160,7 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(workspaceSearch.some((p) => p.id === "workspaces")).toBe(true);
 
     // Empty search returns all panes
-    expect(filterNavPanes("")).toHaveLength(37);
+    expect(filterNavPanes("")).toHaveLength(38);
   });
 
   it("labels backend terminal as Service Terminals vs Workspaces & Agent Terminals", () => {
@@ -166,13 +171,19 @@ describe("UAO Navigation Registry & Inventory", () => {
   });
 
   it("organizes consolidated owner panes into the non-empty navigation groups", () => {
-    expect(NAV_GROUPS.map((group) => group.id)).toEqual(["priority", "workspace", "pinned", "agents", "system"]);
+    expect(NAV_GROUPS.map((group) => group.id)).toEqual([
+      "priority",
+      "workspace",
+      "pinned",
+      "agents",
+      "system",
+    ]);
     expect(NAV_GROUPS.every((group) => group.panes.length > 0)).toBe(true);
     const totalGroupPanes = NAV_GROUPS.reduce(
       (sum, g) => sum + g.panes.length,
       0,
     );
-    expect(totalGroupPanes).toBe(19);
+    expect(totalGroupPanes).toBe(20);
   });
 });
 

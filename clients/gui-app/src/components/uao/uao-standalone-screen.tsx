@@ -31,8 +31,10 @@ import {
   normalizeNavId,
   WORKSPACES_PANE_ID,
   OFFICE_PANE_ID,
+  AGENT_OS_PANE_ID,
   WORKSPACE_PANE_ID,
 } from "./uao-nav-registry";
+import { UaoAgentOsPane } from "./uao-agent-os-pane";
 import { UaoSidebar } from "./uao-sidebar";
 import { UaoTaskDetailPane } from "./uao-task-detail-pane";
 import { UaoWorktabsBar } from "./uao-worktabs-bar";
@@ -556,7 +558,12 @@ function UaoStandaloneScreenInner() {
             aria-label="Refresh connection status"
           >
             {boardsQuery.isFetching ? (
-              <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="muted" />
+              <AgentSpinningDots
+                className={undefined}
+                testId={undefined}
+                variant={undefined}
+                tone="muted"
+              />
             ) : (
               <RefreshCw className="size-3 text-muted-foreground" />
             )}
@@ -639,13 +646,31 @@ function UaoStandaloneScreenInner() {
             </UaoPaneBoundary>
           </div>
 
+          {visitedOwners.has(AGENT_OS_PANE_ID) ? (
+            <div
+              id={`uao-panel-${AGENT_OS_PANE_ID}`}
+              role="tabpanel"
+              aria-labelledby={`uao-tab-${AGENT_OS_PANE_ID}`}
+              hidden={tabsState.activeOwnerId !== AGENT_OS_PANE_ID}
+              className="h-full min-h-0"
+            >
+              <UaoPaneBoundary label="Agent OS">
+                <UaoAgentOsPane />
+              </UaoPaneBoundary>
+            </div>
+          ) : null}
           {visitedOwners.has(OFFICE_PANE_ID) ? (
-            <div id={`uao-panel-${OFFICE_PANE_ID}`} role="tabpanel"
+            <div
+              id={`uao-panel-${OFFICE_PANE_ID}`}
+              role="tabpanel"
               aria-labelledby={`uao-tab-${OFFICE_PANE_ID}`}
               hidden={tabsState.activeOwnerId !== OFFICE_PANE_ID}
-              className="h-full min-h-0">
+              className="h-full min-h-0"
+            >
               <UaoPaneBoundary label="Office">
-                <UaoOfficePane active={tabsState.activeOwnerId === OFFICE_PANE_ID} />
+                <UaoOfficePane
+                  active={tabsState.activeOwnerId === OFFICE_PANE_ID}
+                />
               </UaoPaneBoundary>
             </div>
           ) : null}
@@ -653,8 +678,7 @@ function UaoStandaloneScreenInner() {
           {tabsState.tabs
             .filter(
               (tab) =>
-                !isNativeUaoPane(tab.ownerId) &&
-                visitedOwners.has(tab.ownerId),
+                !isNativeUaoPane(tab.ownerId) && visitedOwners.has(tab.ownerId),
             )
             .map((tab) => (
               <div
