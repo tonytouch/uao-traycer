@@ -22,8 +22,10 @@ launcher page (www/index.html, https://localhost)
 - Permissions: `INTERNET`, `RECORD_AUDIO`, `MODIFY_AUDIO_SETTINGS`. Capacitor's
   WebView client asks for the microphone at the first voice request and grants
   the page's `getUserMedia` only if both audio permissions are granted.
-- `allowNavigation` is limited to `server.tail85e19.ts.net`; cleartext traffic,
-  mixed content, backups and WebView debugging are off.
+- `allowNavigation` is limited to `server.tail85e19.ts.net`. Cleartext and
+  mixed content are on so the paired page can embed Agent OS (`:5050`),
+  CloudRoom (`:9840`), and OpenMuse (`:8081`) at `http://100.x`. Backups and
+  WebView debugging stay off.
 
 The server name appears in two places that must stay in step:
 `capacitor.config.json` (`allowNavigation`) and `ORIGIN` in `www/index.html`,

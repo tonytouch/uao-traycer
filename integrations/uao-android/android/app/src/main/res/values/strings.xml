@@ -2,6 +2,6 @@
 <resources>
     <string name="app_name">UAO</string>
     <string name="title_activity_main">UAO</string>
-    <string name="package_name">ai.uao.mobile</string>
-    <string name="custom_url_scheme">ai.uao.mobile</string>
+    <string name="package_name">com.tonytouch.uao</string>
+    <string name="custom_url_scheme">uao</string>
 </resources>

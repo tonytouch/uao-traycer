@@ -20,7 +20,7 @@ declare global {
 export function getCloudroomApi(): UaoCloudroomApi {
   const api = window.uaoCloudroom;
   if (api === undefined) {
-    throw new Error("CloudRoom is available in the UAO desktop.");
+    throw new Error("CloudRoom is available in the UAO shell.");
   }
   return api;
 }

@@ -1,4 +1,4 @@
-package ai.uao.mobile;
+package com.tonytouch.uao;
 
 import com.getcapacitor.BridgeActivity;
 

@@ -11,7 +11,7 @@ declare global {
 export function getOpenMuseApi(): UaoOpenMuseApi {
   const api = window.uaoOpenMuse;
   if (api === undefined) {
-    throw new Error("OpenMuse is available in the UAO desktop.");
+    throw new Error("OpenMuse is available in the UAO shell.");
   }
   return api;
 }

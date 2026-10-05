@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Release and any non-debug build. Android's <domain> entries do not match
+    raw IP hosts, and the file cannot express 100.64.0.0/10, so Agent OS
+    (:5050), CloudRoom (:9840), and OpenMuse (:8081) on http://100.x stay
+    blocked unless base-config permits cleartext. The debug source set
+    replaces this file with a loopback-only config.
+    A network security config also ignores android:usesCleartextTraffic.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -5,7 +5,6 @@ import {
   AGENT_OS_DEFAULT_BASE_URL,
   AGENT_OS_DEFAULT_HERMES_URL,
   AGENT_OS_DEFAULT_OMNIROUTE_URL,
-  AGENT_OS_WEBVIEW_PARTITION,
   agentOsEmbedUrl,
   type AgentOsPublicConfig,
 } from "@traycer-clients/shared/agent-os-endpoints";
@@ -81,10 +80,11 @@ describe("Agent OS page", () => {
     };
     renderPane();
     await waitFor(() => {
-      const guest = document.querySelector("webview");
+      const guest = document.querySelector("iframe");
       expect(guest?.getAttribute("src")).toBe(EMBED);
-      expect(guest?.getAttribute("partition")).toBe(AGENT_OS_WEBVIEW_PARTITION);
+      expect(guest?.getAttribute("title")).toBe("Agent OS");
     });
+    expect(document.querySelector("webview")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

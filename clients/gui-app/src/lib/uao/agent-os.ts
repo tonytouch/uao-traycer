@@ -11,7 +11,7 @@ declare global {
 export function getAgentOsApi(): UaoAgentOsApi {
   const api = window.uaoAgentOs;
   if (api === undefined) {
-    throw new Error("Agent OS is available in the UAO desktop.");
+    throw new Error("Agent OS is available in the UAO shell.");
   }
   return api;
 }

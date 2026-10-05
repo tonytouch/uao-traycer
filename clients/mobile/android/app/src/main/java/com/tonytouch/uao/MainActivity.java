@@ -1,4 +1,4 @@
-package com.traycer.app;
+package com.tonytouch.uao;
 
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
