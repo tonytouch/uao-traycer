@@ -19,7 +19,7 @@ import { discardDrafts } from "@/lib/uao/draft-persistence";
 import { uaoQueryOptions } from "@/lib/uao/query-options";
 import { UaoEmbeddedPane } from "./uao-embedded-pane";
 import { UaoKanbanTasksPane } from "./uao-kanban-tasks-pane";
-import { UaoOrcaWorkspacesPane } from "./uao-orca-workspaces-pane";
+import { UaoWorkspacesPane } from "./uao-workspaces-pane";
 import { UaoPaneBoundary } from "./uao-pane-boundary";
 import { UaoOfficePane } from "./uao-office-pane";
 import {
@@ -29,7 +29,7 @@ import {
   isNativeUaoPane,
   NAV_GROUPS,
   normalizeNavId,
-  ORCA_PANE_ID,
+  WORKSPACES_PANE_ID,
   OFFICE_PANE_ID,
   WORKSPACE_PANE_ID,
 } from "./uao-nav-registry";
@@ -624,17 +624,17 @@ function UaoStandaloneScreenInner() {
             />
           </div>
 
-          {/* Persistent Orca Terminal Workspaces */}
+          {/* Persistent Workspace Terminal Workspaces */}
           <div
-            id={`uao-panel-${ORCA_PANE_ID}`}
+            id={`uao-panel-${WORKSPACES_PANE_ID}`}
             role="tabpanel"
-            aria-labelledby={`uao-tab-${ORCA_PANE_ID}`}
-            hidden={tabsState.activeOwnerId !== ORCA_PANE_ID}
+            aria-labelledby={`uao-tab-${WORKSPACES_PANE_ID}`}
+            hidden={tabsState.activeOwnerId !== WORKSPACES_PANE_ID}
             className="h-full min-h-0"
           >
-            <UaoPaneBoundary label="Orca Workspaces">
-              <UaoOrcaWorkspacesPane
-                active={tabsState.activeOwnerId === ORCA_PANE_ID}
+            <UaoPaneBoundary label="Workspaces & Agent Terminals">
+              <UaoWorkspacesPane
+                active={tabsState.activeOwnerId === WORKSPACES_PANE_ID}
               />
             </UaoPaneBoundary>
           </div>

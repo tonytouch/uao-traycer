@@ -10,9 +10,12 @@ import {
   isUaoProxyDocument,
 } from "../shared/content-security-policy";
 import {
-  handleOrcaHttpRequest,
-  handleOrcaTerminalStreamUpgrade,
-} from "./uao-orca-adapter";
+  UAO_WORKSPACES_PREFIX,
+  UAO_WORKSPACES_SERVER_PREFIX,
+  handleWorkspaceHttpRequest,
+  handleWorkspaceStreamUpgrade,
+} from "./uao-workspace-http";
+import { WorkspaceRuntime } from "./uao-workspace-runtime";
 
 const MIME_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -86,10 +89,13 @@ export interface UaoServerOptions {
    */
   readonly pairingSecret?: string;
   /**
-   * Serve the Orca terminal routes (`/uao-api/orca/*`). They run local
-   * processes, so remote deployments should turn them off. Default true.
+   * Serve the workspace and agent-terminal routes (`/uao-api/workspaces/*`).
+   * They run local processes, so remote deployments should turn them off.
+   * Default true.
    */
-  readonly orca?: boolean;
+  readonly workspaces?: boolean;
+  /** Runtime to serve; defaults to one rooted at `~/.uao/workspaces`. */
+  readonly workspaceRuntime?: WorkspaceRuntime;
 }
 
 export const UAO_PAIR_PATH = "/uao-pair";
@@ -453,16 +459,15 @@ function isSafeUnderRoot(targetPath: string, rootDir: string): boolean {
 }
 
 /**
- * Orca on the machine behind `upstream` (as opposed to the local Orca at
- * `/uao-api/orca`). The renderer picks between them with this prefix; it is
- * rewritten to the gateway's `/uao-api/orca` and never leaves this process.
+ * Workspaces on the machine behind `upstream` (as opposed to this machine's at
+ * `UAO_WORKSPACES_PREFIX`). The renderer picks between them with the server
+ * prefix; it is rewritten to the gateway's own prefix and never leaves this
+ * process.
  */
-export const UAO_ORCA_SERVER_PREFIX = "/uao-api/orca-server";
-
-export function remapServerOrcaPath(pathname: string): string | null {
-  if (pathname === UAO_ORCA_SERVER_PREFIX) return "/uao-api/orca";
-  if (pathname.startsWith(`${UAO_ORCA_SERVER_PREFIX}/`)) {
-    return `/uao-api/orca${pathname.slice(UAO_ORCA_SERVER_PREFIX.length)}`;
+export function remapServerWorkspacesPath(pathname: string): string | null {
+  if (pathname === UAO_WORKSPACES_SERVER_PREFIX) return UAO_WORKSPACES_PREFIX;
+  if (pathname.startsWith(`${UAO_WORKSPACES_SERVER_PREFIX}/`)) {
+    return `${UAO_WORKSPACES_PREFIX}${pathname.slice(UAO_WORKSPACES_SERVER_PREFIX.length)}`;
   }
   return null;
 }
@@ -546,7 +551,8 @@ export function startUaoServer(
   const requestBackend = backend.secure ? https.request : http.request;
   const staticDir = path.resolve(options.staticDir);
   const bindHost = options.host ?? "127.0.0.1";
-  const orcaEnabled = options.orca !== false;
+  const workspacesEnabled = options.workspaces !== false;
+  const workspaceRuntime = options.workspaceRuntime ?? new WorkspaceRuntime({});
   const pairingSecret = options.pairingSecret;
 
   let extraOrigins: string[];
@@ -616,7 +622,7 @@ export function startUaoServer(
   }
 
   /**
-   * Orca routes run local processes. When this server is a pairing gateway
+   * Workspace routes run local processes. When this server is a pairing gateway
    * they additionally demand the pairing *header* (what the desktop proxy
    * sends), so a phone browser holding only the pairing cookie gets no shell.
    */
@@ -628,14 +634,6 @@ export function startUaoServer(
       header.length > 0 &&
       safeEqual(header, pairingSecret)
     );
-  }
-
-  /** The gateway already validated Host/Origin; Orca's own check is loopback-only. */
-  function normalizeForOrca(req: http.IncomingMessage, port: number): void {
-    req.headers.host = `127.0.0.1:${port}`;
-    delete req.headers.origin;
-    delete req.headers.referer;
-    delete req.headers["sec-fetch-site"];
   }
 
   function handlePairRequest(
@@ -780,53 +778,49 @@ export function startUaoServer(
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
           });
-          res.end(JSON.stringify({ orcaServer: viaGateway }));
+          res.end(JSON.stringify({ workspacesServer: viaGateway }));
           return;
         }
 
-        // 2b. Orca on the upstream machine: rewrite and fall through to the proxy.
-        const serverOrcaPath = remapServerOrcaPath(pathname);
-        if (serverOrcaPath !== null) {
+        // 2b. Workspaces on the upstream machine: rewrite and fall through to the proxy.
+        const serverWorkspacesPath = remapServerWorkspacesPath(pathname);
+        if (serverWorkspacesPath !== null) {
           if (!viaGateway) {
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(
-              JSON.stringify({ ok: false, error: "No server configured for Orca" }),
+              JSON.stringify({ ok: false, error: "No server configured for workspaces" }),
             );
             return;
           }
-          pathname = serverOrcaPath;
+          pathname = serverWorkspacesPath;
         }
 
-        // 2c. Direct bounded Orca CLI adapter
+        // 2c. This machine's workspaces and agent terminals
         if (
-          serverOrcaPath === null &&
-          (pathname === "/uao-api/orca" ||
-            pathname.startsWith("/uao-api/orca/"))
+          serverWorkspacesPath === null &&
+          (pathname === UAO_WORKSPACES_PREFIX ||
+            pathname.startsWith(`${UAO_WORKSPACES_PREFIX}/`))
         ) {
-          if (!orcaEnabled) {
+          if (!workspacesEnabled) {
             res.writeHead(404, { "Content-Type": "text/plain" });
             res.end("Not Found");
             return;
           }
-          if (pairingSecret !== undefined) {
-            if (!pairedByHeader(req)) {
-              res.writeHead(403, { "Content-Type": "application/json" });
-              res.end(
-                JSON.stringify({ ok: false, error: "Orca needs the desktop pairing header" }),
-              );
-              return;
-            }
-            normalizeForOrca(req, port);
+          if (pairingSecret !== undefined && !pairedByHeader(req)) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({ ok: false, error: "Workspaces need the desktop pairing header" }),
+            );
+            return;
           }
-          void handleOrcaHttpRequest(req, res, {
-            port,
-            serverOrigin,
+          void handleWorkspaceHttpRequest(req, res, {
+            runtime: workspaceRuntime,
             parsedUrl: parsed,
           }).catch(() => {
             if (!res.headersSent)
               res.writeHead(500, { "Content-Type": "application/json" });
             res.end(
-              JSON.stringify({ ok: false, error: "Orca request failed" }),
+              JSON.stringify({ ok: false, error: "Workspace request failed" }),
             );
           });
           return;
@@ -1052,36 +1046,26 @@ export function startUaoServer(
           return;
         }
 
-        const serverOrcaPath = remapServerOrcaPath(parsed.pathname);
-        if (serverOrcaPath !== null) {
+        const serverWorkspacesPath = remapServerWorkspacesPath(parsed.pathname);
+        if (serverWorkspacesPath !== null) {
           if (!viaGateway) {
             socket.destroy();
             return;
           }
-          parsed.pathname = serverOrcaPath;
+          parsed.pathname = serverWorkspacesPath;
         }
 
         if (
-          serverOrcaPath === null &&
-          parsed.pathname === "/uao-api/orca/terminal/stream"
+          serverWorkspacesPath === null &&
+          parsed.pathname === `${UAO_WORKSPACES_PREFIX}/terminal/stream`
         ) {
-          if (!orcaEnabled) {
+          if (!workspacesEnabled || (pairingSecret !== undefined && !pairedByHeader(req))) {
             socket.destroy();
             return;
           }
-          if (pairingSecret !== undefined) {
-            if (!pairedByHeader(req)) {
-              socket.destroy();
-              return;
-            }
-            normalizeForOrca(req, port);
-          }
-          void handleOrcaTerminalStreamUpgrade(req, socket, head, {
-            port,
-            serverOrigin,
+          void handleWorkspaceStreamUpgrade(req, socket, head, {
+            runtime: workspaceRuntime,
             parsedUrl: parsed,
-            userDataPath: undefined,
-            subscribeRuntimeImpl: undefined,
           }).catch(() => {
             socket.destroy();
           });

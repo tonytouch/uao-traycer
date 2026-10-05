@@ -5,17 +5,17 @@ import {
   fetchKanbanTasks,
 } from "@/lib/uao/adapter";
 import {
-  fetchOrcaRepos,
-  fetchOrcaStatus,
-  fetchOrcaTerminals,
-  fetchOrcaWorktrees,
-  readOrcaTerminalScreen,
-} from "@/lib/uao/orca-adapter";
+  fetchWorkspaceRepos,
+  fetchWorkspaceStatus,
+  fetchWorkspaceTerminals,
+  fetchWorkspaceWorktrees,
+  readWorkspaceTerminalScreen,
+} from "@/lib/uao/workspaces-adapter";
 import { uaoQueryKeys } from "@/lib/query-keys/uao-query-keys";
 
 export interface UaoDesktopConfig {
-  /** True when the desktop is paired with a server whose Orca it can drive. */
-  readonly orcaServer: boolean;
+  /** True when the desktop is paired with a server whose Workspace it can drive. */
+  readonly workspacesServer: boolean;
 }
 
 export const uaoQueryOptions = {
@@ -27,9 +27,9 @@ export const uaoQueryOptions = {
           signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
           cache: "no-store",
         });
-        if (!response.ok) return { orcaServer: false };
-        const body = (await response.json()) as { orcaServer?: unknown };
-        return { orcaServer: body.orcaServer === true };
+        if (!response.ok) return { workspacesServer: false };
+        const body = (await response.json()) as { workspacesServer?: unknown };
+        return { workspacesServer: body.workspacesServer === true };
       },
       retry: false,
       staleTime: Infinity,
@@ -84,40 +84,40 @@ export const uaoQueryOptions = {
           ? skipToken
           : ({ signal }) => fetchKanbanTask(taskId, board, signal),
     }),
-  orcaStatus: () =>
+  workspaceStatus: () =>
     queryOptions({
-      queryKey: uaoQueryKeys.orcaStatus(),
-      queryFn: ({ signal }) => fetchOrcaStatus(signal),
+      queryKey: uaoQueryKeys.workspaceStatus(),
+      queryFn: ({ signal }) => fetchWorkspaceStatus(signal),
       refetchInterval: 5000,
       refetchIntervalInBackground: false,
       staleTime: 2000,
     }),
-  orcaRepos: (enabled: boolean) =>
+  workspaceRepos: (enabled: boolean) =>
     queryOptions({
-      queryKey: uaoQueryKeys.orcaRepos(),
+      queryKey: uaoQueryKeys.workspaceRepos(),
       queryFn: enabled
-        ? ({ signal }) => fetchOrcaRepos(signal)
+        ? ({ signal }) => fetchWorkspaceRepos(signal)
         : skipToken,
       staleTime: 10000,
     }),
-  orcaWorktrees: (enabled: boolean) =>
+  workspaceWorktrees: (enabled: boolean) =>
     queryOptions({
-      queryKey: uaoQueryKeys.orcaWorktrees(),
+      queryKey: uaoQueryKeys.workspaceWorktrees(),
       queryFn: enabled
-        ? ({ signal }) => fetchOrcaWorktrees(signal)
+        ? ({ signal }) => fetchWorkspaceWorktrees(signal)
         : skipToken,
       refetchInterval: enabled ? 4000 : false,
       refetchIntervalInBackground: false,
       staleTime: 2000,
     }),
-  orcaTerminals: (worktreeId: string | null) =>
+  workspaceTerminals: (worktreeId: string | null) =>
     queryOptions({
-      queryKey: uaoQueryKeys.orcaTerminals(worktreeId),
+      queryKey: uaoQueryKeys.workspaceTerminals(worktreeId),
       queryFn:
         worktreeId === null
           ? skipToken
           : ({ signal }) =>
-              fetchOrcaTerminals(
+              fetchWorkspaceTerminals(
                 worktreeId.startsWith("id:") ? worktreeId : `id:${worktreeId}`,
                 signal,
               ),
@@ -125,17 +125,17 @@ export const uaoQueryOptions = {
       refetchIntervalInBackground: false,
       staleTime: 1500,
     }),
-  orcaTerminalScreen: (
+  workspaceTerminalScreen: (
     terminalHandle: string | null,
     enabled: boolean,
   ) =>
     queryOptions({
-      queryKey: uaoQueryKeys.orcaTerminalScreen(terminalHandle),
+      queryKey: uaoQueryKeys.workspaceTerminalScreen(terminalHandle),
       queryFn:
         terminalHandle === null || !enabled
           ? skipToken
           : ({ signal }) =>
-              readOrcaTerminalScreen(terminalHandle, 300, signal),
+              readWorkspaceTerminalScreen(terminalHandle, 300, signal),
       refetchInterval: terminalHandle !== null && enabled ? 2000 : false,
       refetchIntervalInBackground: false,
       staleTime: 1000,

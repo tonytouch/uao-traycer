@@ -10,7 +10,7 @@ export interface UaoServeConfig {
   readonly staticDir: string;
   readonly allowedOrigins: readonly string[];
   readonly pairingSecret: string | undefined;
-  readonly orca: boolean;
+  readonly workspaces: boolean;
 }
 
 export function generatePairingSecret(): string {
@@ -72,6 +72,6 @@ export function parseServeConfig(
       .map((origin) => origin.trim())
       .filter((origin) => origin.length > 0),
     pairingSecret,
-    orca: env.UAO_SERVE_ORCA === "1",
+    workspaces: env.UAO_SERVE_WORKSPACES === "1",
   };
 }

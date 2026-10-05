@@ -51,7 +51,7 @@ bun run build:uao:renderer && bun run build:uao:serve
 
 ```bash
 systemctl --user enable --now uao-serve.service
-journalctl --user -u uao-serve.service -n 20 --no-pager   # "uao-serve listening on http://127.0.0.1:5191 (pairing on, orca off)"
+journalctl --user -u uao-serve.service -n 20 --no-pager   # "uao-serve listening on http://127.0.0.1:5191 (pairing on, workspaces off)"
 ./deploy/uao-serve/verify.sh                               # loopback checks
 ```
 

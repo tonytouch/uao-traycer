@@ -57,7 +57,7 @@ describe("UAO Worktabs State & Persistence", () => {
           { ownerId: "agent-cockpit", routeTarget: "agent-cockpit" },
           { ownerId: "second-brain", routeTarget: "second-brain" },
           { ownerId: "tasks-workspace", routeTarget: "tasks-workspace" },
-          { ownerId: "orca-workspaces", routeTarget: "orca-workspaces" },
+          { ownerId: "workspaces", routeTarget: "workspaces" },
           { ownerId: "overview", routeTarget: "overview" },
           { ownerId: "creation-studio", routeTarget: "creation-studio" },
           { ownerId: "operations-pulse", routeTarget: "operations-pulse" },

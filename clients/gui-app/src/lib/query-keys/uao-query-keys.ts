@@ -1,4 +1,5 @@
 export const uaoQueryKeys = {
+  workspace: () => ["uao", "workspace"] as const,
   office: () => ["uao", "office"] as const,
   officeAction: () => ["uao", "office", "action"] as const,
   config: () => ["uao", "config"] as const,
@@ -7,17 +8,17 @@ export const uaoQueryKeys = {
   tasks: (board: string | undefined) => ["uao", "tasks", board] as const,
   task: (board: string | undefined, taskId: string | null) =>
     ["uao", "task", board, taskId] as const,
-  orcaStatus: () => ["uao", "orca", "status"] as const,
-  orcaRepos: () => ["uao", "orca", "repos"] as const,
-  orcaWorktrees: () => ["uao", "orca", "worktrees"] as const,
-  orcaTerminals: (worktreeId: string | null) =>
-    ["uao", "orca", "terminals", worktreeId] as const,
-  orcaTerminalScreen: (terminalHandle: string | null) =>
-    ["uao", "orca", "screen", terminalHandle] as const,
-  orcaTerminalSendMutation: () =>
-    ["uao", "orca", "terminal", "send"] as const,
-  orcaTerminalCreateMutation: () =>
-    ["uao", "orca", "terminal", "create"] as const,
-  orcaOpenMutation: () =>
-    ["uao", "orca", "open"] as const,
+  workspaceStatus: () => [...uaoQueryKeys.workspace(), "status"] as const,
+  workspaceRepos: () => [...uaoQueryKeys.workspace(), "repos"] as const,
+  workspaceWorktrees: () => [...uaoQueryKeys.workspace(), "worktrees"] as const,
+  workspaceTerminals: (worktreeId: string | null) =>
+    [...uaoQueryKeys.workspace(), "terminals", worktreeId] as const,
+  workspaceTerminalScreen: (terminalHandle: string | null) =>
+    [...uaoQueryKeys.workspace(), "screen", terminalHandle] as const,
+  workspaceTerminalSendMutation: () =>
+    [...uaoQueryKeys.workspace(), "terminal", "send"] as const,
+  workspaceTerminalCreateMutation: () =>
+    [...uaoQueryKeys.workspace(), "terminal", "create"] as const,
+  workspaceOpenMutation: () =>
+    [...uaoQueryKeys.workspace(), "open"] as const,
 };

@@ -14,7 +14,7 @@ interface UaoPaneBoundaryState {
 
 /**
  * Keeps one crashing UAO pane from unmounting the whole desktop. Without it, a
- * render error in any native pane (for example Orca's terminal list) blanks the
+ * render error in any native pane (for example Workspace's terminal list) blanks the
  * window, closing every other tab and discarding its state.
  */
 export class UaoPaneBoundary extends Component<

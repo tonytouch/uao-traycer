@@ -237,7 +237,7 @@ describe("UAO server remote hosting options", () => {
       "/desktop/uao.html",
       "/uao-api/api/hermes/kanban/boards",
       "/api/health",
-      "/uao-api/orca/status",
+      "/uao-api/workspaces/status",
     ])("returns 401 for unpaired %s", async (p) => {
       const res = await get(server.port, p);
       expect(res.status).toBe(401);
@@ -445,10 +445,10 @@ describe("UAO server remote hosting options", () => {
     });
   });
 
-  describe("orca routes", () => {
-    it("returns 404 when orca is disabled, even when paired", async () => {
-      const server = await start({ orca: false });
-      const res = await getWith(server.port, "/uao-api/orca/status", {
+  describe("workspace routes", () => {
+    it("returns 404 when workspace is disabled, even when paired", async () => {
+      const server = await start({ workspaces: false });
+      const res = await getWith(server.port, "/uao-api/workspaces/status", {
         [UAO_PAIR_HEADER]: SECRET,
       });
       expect(res.status).toBe(404);

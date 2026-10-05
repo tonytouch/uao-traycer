@@ -13,7 +13,7 @@ import {
   normalizeNavId,
   PRIORITY_PANE_IDS,
   WORKSPACE_PANE_ID,
-  ORCA_PANE_ID,
+  WORKSPACES_PANE_ID,
   OFFICE_PANE_ID,
   isNativeUaoPane,
   FEATURE_OWNER_MAP,
@@ -26,7 +26,7 @@ import {
 } from "../../../../../desktop/src/shared/content-security-policy";
 
 describe("UAO Navigation Registry & Inventory", () => {
-  it("contains the original UAO panes plus tasks, Orca and Office workspaces", () => {
+  it("contains the original UAO panes plus tasks, Workspace and Office workspaces", () => {
     expect(ALL_NAV_PANES).toHaveLength(37);
     const uniqueIds = new Set(ALL_NAV_PANES.map((p) => p.id));
     expect(uniqueIds.size).toBe(37);
@@ -61,13 +61,13 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(ws?.group).toBe("workspace");
   });
 
-  it("includes the orca workspaces pane with correct ID, group, and label", () => {
-    expect(ORCA_PANE_ID).toBe("orca-workspaces");
-    const orca = findNavPane(ORCA_PANE_ID);
-    expect(orca).toBeDefined();
-    expect(orca?.label).toBe("Orca Workspaces");
-    expect(orca?.group).toBe("workspace");
-    expect(isNativeUaoPane(ORCA_PANE_ID)).toBe(true);
+  it("includes the workspace workspaces pane with correct ID, group, and label", () => {
+    expect(WORKSPACES_PANE_ID).toBe("workspaces");
+    const workspace = findNavPane(WORKSPACES_PANE_ID);
+    expect(workspace).toBeDefined();
+    expect(workspace?.label).toBe("Workspaces & Agent Terminals");
+    expect(workspace?.group).toBe("workspace");
+    expect(isNativeUaoPane(WORKSPACES_PANE_ID)).toBe(true);
     expect(isNativeUaoPane(WORKSPACE_PANE_ID)).toBe(true);
     expect(
       ALL_NAV_PANES.filter((pane) => !isNativeUaoPane(pane.id)),
@@ -83,13 +83,13 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(isValidNavPaneId("agent-cockpit")).toBe(true);
     expect(isValidNavPaneId("second-brain")).toBe(true);
     expect(isValidNavPaneId("tasks-workspace")).toBe(true);
-    expect(isValidNavPaneId("orca-workspaces")).toBe(true);
+    expect(isValidNavPaneId("workspaces")).toBe(true);
     expect(isValidNavPaneId("non-existent-pane")).toBe(false);
 
     expect(normalizeNavId("#/second-brain")).toBe("second-brain");
     expect(normalizeNavId("#second-brain")).toBe("second-brain");
     expect(normalizeNavId("second-brain")).toBe("second-brain");
-    expect(normalizeNavId("#/orca-workspaces")).toBe("orca-workspaces");
+    expect(normalizeNavId("#/workspaces")).toBe("workspaces");
     expect(normalizeNavId("#/chat")).toBe("tasks-workspace");
     expect(normalizeNavId("chat")).toBe("tasks-workspace");
     expect(normalizeNavId("")).toBe("command-center");
@@ -150,15 +150,15 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(codingSearch.some((p) => p.id === "claude-code")).toBe(true);
     expect(codingSearch.some((p) => p.id === "coding-cli")).toBe(true);
 
-    // Orca search
-    const orcaSearch = filterNavPanes("orca");
-    expect(orcaSearch.some((p) => p.id === "orca-workspaces")).toBe(true);
+    // Workspace search
+    const workspaceSearch = filterNavPanes("workspace");
+    expect(workspaceSearch.some((p) => p.id === "workspaces")).toBe(true);
 
     // Empty search returns all panes
     expect(filterNavPanes("")).toHaveLength(37);
   });
 
-  it("labels backend terminal as Service Terminals vs Orca Workspaces", () => {
+  it("labels backend terminal as Service Terminals vs Workspaces & Agent Terminals", () => {
     const terminal = findNavPane("terminal");
     expect(terminal).toBeDefined();
     expect(terminal?.label).toBe("Service Terminals");

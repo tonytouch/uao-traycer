@@ -1,18 +1,18 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * Which machine's Orca the workspaces and agent terminals talk to: this
+ * Which machine's Workspace the workspaces and agent terminals talk to: this
  * computer's (`local`) or the one behind the desktop's upstream gateway
  * (`server`). The target is a path prefix on the desktop's own origin; its
  * proxy rewrites the `server` prefix and the renderer never sees the secret.
  */
-export type OrcaTarget = "local" | "server";
+export type WorkspaceTarget = "local" | "server";
 
-const STORAGE_KEY = "uao.orca.target";
+const STORAGE_KEY = "uao.workspaces.target";
 const listeners = new Set<() => void>();
-let current: OrcaTarget = readStored();
+let current: WorkspaceTarget = readStored();
 
-function readStored(): OrcaTarget {
+function readStored(): WorkspaceTarget {
   try {
     return window.localStorage.getItem(STORAGE_KEY) === "server"
       ? "server"
@@ -22,11 +22,11 @@ function readStored(): OrcaTarget {
   }
 }
 
-export function getOrcaTarget(): OrcaTarget {
+export function getWorkspaceTarget(): WorkspaceTarget {
   return current;
 }
 
-export function setOrcaTarget(target: OrcaTarget): void {
+export function setWorkspaceTarget(target: WorkspaceTarget): void {
   if (target === current) return;
   current = target;
   try {
@@ -37,17 +37,17 @@ export function setOrcaTarget(target: OrcaTarget): void {
   for (const listener of listeners) listener();
 }
 
-export function orcaApiPrefix(target: OrcaTarget = current): string {
-  return target === "server" ? "/uao-api/orca-server" : "/uao-api/orca";
+export function workspaceApiPrefix(target: WorkspaceTarget): string {
+  return target === "server" ? "/uao-api/workspaces-server" : "/uao-api/workspaces";
 }
 
-export function useOrcaTarget(): OrcaTarget {
+export function useWorkspaceTarget(): WorkspaceTarget {
   return useSyncExternalStore(
     (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    getOrcaTarget,
+    getWorkspaceTarget,
     () => "local",
   );
 }

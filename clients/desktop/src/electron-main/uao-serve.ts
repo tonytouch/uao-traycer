@@ -28,11 +28,11 @@ async function main(): Promise<void> {
     ...(config.pairingSecret === undefined
       ? {}
       : { pairingSecret: config.pairingSecret }),
-    orca: config.orca,
+    workspaces: config.workspaces,
   });
   // Never log the secret.
   process.stdout.write(
-    `uao-serve listening on ${server.origin} (pairing ${config.pairingSecret === undefined ? "off" : "on"}, orca ${config.orca ? "on" : "off"})\n`,
+    `uao-serve listening on ${server.origin} (pairing ${config.pairingSecret === undefined ? "off" : "on"}, workspaces ${config.workspaces ? "on" : "off"})\n`,
   );
 
   let closing = false;

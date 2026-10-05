@@ -22,10 +22,10 @@ export const PRIORITY_PANE_IDS = [
   "second-brain",
 ] as const;
 export const WORKSPACE_PANE_ID = "tasks-workspace";
-export const ORCA_PANE_ID = "orca-workspaces";
+export const WORKSPACES_PANE_ID = "workspaces";
 export const OFFICE_PANE_ID = "office";
 export function isNativeUaoPane(id: string): boolean {
-  return id === WORKSPACE_PANE_ID || id === ORCA_PANE_ID || id === OFFICE_PANE_ID;
+  return id === WORKSPACE_PANE_ID || id === WORKSPACES_PANE_ID || id === OFFICE_PANE_ID;
 }
 const paneRows: readonly (readonly [
   string,
@@ -63,11 +63,11 @@ const paneRows: readonly (readonly [
     ["tasks", "chat", "kanban", "board", "details"],
   ],
   [
-    "orca-workspaces",
-    "Orca Workspaces",
+    "workspaces",
+    "Workspaces & Agent Terminals",
     "terminal",
     "workspace",
-    ["orca", "workspaces", "worktree", "terminals", "agent", "screen"],
+    ["workspace", "workspaces", "worktree", "terminals", "agent", "screen"],
   ],
   [
     "office",

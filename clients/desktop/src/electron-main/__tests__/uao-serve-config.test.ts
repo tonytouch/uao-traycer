@@ -23,7 +23,7 @@ describe("parseServeConfig", () => {
     return file;
   }
 
-  it("defaults to loopback, port 5191, backend 5050, orca off, no secret", () => {
+  it("defaults to loopback, port 5191, backend 5050, workspace off, no secret", () => {
     expect(parseServeConfig({}, STATIC)).toEqual({
       host: "127.0.0.1",
       port: 5191,
@@ -31,11 +31,11 @@ describe("parseServeConfig", () => {
       staticDir: STATIC,
       allowedOrigins: [],
       pairingSecret: undefined,
-      orca: false,
+      workspaces: false,
     });
   });
 
-  it("reads host, ports, static dir, origins and the orca opt-in", () => {
+  it("reads host, ports, static dir, origins and the workspace opt-in", () => {
     const config = parseServeConfig(
       {
         UAO_SERVE_HOST: "100.90.167.20",
@@ -44,7 +44,7 @@ describe("parseServeConfig", () => {
         UAO_SERVE_STATIC_DIR: "/tmp/ui",
         UAO_SERVE_ALLOWED_ORIGINS: " https://a.example , https://b.example ,,",
         UAO_PAIRING_SECRET: GOOD,
-        UAO_SERVE_ORCA: "1",
+        UAO_SERVE_WORKSPACES: "1",
       },
       STATIC,
     );
@@ -55,7 +55,7 @@ describe("parseServeConfig", () => {
       staticDir: "/tmp/ui",
       allowedOrigins: ["https://a.example", "https://b.example"],
       pairingSecret: GOOD,
-      orca: true,
+      workspaces: true,
     });
   });
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { orcaApiPrefix } from "@/lib/uao/orca-target";
+import { getWorkspaceTarget, workspaceApiPrefix } from "@/lib/uao/workspaces-target";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -24,9 +24,9 @@ import {
   encodeTerminalStreamText,
   decodeTerminalStreamText,
   type TerminalStreamFrame,
-} from "@traycer-clients/shared/uao/orca-stream-protocol";
+} from "@traycer-clients/shared/uao/terminal-stream-protocol";
 
-export interface UaoOrcaTerminalXtermProps {
+export interface UaoTerminalXtermProps {
   readonly handle: string;
   readonly title: string;
   readonly connected: boolean;
@@ -176,7 +176,7 @@ function handleSnapshotFrame(
       pendingEscapeTailAnsi?: unknown;
     }>(frame.payload);
     if (!meta || meta.unavailable) {
-      ctx.fail("Orca could not reconstruct this terminal. Reconnect to retry.");
+      ctx.fail("Workspace could not reconstruct this terminal. Reconnect to retry.");
       return;
     }
     ctx.term.reset();
@@ -220,12 +220,12 @@ function handleOutputFrame(
       ? parseOutputSpan(frame.payload)
       : null;
   if (frame.opcode === TerminalStreamOpcode.OutputSpan && !span) {
-    ctx.fail("Malformed Orca output. Reconnect to restore the screen.");
+    ctx.fail("Malformed Workspace output. Reconnect to restore the screen.");
     return;
   }
   const rawLength =
     span?.rawLength ?? decodeTerminalStreamText(frame.payload).length;
-  // Orca seq is the high-water character offset, not a frame counter.
+  // Workspace seq is the high-water character offset, not a frame counter.
   if (
     frame.seq > 0 &&
     ctx.expectedSeq !== undefined &&
@@ -279,15 +279,15 @@ function handleTerminalControlFrame(
   if (frame.opcode === TerminalStreamOpcode.Error)
     ctx.fail(
       sanitizeTerminalError(frame.payload) ||
-        "Orca refused the terminal attachment.",
+        "Workspace refused the terminal attachment.",
     );
   if (frame.opcode === TerminalStreamOpcode.WriteUnavailable)
     ctx.fail(
-      "Orca refused keyboard input. Check the original session before reconnecting.",
+      "Workspace refused keyboard input. Check the original session before reconnecting.",
     );
 }
 
-export function UaoOrcaTerminalXterm(props: UaoOrcaTerminalXtermProps) {
+export function UaoTerminalXterm(props: UaoTerminalXtermProps) {
   const { handle, title, connected, writable, active, agentIdentity } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const theme = useTerminalTheme();
@@ -349,7 +349,7 @@ export function UaoOrcaTerminalXterm(props: UaoOrcaTerminalXtermProps) {
     fitAddonRef.current = fitAddon;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const streamUrl = `${protocol}//${window.location.host}${orcaApiPrefix()}/terminal/stream?terminal=${encodeURIComponent(handle)}&cols=${term.cols}&rows=${term.rows}`;
+    const streamUrl = `${protocol}//${window.location.host}${workspaceApiPrefix(getWorkspaceTarget())}/terminal/stream?terminal=${encodeURIComponent(handle)}&cols=${term.cols}&rows=${term.rows}`;
 
     setConnState("connecting");
     setStreamError(null);
@@ -429,7 +429,7 @@ export function UaoOrcaTerminalXterm(props: UaoOrcaTerminalXtermProps) {
       const bytes = new Uint8Array(event.data);
       const frame = decodeTerminalStreamFrame(bytes);
       if (frame === null || frame.streamId !== 1) {
-        ctx.fail("Invalid Orca terminal frame.");
+        ctx.fail("Invalid Workspace terminal frame.");
         return;
       }
 
@@ -518,7 +518,7 @@ export function UaoOrcaTerminalXterm(props: UaoOrcaTerminalXtermProps) {
       dataDisposable.dispose();
       resizeDisposable.dispose();
 
-      // Gracefully detach viewer (sessions survive in Orca background)
+      // Gracefully detach viewer (sessions survive in Workspace background)
       if (ws.readyState === WebSocket.OPEN) {
         try {
           const unsubFrame = encodeTerminalStreamFrame({
