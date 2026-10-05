@@ -13,7 +13,27 @@ import {
 } from "@/lib/uao/orca-adapter";
 import { uaoQueryKeys } from "@/lib/query-keys/uao-query-keys";
 
+export interface UaoDesktopConfig {
+  /** True when the desktop is paired with a server whose Orca it can drive. */
+  readonly orcaServer: boolean;
+}
+
 export const uaoQueryOptions = {
+  config: () =>
+    queryOptions({
+      queryKey: uaoQueryKeys.config(),
+      queryFn: async ({ signal }): Promise<UaoDesktopConfig> => {
+        const response = await fetch("/desktop/uao-config.json", {
+          signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+          cache: "no-store",
+        });
+        if (!response.ok) return { orcaServer: false };
+        const body = (await response.json()) as { orcaServer?: unknown };
+        return { orcaServer: body.orcaServer === true };
+      },
+      retry: false,
+      staleTime: Infinity,
+    }),
   builtUi: () =>
     queryOptions({
       queryKey: uaoQueryKeys.builtUi(),

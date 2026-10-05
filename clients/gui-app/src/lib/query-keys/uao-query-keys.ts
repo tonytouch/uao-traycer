@@ -1,6 +1,7 @@
 export const uaoQueryKeys = {
   office: () => ["uao", "office"] as const,
   officeAction: () => ["uao", "office", "action"] as const,
+  config: () => ["uao", "config"] as const,
   builtUi: () => ["uao", "built-ui"] as const,
   boards: () => ["uao", "boards"] as const,
   tasks: (board: string | undefined) => ["uao", "tasks", board] as const,

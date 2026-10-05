@@ -32,6 +32,7 @@ import {
   type OrcaWorktree,
 } from "@/lib/uao/orca-adapter";
 import { cn } from "@/lib/utils";
+import { setOrcaTarget, useOrcaTarget, type OrcaTarget } from "@/lib/uao/orca-target";
 const UaoOrcaTerminalXterm = lazy(() =>
   import("./uao-orca-terminal-xterm").then((module) => ({
     default: module.UaoOrcaTerminalXterm,
@@ -775,7 +776,7 @@ function OrcaWorkspacesConnectedPane(props: OrcaWorkspacesConnectedPaneProps) {
   );
 }
 
-export function UaoOrcaWorkspacesPane({
+function UaoOrcaWorkspacesPaneForTarget({
   active,
 }: {
   readonly active: boolean;
@@ -857,5 +858,65 @@ export function UaoOrcaWorkspacesPane({
       onOpenOrca={handleOpen}
       onRefetchStatus={handleRefreshStatus}
     />
+  );
+}
+
+const ORCA_TARGETS: readonly { readonly id: OrcaTarget; readonly label: string }[] = [
+  { id: "local", label: "This computer" },
+  { id: "server", label: "Server" },
+];
+
+/**
+ * Orca on this computer or on the paired server. The switch only appears when
+ * the desktop has a server; switching drops every cached Orca answer and
+ * remounts the pane, which closes the open terminal streams.
+ */
+export function UaoOrcaWorkspacesPane({
+  active,
+}: {
+  readonly active: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const { data: config } = useQuery(uaoQueryOptions.config());
+  const stored = useOrcaTarget();
+  const hasServer = config?.orcaServer === true;
+  const target: OrcaTarget = hasServer ? stored : "local";
+
+  const choose = useCallback(
+    (next: OrcaTarget) => {
+      if (next === target) return;
+      queryClient.removeQueries({ queryKey: ["uao", "orca"] });
+      setOrcaTarget(next);
+    },
+    [queryClient, target],
+  );
+
+  return (
+    <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+      {hasServer ? (
+        <div
+          role="radiogroup"
+          aria-label="Orca runs on"
+          className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-ui-xs"
+        >
+          <span className="text-muted-foreground">Orca runs on</span>
+          {ORCA_TARGETS.map((option) => (
+            <Button
+              key={option.id}
+              role="radio"
+              aria-checked={target === option.id}
+              variant={target === option.id ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => choose(option.id)}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+      <div className="min-h-0 flex-1">
+        <UaoOrcaWorkspacesPaneForTarget key={target} active={active} />
+      </div>
+    </div>
   );
 }

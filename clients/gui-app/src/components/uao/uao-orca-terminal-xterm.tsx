@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { orcaApiPrefix } from "@/lib/uao/orca-target";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -348,7 +349,7 @@ export function UaoOrcaTerminalXterm(props: UaoOrcaTerminalXtermProps) {
     fitAddonRef.current = fitAddon;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const streamUrl = `${protocol}//${window.location.host}/uao-api/orca/terminal/stream?terminal=${encodeURIComponent(handle)}&cols=${term.cols}&rows=${term.rows}`;
+    const streamUrl = `${protocol}//${window.location.host}${orcaApiPrefix()}/terminal/stream?terminal=${encodeURIComponent(handle)}&cols=${term.cols}&rows=${term.rows}`;
 
     setConnState("connecting");
     setStreamError(null);

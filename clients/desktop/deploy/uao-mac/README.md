@@ -18,6 +18,13 @@ SKIP_BUILD=1 ./install.sh                 # reinstall the last build
   (`{"upstream": "https://<name>.ts.net:10000/"}`); `UAO_UPSTREAM` /
   `UAO_PAIRING_SECRET` override. `UPSTREAM=` (empty) dials the backend directly
   instead, where everything except Jarvis' /ask and /speak works.
+- Orca workspaces and agent terminals have a **This computer / Server** switch. The
+  server side goes through the same gateway, so `UAO_SERVE_ORCA=1` must be set in
+  `~/.config/uao-serve/uao-serve.env` (then restart `uao-serve`). With Orca on, the
+  gateway only serves Orca routes to callers sending the pairing *header* (the
+  desktop); the phone's pairing *cookie* still gets no shell. Whoever holds the
+  pairing secret can open terminals on the server. "This computer" uses the Mac's
+  own `orca` CLI (found in `/opt/homebrew/bin`), whose Orca app must be running.
 - Installs to `~/Applications/UAO.app`. An older Orca-based `/Applications/UAO.app`
   is left alone.
 - Requires key-based SSH to the Mac. Office/GenOffice is not bundled on macOS.

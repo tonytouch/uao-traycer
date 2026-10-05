@@ -44,11 +44,14 @@ export function resolveOrcaBin(): string {
   if (envBin && envBin.trim().length > 0 && fs.existsSync(envBin)) {
     return envBin;
   }
+  // A Finder-launched app has a minimal PATH, so look in the usual installs.
   const defaultLocalBin = path.join(os.homedir(), ".local", "bin", "orca");
-  if (fs.existsSync(defaultLocalBin)) {
-    return defaultLocalBin;
-  }
-  return defaultLocalBin;
+  const candidates = [
+    defaultLocalBin,
+    "/opt/homebrew/bin/orca",
+    "/usr/local/bin/orca",
+  ];
+  return candidates.find((bin) => fs.existsSync(bin)) ?? defaultLocalBin;
 }
 
 /**

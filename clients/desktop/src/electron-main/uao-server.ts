@@ -452,6 +452,21 @@ function isSafeUnderRoot(targetPath: string, rootDir: string): boolean {
   }
 }
 
+/**
+ * Orca on the machine behind `upstream` (as opposed to the local Orca at
+ * `/uao-api/orca`). The renderer picks between them with this prefix; it is
+ * rewritten to the gateway's `/uao-api/orca` and never leaves this process.
+ */
+export const UAO_ORCA_SERVER_PREFIX = "/uao-api/orca-server";
+
+export function remapServerOrcaPath(pathname: string): string | null {
+  if (pathname === UAO_ORCA_SERVER_PREFIX) return "/uao-api/orca";
+  if (pathname.startsWith(`${UAO_ORCA_SERVER_PREFIX}/`)) {
+    return `/uao-api/orca${pathname.slice(UAO_ORCA_SERVER_PREFIX.length)}`;
+  }
+  return null;
+}
+
 export function matchUaoProxyRoute(pathname: string): {
   readonly matched: boolean;
   readonly isUaoApi: boolean;
@@ -600,6 +615,29 @@ export function startUaoServer(
     return safeEqual(cookie, sessionToken) ? "ok" : "missing";
   }
 
+  /**
+   * Orca routes run local processes. When this server is a pairing gateway
+   * they additionally demand the pairing *header* (what the desktop proxy
+   * sends), so a phone browser holding only the pairing cookie gets no shell.
+   */
+  function pairedByHeader(req: http.IncomingMessage): boolean {
+    const header = req.headers[UAO_PAIR_HEADER];
+    return (
+      pairingSecret !== undefined &&
+      typeof header === "string" &&
+      header.length > 0 &&
+      safeEqual(header, pairingSecret)
+    );
+  }
+
+  /** The gateway already validated Host/Origin; Orca's own check is loopback-only. */
+  function normalizeForOrca(req: http.IncomingMessage, port: number): void {
+    req.headers.host = `127.0.0.1:${port}`;
+    delete req.headers.origin;
+    delete req.headers.referer;
+    delete req.headers["sec-fetch-site"];
+  }
+
   function handlePairRequest(
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -696,7 +734,7 @@ export function startUaoServer(
           res.end("Bad Request");
           return;
         }
-        const pathname = parsed.pathname;
+        let pathname = parsed.pathname;
         if (
           ![
             "GET",
@@ -736,15 +774,49 @@ export function startUaoServer(
           return;
         }
 
-        // 2b. Direct bounded Orca CLI adapter
+        // 2a. Runtime config for the renderer (read-only, no secrets).
+        if (pathname === "/desktop/uao-config.json" && req.method === "GET") {
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          });
+          res.end(JSON.stringify({ orcaServer: viaGateway }));
+          return;
+        }
+
+        // 2b. Orca on the upstream machine: rewrite and fall through to the proxy.
+        const serverOrcaPath = remapServerOrcaPath(pathname);
+        if (serverOrcaPath !== null) {
+          if (!viaGateway) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({ ok: false, error: "No server configured for Orca" }),
+            );
+            return;
+          }
+          pathname = serverOrcaPath;
+        }
+
+        // 2c. Direct bounded Orca CLI adapter
         if (
-          pathname === "/uao-api/orca" ||
-          pathname.startsWith("/uao-api/orca/")
+          serverOrcaPath === null &&
+          (pathname === "/uao-api/orca" ||
+            pathname.startsWith("/uao-api/orca/"))
         ) {
           if (!orcaEnabled) {
             res.writeHead(404, { "Content-Type": "text/plain" });
             res.end("Not Found");
             return;
+          }
+          if (pairingSecret !== undefined) {
+            if (!pairedByHeader(req)) {
+              res.writeHead(403, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({ ok: false, error: "Orca needs the desktop pairing header" }),
+              );
+              return;
+            }
+            normalizeForOrca(req, port);
           }
           void handleOrcaHttpRequest(req, res, {
             port,
@@ -980,10 +1052,29 @@ export function startUaoServer(
           return;
         }
 
-        if (parsed.pathname === "/uao-api/orca/terminal/stream") {
+        const serverOrcaPath = remapServerOrcaPath(parsed.pathname);
+        if (serverOrcaPath !== null) {
+          if (!viaGateway) {
+            socket.destroy();
+            return;
+          }
+          parsed.pathname = serverOrcaPath;
+        }
+
+        if (
+          serverOrcaPath === null &&
+          parsed.pathname === "/uao-api/orca/terminal/stream"
+        ) {
           if (!orcaEnabled) {
             socket.destroy();
             return;
+          }
+          if (pairingSecret !== undefined) {
+            if (!pairedByHeader(req)) {
+              socket.destroy();
+              return;
+            }
+            normalizeForOrca(req, port);
           }
           void handleOrcaTerminalStreamUpgrade(req, socket, head, {
             port,

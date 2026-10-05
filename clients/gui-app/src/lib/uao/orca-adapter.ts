@@ -1,6 +1,6 @@
 import { fetchJson } from "./adapter";
 
-const ORCA_API_PREFIX = "/uao-api/orca";
+import { orcaApiPrefix } from "./orca-target";
 
 export type OrcaAllowedAgent = "shell" | "claude" | "codex" | "hermes";
 
@@ -116,7 +116,7 @@ export async function fetchOrcaStatus(
   signal: AbortSignal | undefined,
 ): Promise<OrcaStatusResult> {
   return fetchJson<OrcaStatusResult>(
-    `${ORCA_API_PREFIX}/status`,
+    `${orcaApiPrefix()}/status`,
     signal === undefined ? undefined : { signal },
   );
 }
@@ -125,7 +125,7 @@ export async function openOrca(
   signal: AbortSignal | undefined,
 ): Promise<OrcaOpenResult> {
   return fetchJson<OrcaOpenResult>(
-    `${ORCA_API_PREFIX}/start`,
+    `${orcaApiPrefix()}/start`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -138,7 +138,7 @@ export async function fetchOrcaRepos(
   signal: AbortSignal | undefined,
 ): Promise<readonly OrcaRepo[]> {
   const data = await fetchJson<{ readonly repos?: readonly OrcaRepo[] }>(
-    `${ORCA_API_PREFIX}/repos`,
+    `${orcaApiPrefix()}/repos`,
     signal === undefined ? undefined : { signal },
   );
   return data.repos ?? [];
@@ -148,7 +148,7 @@ export async function fetchOrcaWorktrees(
   signal: AbortSignal | undefined,
 ): Promise<readonly OrcaWorktree[]> {
   const data = await fetchJson<{ readonly worktrees?: readonly OrcaWorktree[] }>(
-    `${ORCA_API_PREFIX}/worktrees`,
+    `${orcaApiPrefix()}/worktrees`,
     signal === undefined ? undefined : { signal },
   );
   return data.worktrees ?? [];
@@ -160,7 +160,7 @@ export async function fetchOrcaTerminals(
 ): Promise<readonly OrcaTerminalSummary[]> {
   const qs = new URLSearchParams({ worktree: worktreeSelector });
   const data = await fetchJson<{ readonly terminals?: readonly OrcaTerminalSummary[] }>(
-    `${ORCA_API_PREFIX}/terminals?${qs.toString()}`,
+    `${orcaApiPrefix()}/terminals?${qs.toString()}`,
     signal === undefined ? undefined : { signal },
   );
   return data.terminals ?? [];
@@ -176,7 +176,7 @@ export async function readOrcaTerminalScreen(
     limit: String(limit ?? 300),
   });
   const data = await fetchJson<{ readonly terminal: OrcaTerminalRead }>(
-    `${ORCA_API_PREFIX}/terminal/read?${qs.toString()}`,
+    `${orcaApiPrefix()}/terminal/read?${qs.toString()}`,
     signal === undefined ? undefined : { signal },
   );
   return data.terminal;
@@ -194,7 +194,7 @@ export async function sendOrcaTerminalInput(
   signal: AbortSignal | undefined,
 ): Promise<OrcaTerminalSendResult> {
   return fetchJson<OrcaTerminalSendResult>(
-    `${ORCA_API_PREFIX}/terminal/send`,
+    `${orcaApiPrefix()}/terminal/send`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -219,7 +219,7 @@ export async function createOrcaTerminal(
   signal: AbortSignal | undefined,
 ): Promise<OrcaTerminalCreateResult> {
   return fetchJson<OrcaTerminalCreateResult>(
-    `${ORCA_API_PREFIX}/terminal/create`,
+    `${orcaApiPrefix()}/terminal/create`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
