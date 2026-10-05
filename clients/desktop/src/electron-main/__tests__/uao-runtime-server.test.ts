@@ -171,15 +171,26 @@ describe("UAO Runtime Static & Proxy Server Security", () => {
   });
 
   it("bootstraps shared activity before the embedded UI without changing its origin or CSP", async () => {
-    const response = await fetch(`${uaoServer.origin}/uao-api/?desktop-frame=1`);
+    const response = await fetch(
+      `${uaoServer.origin}/uao-api/?desktop-frame=1`,
+    );
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-security-policy")).toBe("base-uri 'self'; object-src 'none'");
+    expect(response.headers.get("content-security-policy")).toBe(
+      "base-uri 'self'; object-src 'none'",
+    );
     const html = await response.text();
     expect(html.indexOf("parent.__uaoActivitySource")).toBeGreaterThan(0);
-    expect(html.indexOf("parent.__uaoActivitySource")).toBeLessThan(html.indexOf('type="module"'));
+    expect(html.indexOf("parent.__uaoActivitySource")).toBeLessThan(
+      html.indexOf('type="module"'),
+    );
     expect(html).toContain('id="root"');
-    expect(response.headers.get("content-length")).toBe(String(Buffer.byteLength(html)));
-    expect((await fetch(`${uaoServer.origin}/uao-api/?desktop-frame=1&large=1`)).status).toBe(502);
+    expect(response.headers.get("content-length")).toBe(
+      String(Buffer.byteLength(html)),
+    );
+    expect(
+      (await fetch(`${uaoServer.origin}/uao-api/?desktop-frame=1&large=1`))
+        .status,
+    ).toBe(502);
   });
 
   afterAll(async () => {
@@ -574,17 +585,32 @@ describe("UAO Packaging Contract & Isolation", () => {
     // Output directory isolated from Traycer
     expect(parsed.directories.output).toBe("release-uao");
 
-    // Disabled inherited hooks, protocols, and publishing
+    // No Traycer afterPack hook. uao:// is this app's scheme. Publish points
+    // at the fork; package:uao still passes --publish never.
     expect(parsed.afterPack).toBeNull();
-    expect(parsed.protocols).toEqual([]);
-    expect(parsed.publish).toBeNull();
+    expect(parsed.appId).toBe("com.tonytouch.uao");
+    expect(parsed.protocols).toEqual([{ name: "UAO", schemes: ["uao"] }]);
+    expect(parsed.publish).toEqual({
+      provider: "github",
+      owner: "tonytouch",
+      repo: "uao-traycer",
+      releaseType: "release",
+    });
+    expect(parsed.linux.target).toEqual([
+      { target: "AppImage", arch: ["x64"] },
+      { target: "tar.gz", arch: ["x64"] },
+    ]);
+    expect(parsed.mac.target).toEqual([{ target: "zip", arch: ["arm64"] }]);
+    expect(parsed.mac.identity).toBeNull();
+    expect(parsed.win).toEqual({ extraResources: [], target: [] });
 
     // GenOffice assets and engines are separate from Traycer CLI/Host.
-    const officeResources = [{ from: "resources/genoffice", to: ".", filter: ["**/*"] }];
+    const officeResources = [
+      { from: "resources/genoffice", to: ".", filter: ["**/*"] },
+    ];
     expect(parsed.extraResources).toEqual(officeResources);
     expect(parsed.linux.extraResources).toEqual(officeResources);
     expect(parsed.mac.extraResources).toEqual([]);
-    expect(parsed.win.extraResources).toEqual([]);
 
     // Electron Security Fuses retained
     expect(parsed.electronFuses).toEqual({
@@ -619,7 +645,7 @@ describe("UAO Packaging Contract & Isolation", () => {
     expect(parsed.scripts["build:uao"]).toBeDefined();
     expect(parsed.scripts["build:uao:main"]).toBeDefined();
     expect(parsed.scripts["build:uao:renderer"]).toBeDefined();
-    expect(parsed.scripts["package:uao"]).toBeDefined();
+    expect(parsed.scripts["package:uao"]).toContain("--publish never");
     expect(parsed.scripts["package:uao:dir"]).toBeDefined();
   });
 });

@@ -1,14 +1,14 @@
 {
-  "appId": "ai.uao.mobile",
+  "appId": "com.tonytouch.uao",
   "appName": "UAO",
   "webDir": "www",
   "server": {
     "androidScheme": "https",
     "allowNavigation": ["server.tail85e19.ts.net"],
-    "cleartext": false
+    "cleartext": true
   },
   "android": {
-    "allowMixedContent": false,
+    "allowMixedContent": true,
     "webContentsDebuggingEnabled": false
   }
 }

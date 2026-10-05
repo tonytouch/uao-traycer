@@ -14,10 +14,10 @@ def releaseSigningConfigured = requiredReleaseSigningProperties.every { key ->
 }
 
 android {
-    namespace = "ai.uao.mobile"
+    namespace = "com.tonytouch.uao"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "ai.uao.mobile"
+        applicationId "com.tonytouch.uao"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

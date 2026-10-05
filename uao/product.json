@@ -1,0 +1,9 @@
+{
+  "productName": "UAO",
+  "appId": "com.tonytouch.uao",
+  "mobileAndroidPackage": "com.tonytouch.uao",
+  "githubOwner": "tonytouch",
+  "githubRepo": "uao-traycer",
+  "linuxExecutableName": "uao-desktop",
+  "deepLinkScheme": "uao"
+}

@@ -2,12 +2,11 @@
 <!--
     Debug-variant overlay. The dev loop is entirely plain-http loopback: the
     live-reload bundle, the authn/cloud-ui origins baked by `vite.config.ts`,
-    and the host's `ws://127.0.0.1:<port>` RPC socket. Android blocks cleartext
-    by default from API 28 on, so debug builds need an explicit exemption.
+    and the host's `ws://127.0.0.1:<port>` RPC socket.
 
-    Scoped rather than blanket: `android:usesCleartextTraffic="true"` would
-    open every host, and it would live in the same merged manifest a release
-    build eventually inherits if the overlay were ever moved to `main/`.
+    `src/debug/res` replaces `src/main/res/xml/network_security_config.xml`.
+    Release keeps the main file, which allows cleartext so Tailscale
+    `http://100.x` can load. Debug narrows that back to loopback.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application android:networkSecurityConfig="@xml/network_security_config" />

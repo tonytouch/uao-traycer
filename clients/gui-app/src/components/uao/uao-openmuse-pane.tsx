@@ -15,29 +15,8 @@ import {
   type OpenMuseEndpointConfig,
   type OpenMuseHealth,
 } from "@traycer-clients/shared/openmuse";
+import { mountRemoteHttpGuest } from "@/lib/uao/remote-guest";
 import { UaoOpenMuseEndpoints } from "./uao-openmuse-endpoints";
-
-interface GuestLoadFailure {
-  readonly code: number;
-  readonly description: string;
-  readonly mainFrame: boolean;
-}
-
-function readGuestLoadFailure(event: Event): GuestLoadFailure | null {
-  if (!("errorCode" in event) || typeof event.errorCode !== "number")
-    return null;
-  if (
-    !("errorDescription" in event) ||
-    typeof event.errorDescription !== "string"
-  )
-    return null;
-  const mainFrame = !("isMainFrame" in event) || event.isMainFrame !== false;
-  return {
-    code: event.errorCode,
-    description: event.errorDescription,
-    mainFrame,
-  };
-}
 
 function queryErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message !== "") return error.message;
@@ -159,33 +138,14 @@ function UaoOpenMuseGuest({
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return undefined;
-    let disposed = false;
-    const webview = document.createElement("webview");
-    webview.setAttribute("partition", OPENMUSE_PARTITION);
-    webview.setAttribute("aria-label", "OpenMuse");
-    webview.setAttribute("title", "OpenMuse");
-    webview.style.width = "100%";
-    webview.style.height = "100%";
-    webview.style.border = "none";
-    const onFail = (event: Event) => {
-      const failure = readGuestLoadFailure(event);
-      if (failure === null || !failure.mainFrame || failure.code === -3) return;
-      if (disposed) return;
-      onErrorRef.current(`${failure.description} (${String(failure.code)})`);
-    };
-    const onStop = () => {
-      if (!disposed) onReadyRef.current();
-    };
-    webview.addEventListener("did-fail-load", onFail);
-    webview.addEventListener("did-stop-loading", onStop);
-    webview.setAttribute("src", webUrl);
-    container.appendChild(webview);
-    return () => {
-      disposed = true;
-      webview.removeEventListener("did-fail-load", onFail);
-      webview.removeEventListener("did-stop-loading", onStop);
-      webview.remove();
-    };
+    return mountRemoteHttpGuest({
+      container,
+      url: webUrl,
+      title: "OpenMuse",
+      partition: OPENMUSE_PARTITION,
+      onReady: () => onReadyRef.current(),
+      onError: (message) => onErrorRef.current(message),
+    });
   }, [webUrl]);
   return <div ref={containerRef} className="h-full w-full" />;
 }

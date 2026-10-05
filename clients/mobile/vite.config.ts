@@ -125,7 +125,7 @@ function shippedConfig(
     signInUrl: new URL("/sign-in", backends.cloudUiBaseUrl).toString(),
     relayBaseUrl: backends.relayBaseUrl,
     // Authn shows this on the device-flow approval page as who is asking.
-    hostLabel: "Traycer Mobile",
+    hostLabel: "UAO",
     returnScheme: SHIPPED_RETURN_SCHEMES[environment],
     sentryDsn: sentryDsnFromEnv(process.env),
     // No loopback host to dial: the shipped client discovers hosts through

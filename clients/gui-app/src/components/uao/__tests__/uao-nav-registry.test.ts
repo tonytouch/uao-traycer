@@ -238,20 +238,21 @@ describe("Dev-gated UAO Content-Security-Policy", () => {
 
     const directives = buildCspDirectives(uaoEnv);
 
-    // frame-src allows self and inspected tool origins
+    // frame-src keeps the same-origin shell and allows the Tailscale http pages.
     const frameSrc = directives.find((d) => d.startsWith("frame-src"));
-    expect(frameSrc).toBe(`frame-src ${UAO_EMBEDDED_TOOL_ORIGINS}`);
+    expect(frameSrc).toBe(
+      `frame-src ${UAO_EMBEDDED_TOOL_ORIGINS} http: https:`,
+    );
     expect(frameSrc).toContain("'self'");
-    expect(frameSrc).toBe("frame-src 'self'");
 
     // object-src, base-uri, and form-action remain strictly locked down
     expect(directives).toContain("object-src 'none'");
     expect(directives).toContain("base-uri 'self'");
     expect(directives).toContain("form-action 'self'");
 
-    // The backend is same-origin; no extra connection origins are needed.
     const connectSrc = directives.find((d) => d.startsWith("connect-src"));
-    expect(connectSrc).toBe(
+    expect(connectSrc).toContain(" http:");
+    expect(connectSrc).not.toBe(
       buildCspDirectives({}).find((d) => d.startsWith("connect-src")),
     );
   });

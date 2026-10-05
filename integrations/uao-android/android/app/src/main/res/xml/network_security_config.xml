@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The pairing page is https. Agent OS, CloudRoom, and OpenMuse inside it
+    are http://100.x. Android <domain> rules do not match raw IPs and cannot
+    express 100.64.0.0/10, so base-config allows cleartext. Mixed content is
+    enabled in capacitor.config.json so the https page can embed those URLs.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

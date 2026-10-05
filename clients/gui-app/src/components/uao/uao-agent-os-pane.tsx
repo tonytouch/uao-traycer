@@ -14,29 +14,8 @@ import {
   agentOsEmbedUrl,
   type AgentOsProbe,
 } from "@traycer-clients/shared/agent-os-endpoints";
+import { mountRemoteHttpGuest } from "@/lib/uao/remote-guest";
 import { UaoAgentOsEndpoints } from "./uao-agent-os-endpoints";
-
-interface GuestLoadFailure {
-  readonly code: number;
-  readonly description: string;
-  readonly mainFrame: boolean;
-}
-
-function readGuestLoadFailure(event: Event): GuestLoadFailure | null {
-  if (!("errorCode" in event) || typeof event.errorCode !== "number")
-    return null;
-  if (
-    !("errorDescription" in event) ||
-    typeof event.errorDescription !== "string"
-  )
-    return null;
-  const mainFrame = !("isMainFrame" in event) || event.isMainFrame !== false;
-  return {
-    code: event.errorCode,
-    description: event.errorDescription,
-    mainFrame,
-  };
-}
 
 function queryErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message !== "") return error.message;
@@ -114,33 +93,14 @@ function UaoAgentOsGuest({
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return undefined;
-    let disposed = false;
-    const webview = document.createElement("webview");
-    webview.setAttribute("partition", AGENT_OS_WEBVIEW_PARTITION);
-    webview.setAttribute("aria-label", "Agent OS");
-    webview.setAttribute("title", "Agent OS");
-    webview.style.width = "100%";
-    webview.style.height = "100%";
-    webview.style.border = "none";
-    const onFail = (event: Event) => {
-      const failure = readGuestLoadFailure(event);
-      if (failure === null || !failure.mainFrame || failure.code === -3) return;
-      if (disposed) return;
-      onErrorRef.current(`${failure.description} (${String(failure.code)})`);
-    };
-    const onStop = () => {
-      if (!disposed) onReadyRef.current();
-    };
-    webview.addEventListener("did-fail-load", onFail);
-    webview.addEventListener("did-stop-loading", onStop);
-    webview.setAttribute("src", embedUrl);
-    container.appendChild(webview);
-    return () => {
-      disposed = true;
-      webview.removeEventListener("did-fail-load", onFail);
-      webview.removeEventListener("did-stop-loading", onStop);
-      webview.remove();
-    };
+    return mountRemoteHttpGuest({
+      container,
+      url: embedUrl,
+      title: "Agent OS",
+      partition: AGENT_OS_WEBVIEW_PARTITION,
+      onReady: () => onReadyRef.current(),
+      onError: (message) => onErrorRef.current(message),
+    });
   }, [embedUrl]);
   return <div ref={containerRef} className="h-full w-full" />;
 }

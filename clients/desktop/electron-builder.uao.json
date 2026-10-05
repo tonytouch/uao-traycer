@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "ai.uao.desktop",
+  "appId": "com.tonytouch.uao",
   "productName": "UAO",
   "artifactName": "uao-desktop-${arch}.${ext}",
   "asar": true,
@@ -17,15 +17,23 @@
     "output": "release-uao"
   },
   "afterPack": null,
-  "protocols": [],
-  "publish": null,
+  "protocols": [
+    {
+      "name": "UAO",
+      "schemes": ["uao"]
+    }
+  ],
+  "publish": {
+    "provider": "github",
+    "owner": "tonytouch",
+    "repo": "uao-traycer",
+    "releaseType": "release"
+  },
   "extraResources": [
     {
       "from": "resources/genoffice",
       "to": ".",
-      "filter": [
-        "**/*"
-      ]
+      "filter": ["**/*"]
     }
   ],
   "files": [
@@ -52,17 +60,17 @@
       {
         "from": "resources/genoffice",
         "to": ".",
-        "filter": [
-          "**/*"
-        ]
+        "filter": ["**/*"]
       }
     ],
     "target": [
       {
         "target": "AppImage",
-        "arch": [
-          "x64"
-        ]
+        "arch": ["x64"]
+      },
+      {
+        "target": "tar.gz",
+        "arch": ["x64"]
       }
     ]
   },
@@ -75,14 +83,13 @@
     "target": [
       {
         "target": "zip",
-        "arch": [
-          "arm64"
-        ]
+        "arch": ["arm64"]
       }
     ]
   },
   "win": {
-    "extraResources": []
+    "extraResources": [],
+    "target": []
   },
   "npmRebuild": false
 }

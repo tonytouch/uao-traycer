@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   OPENMUSE_DEFAULT_API_URL,
   OPENMUSE_DEFAULT_WEB_URL,
-  OPENMUSE_PARTITION,
   type OpenMuseEndpointConfig,
   type OpenMuseHealth,
   type UaoOpenMuseApi,
@@ -95,10 +94,11 @@ describe("OpenMuse page", () => {
     });
     renderPane();
     await waitFor(() => {
-      const guest = document.querySelector("webview");
+      const guest = document.querySelector("iframe");
       expect(guest?.getAttribute("src")).toBe(OPENMUSE_DEFAULT_WEB_URL);
-      expect(guest?.getAttribute("partition")).toBe(OPENMUSE_PARTITION);
+      expect(guest?.getAttribute("title")).toBe("OpenMuse");
     });
+    expect(document.querySelector("webview")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -123,7 +123,7 @@ describe("OpenMuse page", () => {
     renderPane();
     expect(await screen.findByText(/did not report ok/)).toBeTruthy();
     await waitFor(() => {
-      expect(document.querySelector("webview")?.getAttribute("src")).toBe(
+      expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
         OPENMUSE_DEFAULT_WEB_URL,
       );
     });
