@@ -99,6 +99,14 @@ describe.skipIf(!hasTmux())("WorkspaceRuntime (real git + tmux)", () => {
     expect(terminal.handle).toMatch(/^term_/);
     expect(terminal.writable).toBe(true);
 
+    // Never global: tmux 3.6 on macOS exits the server on session creation if it is.
+    const tmuxOption = (...args: string[]): string =>
+      execFileSync("tmux", ["-L", socket, "show-options", ...args, "window-size"], {
+        encoding: "utf8",
+      }).trim();
+    expect(tmuxOption("-wv", "-t", terminal.handle)).toBe("manual");
+    expect(tmuxOption("-gv")).not.toBe("manual");
+
     const sent = await runtime.sendToTerminal(terminal.handle, {
       text: "echo uao-$((20+22))",
       enter: true,
@@ -121,6 +129,53 @@ describe.skipIf(!hasTmux())("WorkspaceRuntime (real git + tmux)", () => {
 
     await runtime.closeTerminal(terminal.handle);
     expect(await runtime.hasTerminal(terminal.handle)).toBe(false);
+  });
+
+  it("answers terminal queries for a terminal with no viewer attached", async () => {
+    const probe = path.join(root, "probe.py");
+    fs.writeFileSync(
+      probe,
+      [
+        "import os, select, sys, termios, time, tty",
+        "fd = sys.stdin.fileno(); old = termios.tcgetattr(fd); tty.setraw(fd)",
+        "def ask(seq):",
+        "    os.write(1, seq.encode()); buf = b''; end = time.time() + 2",
+        "    while time.time() < end:",
+        "        if select.select([fd], [], [], 0.2)[0]:",
+        "            buf += os.read(fd, 256); break",
+        "    return buf.hex()",
+        "da1 = ask('\\x1b[c'); bg = ask('\\x1b]11;?\\x07')",
+        "termios.tcsetattr(fd, termios.TCSADRAIN, old)",
+        "print('DA1=' + da1); print('BG=' + bg)",
+        "",
+      ].join("\n"),
+    );
+    const hex = (text: string): string => Buffer.from(text, "latin1").toString("hex");
+
+    await runtime.setTerminalColors({ fg: "#112233", bg: "#aabbcc" });
+    const main = (await runtime.listWorktrees())[0];
+    const terminal = await runtime.createTerminal(`id:${main?.worktreeId ?? ""}`, "shell");
+    await runtime.sendToTerminal(terminal.handle, { text: `python3 ${probe}`, enter: true });
+
+    let tail: readonly string[] = [];
+    for (let i = 0; i < 50 && !tail.some((l) => l.startsWith("BG=")); i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      tail = (await runtime.readTerminal(terminal.handle, 50)).tail;
+    }
+    await runtime.closeTerminal(terminal.handle);
+
+    const da1 = tail.find((l) => l.startsWith("DA1="));
+    const bg = tail.find((l) => l.startsWith("BG="));
+    expect(da1?.slice(4)).toBe(hex("\u001b[?1;2;4c"));
+    expect(bg?.slice(3)).toBe(hex("\u001b]11;rgb:aaaa/bbbb/cccc\u0007"));
+  });
+
+  it("ignores colours that are not #rrggbb", async () => {
+    await runtime.setTerminalColors({ fg: "red; kill-server", bg: "#000000" });
+    const style = execFileSync("tmux", ["-L", socket, "show-options", "-gv", "window-style"], {
+      encoding: "utf8",
+    }).trim();
+    expect(style).toBe("fg=#112233,bg=#aabbcc");
   });
 
   it("refuses to remove a repo that still has terminals", async () => {

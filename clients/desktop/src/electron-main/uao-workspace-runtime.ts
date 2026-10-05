@@ -108,6 +108,22 @@ export const defaultExec = (
     );
   });
 
+export interface TerminalColors {
+  readonly fg: string;
+  readonly bg: string;
+}
+
+/** Dark default so a program that asks never sees tmux's black-on-black. */
+export const DEFAULT_TERMINAL_COLORS: TerminalColors = { fg: "#d4d4d4", bg: "#1e1e1e" };
+
+export function isHexColor(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+export function terminalWindowStyle(colors: TerminalColors): string {
+  return `fg=${colors.fg.toLowerCase()},bg=${colors.bg.toLowerCase()}`;
+}
+
 /** Decode a tmux control-mode `%output` payload (octal-escaped bytes). */
 export function decodeTmuxOutput(escaped: string): Buffer {
   const out: number[] = [];
@@ -180,6 +196,7 @@ export class WorkspaceRuntime {
   readonly worktreesDir: string;
   readonly tmuxSocket: string;
   private readonly exec: ExecFn;
+  private windowStyle: string = terminalWindowStyle(DEFAULT_TERMINAL_COLORS);
   private readonly shell: string;
   private serverReady: Promise<void> | null = null;
   private chain: Promise<unknown> = Promise.resolve();
@@ -230,11 +247,6 @@ export class WorkspaceRuntime {
       ";",
       "set-option",
       "-g",
-      "window-size",
-      "manual",
-      ";",
-      "set-option",
-      "-g",
       "status",
       "off",
       ";",
@@ -257,8 +269,29 @@ export class WorkspaceRuntime {
       "-g",
       "default-terminal",
       "tmux-256color",
+      ";",
+      "set-option",
+      "-g",
+      "window-style",
+      terminalWindowStyle(DEFAULT_TERMINAL_COLORS),
     ]).then(() => undefined);
     return this.serverReady;
+  }
+
+  /**
+   * Tell tmux which colors the viewer paints. tmux answers a program's
+   * OSC 10/11 (foreground/background) query itself, even with no client
+   * attached, but only from `window-style`; unset it replies black on black
+   * with a control-mode client and not at all when detached, so TUIs that
+   * probe for a light or dark theme guess wrong or stall.
+   */
+  async setTerminalColors(colors: TerminalColors): Promise<void> {
+    if (!isHexColor(colors.fg) || !isHexColor(colors.bg)) return;
+    const style = terminalWindowStyle(colors);
+    if (style === this.windowStyle) return;
+    await this.ensureServer();
+    const result = await this.tmux(["set-option", "-g", "window-style", style]);
+    if (result.ok) this.windowStyle = style;
   }
 
   async tmuxAvailable(): Promise<boolean> {
@@ -633,6 +666,15 @@ export class WorkspaceRuntime {
       "-y",
       "32",
       command,
+      ";",
+      // Per window, after creation: tmux 3.6 on macOS exits the server when a
+      // session is created while `window-size manual` is set globally.
+      "set-option",
+      "-w",
+      "-t",
+      handle,
+      "window-size",
+      "manual",
       ";",
       "set-option",
       "-t",

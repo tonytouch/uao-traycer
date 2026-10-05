@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getWorkspaceTarget, workspaceApiPrefix } from "@/lib/uao/workspaces-target";
-import { Terminal } from "@xterm/xterm";
+import { formatHex, parse } from "culori";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
@@ -287,6 +288,17 @@ function handleTerminalControlFrame(
     );
 }
 
+/**
+ * The viewer's colors as #rrggbb, for the runtime to answer OSC 10/11 colour
+ * queries from programs in a terminal nobody is attached to.
+ */
+function themeColors(theme: ITheme): { fg: string; bg: string } | null {
+  const fg = theme.foreground === undefined ? undefined : parse(theme.foreground);
+  const bg = theme.background === undefined ? undefined : parse(theme.background);
+  if (fg === undefined || bg === undefined) return null;
+  return { fg: formatHex(fg), bg: formatHex(bg) };
+}
+
 export function UaoTerminalXterm(props: UaoTerminalXtermProps) {
   const { handle, title, connected, writable, active, agentIdentity } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -308,8 +320,21 @@ export function UaoTerminalXterm(props: UaoTerminalXtermProps) {
   // Update xterm theme when resolved theme changes
   useEffect(() => {
     themeRef.current = theme;
-    if (termRef.current) {
-      termRef.current.options.theme = theme;
+    const term = termRef.current;
+    if (term) {
+      term.options.theme = theme;
+      const ws = wsRef.current;
+      const colors = themeColors(theme);
+      if (ws?.readyState === WebSocket.OPEN && colors !== null) {
+        ws.send(
+          encodeTerminalStreamFrame({
+            opcode: TerminalStreamOpcode.Resize,
+            streamId: 1,
+            seq: 0,
+            payload: encodeTerminalStreamJson({ cols: term.cols, rows: term.rows, ...colors }),
+          }),
+        );
+      }
     }
   }, [theme]);
 
@@ -359,7 +384,8 @@ export function UaoTerminalXterm(props: UaoTerminalXtermProps) {
 
     const sendViewport = (cols: number, rows: number, claim: boolean): void => {
       if (ws.readyState === WebSocket.OPEN) {
-        const claimPayload = encodeTerminalStreamJson({ cols, rows });
+        const colors = themeColors(themeRef.current);
+        const claimPayload = encodeTerminalStreamJson({ cols, rows, ...colors });
         const claimFrame = encodeTerminalStreamFrame({
           opcode: TerminalStreamOpcode.ClaimViewport,
           streamId: 1,

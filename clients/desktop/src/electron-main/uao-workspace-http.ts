@@ -23,6 +23,7 @@ import {
   WORKSPACE_AGENTS,
   WorkspaceError,
   decodeTmuxOutput,
+  isHexColor,
   type WorkspaceAgent,
   type WorkspaceRuntime,
 } from "./uao-workspace-runtime";
@@ -489,7 +490,15 @@ export async function handleWorkspaceStreamUpgrade(
         term.opcode === TerminalStreamOpcode.Resize ||
         term.opcode === TerminalStreamOpcode.ClaimViewport
       ) {
-        const size = decodeTerminalStreamJson<{ cols?: unknown; rows?: unknown }>(term.payload);
+        const size = decodeTerminalStreamJson<{
+          cols?: unknown;
+          rows?: unknown;
+          fg?: unknown;
+          bg?: unknown;
+        }>(term.payload);
+        if (size !== null && isHexColor(size.fg) && isHexColor(size.bg)) {
+          void runtime.setTerminalColors({ fg: size.fg, bg: size.bg });
+        }
         if (size !== null) {
           const cols = clampInt(size.cols, 2, 500, 0);
           const rows = clampInt(size.rows, 2, 300, 0);
