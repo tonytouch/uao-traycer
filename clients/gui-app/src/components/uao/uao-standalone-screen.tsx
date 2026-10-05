@@ -16,6 +16,7 @@ import { ThemeProvider } from "@/providers/theme-provider";
 import { cn } from "@/lib/utils";
 import type { KanbanBoard } from "@/lib/uao/adapter";
 import { discardDrafts } from "@/lib/uao/draft-persistence";
+import { openmuseConfigQueryOptions } from "@/lib/uao/openmuse";
 import { uaoQueryOptions } from "@/lib/uao/query-options";
 import { UaoEmbeddedPane } from "./uao-embedded-pane";
 import { UaoKanbanTasksPane } from "./uao-kanban-tasks-pane";
@@ -33,10 +34,13 @@ import {
   OFFICE_PANE_ID,
   AGENT_OS_PANE_ID,
   CLOUDROOM_PANE_ID,
+  OPENMUSE_PANE_ID,
   WORKSPACE_PANE_ID,
+  isOpenMuseSidebarVisible,
 } from "./uao-nav-registry";
 import { UaoAgentOsPane } from "./uao-agent-os-pane";
 import { UaoCloudroomPane } from "./uao-cloudroom-pane";
+import { UaoOpenMusePane } from "./uao-openmuse-pane";
 import { UaoSidebar } from "./uao-sidebar";
 import { UaoTaskDetailPane } from "./uao-task-detail-pane";
 import { UaoWorktabsBar } from "./uao-worktabs-bar";
@@ -58,6 +62,29 @@ import {
 } from "./uao-worktabs-state";
 import { WorkspaceResizeDivider } from "./uao-workspace-divider";
 import { UaoActivitySource } from "@/lib/uao/activity-source";
+
+function UaoOpenMusePanel({
+  visited,
+  active,
+}: {
+  readonly visited: boolean;
+  readonly active: boolean;
+}) {
+  if (!visited) return null;
+  return (
+    <div
+      id={`uao-panel-${OPENMUSE_PANE_ID}`}
+      role="tabpanel"
+      aria-labelledby={`uao-tab-${OPENMUSE_PANE_ID}`}
+      hidden={!active}
+      className="h-full min-h-0"
+    >
+      <UaoPaneBoundary label="OpenMuse">
+        <UaoOpenMusePane />
+      </UaoPaneBoundary>
+    </div>
+  );
+}
 
 function UaoCloudroomPanel({
   visited,
@@ -428,6 +455,21 @@ function UaoStandaloneScreenInner() {
   >(null);
 
   const boardsQuery = useQuery(uaoQueryOptions.boards());
+  const openmuseConfigQuery = useQuery(openmuseConfigQueryOptions());
+  const hiddenPaneIds = useMemo(() => {
+    const configuredWebUrl = openmuseConfigQuery.isSuccess
+      ? openmuseConfigQuery.data.webUrl
+      : null;
+    const worktabOpen = tabsState.tabs.some(
+      (tab) => tab.ownerId === OPENMUSE_PANE_ID,
+    );
+    return isOpenMuseSidebarVisible({
+      webUrl: configuredWebUrl,
+      worktabOpen,
+    })
+      ? []
+      : [OPENMUSE_PANE_ID];
+  }, [openmuseConfigQuery.isSuccess, openmuseConfigQuery.data, tabsState.tabs]);
   const boards: readonly KanbanBoard[] = boardsQuery.data ?? [];
   const activeBoard = activeBoardSelection ?? boards.at(0)?.slug;
 
@@ -610,6 +652,7 @@ function UaoStandaloneScreenInner() {
           onSelectPane={handleSelectPane}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={handleToggleSidebar}
+          hiddenPaneIds={hiddenPaneIds}
         />
 
         {/* Content Area with Worktabs Bar */}
@@ -687,6 +730,10 @@ function UaoStandaloneScreenInner() {
           <UaoCloudroomPanel
             visited={visitedOwners.has(CLOUDROOM_PANE_ID)}
             active={tabsState.activeOwnerId === CLOUDROOM_PANE_ID}
+          />
+          <UaoOpenMusePanel
+            visited={visitedOwners.has(OPENMUSE_PANE_ID)}
+            active={tabsState.activeOwnerId === OPENMUSE_PANE_ID}
           />
           {visitedOwners.has(OFFICE_PANE_ID) ? (
             <div

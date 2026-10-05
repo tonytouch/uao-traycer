@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
+  Globe,
   Inbox,
   MessageCircle,
   Mic,
@@ -40,6 +41,7 @@ const icons: Readonly<Record<string, LucideIcon>> = {
   "bar-chart-2": BarChart2,
   boxes: Boxes,
   "file-text": FileText,
+  globe: Globe,
   inbox: Inbox,
   "message-circle": MessageCircle,
   mic: Mic,
@@ -62,6 +64,15 @@ interface UaoSidebarProps {
   readonly onSelectPane: (paneId: string) => void;
   readonly collapsed: boolean;
   readonly onToggleCollapsed: () => void;
+  readonly hiddenPaneIds: readonly string[];
+}
+
+function visiblePanes(
+  panes: readonly UaoNavPane[],
+  hiddenPaneIds: ReadonlySet<string>,
+): readonly UaoNavPane[] {
+  if (hiddenPaneIds.size === 0) return panes;
+  return panes.filter((pane) => !hiddenPaneIds.has(pane.id));
 }
 
 export function UaoSidebar({
@@ -69,13 +80,25 @@ export function UaoSidebar({
   onSelectPane,
   collapsed,
   onToggleCollapsed,
+  hiddenPaneIds,
 }: UaoSidebarProps) {
   const [search, setSearch] = useState("");
   const [closedGroups, setClosedGroups] = useState<ReadonlySet<string>>(
     new Set(),
   );
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const matches = useMemo(() => filterNavPanes(search), [search]);
+  const hiddenPaneIdSet = useMemo(
+    () => new Set(hiddenPaneIds),
+    [hiddenPaneIds],
+  );
+  const matches = useMemo(
+    () => visiblePanes(filterNavPanes(search), hiddenPaneIdSet),
+    [search, hiddenPaneIdSet],
+  );
+  const collapsedPanes = useMemo(
+    () => visiblePanes(DEFAULT_COLLAPSED_PANES, hiddenPaneIdSet),
+    [hiddenPaneIdSet],
+  );
 
   const focusSearch = useEffectEvent((event: KeyboardEvent) => {
     if (event.defaultPrevented) return;
@@ -101,7 +124,13 @@ export function UaoSidebar({
     const tooltipText = livesIn ? `${pane.label} (in ${livesIn})` : pane.label;
 
     return (
-      <TooltipWrapper key={pane.id} label={tooltipText} side="right" sideOffset={undefined} align={undefined}>
+      <TooltipWrapper
+        key={pane.id}
+        label={tooltipText}
+        side="right"
+        sideOffset={undefined}
+        align={undefined}
+      >
         <button
           type="button"
           aria-label={tooltipText}
@@ -176,7 +205,7 @@ export function UaoSidebar({
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {collapsed ? DEFAULT_COLLAPSED_PANES.map(renderPane) : null}
+        {collapsed ? collapsedPanes.map(renderPane) : null}
         {!collapsed && search.trim() && (
           <>
             <p
@@ -216,7 +245,7 @@ export function UaoSidebar({
                   )}
                 </button>
                 <div id={`uao-nav-${group.id}`} hidden={!open}>
-                  {group.panes.map(renderPane)}
+                  {visiblePanes(group.panes, hiddenPaneIdSet).map(renderPane)}
                 </div>
               </section>
             );

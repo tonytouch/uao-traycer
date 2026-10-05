@@ -8,6 +8,10 @@ import {
   tailscaleCleartextOrigins,
 } from "@traycer-clients/shared/agent-os-endpoints";
 import { CLOUDROOM_DEFAULT_BASE_URL } from "@traycer-clients/shared/cloudroom";
+import {
+  OPENMUSE_DEFAULT_API_URL,
+  OPENMUSE_DEFAULT_WEB_URL,
+} from "@traycer-clients/shared/openmuse";
 import { initLogger, log } from "./app/logger";
 import {
   clampSessionTls,
@@ -23,6 +27,7 @@ import { startUaoServer, type UaoServerInstance } from "./uao-server";
 import { prepareUaoOffice, attachUaoOffice } from "./uao-office";
 import { attachAgentOs } from "./agent-os-service";
 import { attachCloudroom } from "./cloudroom-service";
+import { attachOpenMuse } from "./openmuse-service";
 import { collectUaoCleartextSwitch } from "./cloudroom-store";
 
 /**
@@ -78,8 +83,8 @@ let serverInstance: UaoServerInstance | null = null;
 
 /**
  * Linux Electron treats a plain-http Tailscale address as an insecure origin.
- * Mark the saved 100.64/10 http origins secure before ready so Agent OS and
- * CloudRoom can use them. This does not allow arbitrary cleartext.
+ * Mark the saved 100.64/10 http origins secure before ready so Agent OS,
+ * CloudRoom, and OpenMuse can use them. This does not allow arbitrary cleartext.
  */
 function installUaoCleartext(): void {
   let value = tailscaleCleartextOrigins([
@@ -87,6 +92,8 @@ function installUaoCleartext(): void {
     AGENT_OS_DEFAULT_HERMES_URL,
     AGENT_OS_DEFAULT_OMNIROUTE_URL,
     CLOUDROOM_DEFAULT_BASE_URL,
+    OPENMUSE_DEFAULT_WEB_URL,
+    OPENMUSE_DEFAULT_API_URL,
   ]);
   try {
     value = collectUaoCleartextSwitch(app.getPath("userData"));
@@ -207,7 +214,7 @@ async function startUaoDesktop(): Promise<void> {
       nodeIntegration: false,
       sandbox: true,
       devTools: true,
-      // The Agent OS page is a guest. will-attach-webview admits only its origin.
+      // Agent OS and OpenMuse are guests. will-attach-webview admits only their origins.
       webviewTag: true,
     },
   });
@@ -215,6 +222,7 @@ async function startUaoDesktop(): Promise<void> {
   attachUaoOffice(uaoWindow, serverInstance.origin, officeRuntime);
   attachAgentOs(uaoWindow, serverInstance.origin, app.getPath("userData"));
   attachCloudroom(uaoWindow, serverInstance.origin, app.getPath("userData"));
+  attachOpenMuse(uaoWindow, serverInstance.origin, app.getPath("userData"));
 
   uaoWindow.on("closed", () => {
     uaoWindow = null;

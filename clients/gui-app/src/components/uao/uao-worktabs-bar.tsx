@@ -4,6 +4,7 @@ import {
   BarChart2,
   Boxes,
   FileText,
+  Globe,
   Inbox,
   MessageCircle,
   Mic,
@@ -29,6 +30,7 @@ const tabIcons: Readonly<Record<string, LucideIcon>> = {
   "bar-chart-2": BarChart2,
   boxes: Boxes,
   "file-text": FileText,
+  globe: Globe,
   inbox: Inbox,
   "message-circle": MessageCircle,
   mic: Mic,
@@ -108,7 +110,12 @@ function UaoWorktabItem({
           : "border-b-2 border-transparent text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
       )}
     >
-      <TooltipWrapper label={fullTitle} side="bottom" sideOffset={undefined} align={undefined}>
+      <TooltipWrapper
+        label={fullTitle}
+        side="bottom"
+        sideOffset={undefined}
+        align={undefined}
+      >
         <button
           ref={(el) => registerRef(tab.ownerId, el)}
           type="button"

@@ -22,6 +22,10 @@ import {
   type AgentOsTokenWriteResult,
   type UaoStoredTokenService,
 } from "@traycer-clients/shared/agent-os-endpoints";
+import {
+  openMuseFromStored,
+  type OpenMuseEndpointConfig,
+} from "@traycer-clients/shared/openmuse";
 
 const ENDPOINT_FILE = "agent-os-endpoints.json";
 const TOKEN_DIR = "agent-os-tokens";
@@ -51,46 +55,97 @@ function endpointPath(directory: string): string {
   return join(directory, ENDPOINT_FILE);
 }
 
+function readStoredRecord(directory: string): Record<string, unknown> | null {
+  const path = endpointPath(directory);
+  if (!existsSync(path)) return null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeEndpointFile(
+  directory: string,
+  body: Record<string, unknown>,
+): void {
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const path = endpointPath(directory);
+  writeFileSync(path, JSON.stringify(body), { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+/** OpenMuse URLs live in the Phase 1 file. A missing file uses the Tailscale defaults. */
+export function readOpenMuseEndpoints(
+  directory: string,
+): OpenMuseEndpointConfig {
+  return openMuseFromStored(readStoredRecord(directory));
+}
+
+function preservedOpenMuseFields(
+  stored: Record<string, unknown> | null,
+): Record<string, string> {
+  if (stored === null) return {};
+  const endpoints = openMuseFromStored(stored);
+  const fields: Record<string, string> = {};
+  if (Object.hasOwn(stored, "openmuseUrl"))
+    fields.openmuseUrl = endpoints.webUrl;
+  if (Object.hasOwn(stored, "openmuseApiUrl")) {
+    fields.openmuseApiUrl = endpoints.apiUrl;
+  }
+  return fields;
+}
+
 function tokenPath(directory: string, service: UaoStoredTokenService): string {
   return join(directory, TOKEN_DIR, service);
 }
 
 export function readAgentOsEndpoints(directory: string): AgentOsEndpointConfig {
-  const path = endpointPath(directory);
-  if (!existsSync(path)) return AGENT_OS_DEFAULT_ENDPOINTS;
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (!isRecord(parsed)) return AGENT_OS_DEFAULT_ENDPOINTS;
-    return {
-      baseUrl: storedOrigin(parsed, "baseUrl", AGENT_OS_DEFAULT_BASE_URL),
-      hermesUrl: storedOrigin(parsed, "hermesUrl", AGENT_OS_DEFAULT_HERMES_URL),
-      omnirouteUrl: storedOrigin(
-        parsed,
-        "omnirouteUrl",
-        AGENT_OS_DEFAULT_OMNIROUTE_URL,
-      ),
-      localSupervisor: parsed.localSupervisor === true,
-    };
-  } catch {
-    return AGENT_OS_DEFAULT_ENDPOINTS;
-  }
+  const parsed = readStoredRecord(directory);
+  if (parsed === null) return AGENT_OS_DEFAULT_ENDPOINTS;
+  return {
+    baseUrl: storedOrigin(parsed, "baseUrl", AGENT_OS_DEFAULT_BASE_URL),
+    hermesUrl: storedOrigin(parsed, "hermesUrl", AGENT_OS_DEFAULT_HERMES_URL),
+    omnirouteUrl: storedOrigin(
+      parsed,
+      "omnirouteUrl",
+      AGENT_OS_DEFAULT_OMNIROUTE_URL,
+    ),
+    localSupervisor: parsed.localSupervisor === true,
+  };
 }
 
 export function writeAgentOsEndpoints(
   directory: string,
   config: AgentOsEndpointConfig,
 ): void {
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const path = endpointPath(directory);
-  const body = JSON.stringify({
+  const stored = readStoredRecord(directory);
+  writeEndpointFile(directory, {
     baseUrl: parseHttpOrigin(config.baseUrl) ?? AGENT_OS_DEFAULT_BASE_URL,
     hermesUrl: parseHttpOrigin(config.hermesUrl) ?? AGENT_OS_DEFAULT_HERMES_URL,
     omnirouteUrl:
       parseHttpOrigin(config.omnirouteUrl) ?? AGENT_OS_DEFAULT_OMNIROUTE_URL,
     localSupervisor: config.localSupervisor === true,
+    ...preservedOpenMuseFields(stored),
   });
-  writeFileSync(path, body, { mode: 0o600 });
-  chmodSync(path, 0o600);
+}
+
+/** Web and API origins only. The OpenMuse access key is never stored. */
+export function writeOpenMuseEndpoints(
+  directory: string,
+  endpoints: OpenMuseEndpointConfig,
+): void {
+  const agent = readAgentOsEndpoints(directory);
+  writeEndpointFile(directory, {
+    baseUrl: parseHttpOrigin(agent.baseUrl) ?? AGENT_OS_DEFAULT_BASE_URL,
+    hermesUrl: parseHttpOrigin(agent.hermesUrl) ?? AGENT_OS_DEFAULT_HERMES_URL,
+    omnirouteUrl:
+      parseHttpOrigin(agent.omnirouteUrl) ?? AGENT_OS_DEFAULT_OMNIROUTE_URL,
+    localSupervisor: agent.localSupervisor === true,
+    openmuseUrl: endpoints.webUrl,
+    openmuseApiUrl: endpoints.apiUrl,
+  });
 }
 
 export function hasAgentOsToken(

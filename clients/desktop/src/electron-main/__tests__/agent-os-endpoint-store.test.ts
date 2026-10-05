@@ -7,12 +7,19 @@ import {
   AGENT_OS_DEFAULT_ENDPOINTS,
 } from "@traycer-clients/shared/agent-os-endpoints";
 import {
+  OPENMUSE_DEFAULT_API_URL,
+  OPENMUSE_DEFAULT_WEB_URL,
+  OPENMUSE_RETIRED_API_URL,
+} from "@traycer-clients/shared/openmuse";
+import {
   collectTailscaleCleartextSwitch,
   readAgentOsEndpoints,
   readAgentOsPublicConfig,
   readAgentOsToken,
+  readOpenMuseEndpoints,
   writeAgentOsEndpoints,
   writeAgentOsToken,
+  writeOpenMuseEndpoints,
   type AgentOsSecretStore,
 } from "../agent-os-endpoint-store";
 
@@ -108,5 +115,44 @@ describe("Agent OS endpoint store", () => {
     expect(fs.existsSync(path.join(dir, "agent-os-tokens", "hermes"))).toBe(
       false,
     );
+  });
+
+  it("stores OpenMuse web and API origins in the same file and keeps a blank web URL", () => {
+    const dir = tempDir();
+    expect(readOpenMuseEndpoints(dir)).toEqual({
+      webUrl: OPENMUSE_DEFAULT_WEB_URL,
+      apiUrl: OPENMUSE_DEFAULT_API_URL,
+    });
+    writeAgentOsEndpoints(dir, AGENT_OS_DEFAULT_ENDPOINTS);
+    expect(
+      fs.readFileSync(path.join(dir, "agent-os-endpoints.json"), "utf8"),
+    ).not.toContain("openmuse");
+
+    writeOpenMuseEndpoints(dir, {
+      webUrl: "",
+      apiUrl: OPENMUSE_DEFAULT_API_URL,
+    });
+    expect(readOpenMuseEndpoints(dir).webUrl).toBe("");
+    writeAgentOsEndpoints(dir, {
+      ...AGENT_OS_DEFAULT_ENDPOINTS,
+      localSupervisor: true,
+    });
+    expect(readOpenMuseEndpoints(dir)).toEqual({
+      webUrl: "",
+      apiUrl: OPENMUSE_DEFAULT_API_URL,
+    });
+    expect(readAgentOsEndpoints(dir).localSupervisor).toBe(true);
+    expect(
+      fs.readFileSync(path.join(dir, "agent-os-endpoints.json"), "utf8"),
+    ).not.toContain("token");
+
+    fs.writeFileSync(
+      path.join(dir, "agent-os-endpoints.json"),
+      JSON.stringify({
+        openmuseUrl: OPENMUSE_DEFAULT_WEB_URL,
+        openmuseApiUrl: OPENMUSE_RETIRED_API_URL,
+      }),
+    );
+    expect(readOpenMuseEndpoints(dir).apiUrl).toBe(OPENMUSE_DEFAULT_API_URL);
   });
 });

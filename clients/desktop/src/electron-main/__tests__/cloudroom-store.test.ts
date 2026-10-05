@@ -50,7 +50,7 @@ describe("CloudRoom endpoint store", () => {
       tokenSaved: false,
     });
     expect(collectUaoCleartextSwitch(dir)).toBe(
-      "http://100.90.167.20:5050,http://100.90.167.20:8787,http://100.90.167.20:20128,http://100.90.167.20:9840",
+      "http://100.90.167.20:5050,http://100.90.167.20:8787,http://100.90.167.20:20128,http://100.90.167.20:9840,http://100.90.167.20:8081,http://100.90.167.20:8797",
     );
 
     const token = "cloudroom-token-value";
