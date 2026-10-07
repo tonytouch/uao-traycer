@@ -58,16 +58,21 @@ vi.mock(
 
 vi.mock(
   "@/components/layout-editor/inspector/use-layout-usage",
-  async (importOriginal) => ({
-    ...(await importOriginal<
-      typeof import("@/components/layout-editor/inspector/use-layout-usage")
-    >()),
-    useLayoutUsage: () => ({
-      providerIds: USAGE_PROVIDER_IDS,
-      cluster: { kind: "no-providers" as const },
-      hostName: "the watched host",
-    }),
-  }),
+  async (importOriginal) => {
+    const original =
+      await importOriginal<
+        typeof import("@/components/layout-editor/inspector/use-layout-usage")
+      >();
+    return {
+      ...original,
+      useLayoutUsage: () => ({
+        ...original.EMPTY_USAGE,
+        providerIds: USAGE_PROVIDER_IDS,
+        cluster: { kind: "no-providers" as const },
+        hostName: "the watched host",
+      }),
+    };
+  },
 );
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -161,6 +166,8 @@ interface AreaCase {
   readonly area: SurfaceGroupId;
   readonly areaLabel: string;
   readonly disclosingRegion: string;
+  /** The radio group's name: Context usage's is "Chip style" (C1). */
+  readonly styleLabel: string;
   readonly optionLabel: string;
   readonly key: "style";
   readonly value: string;
@@ -171,6 +178,7 @@ const CASES: ReadonlyArray<AreaCase> = [
     area: "chat",
     areaLabel: "Chat",
     disclosingRegion: "contextUsage",
+    styleLabel: "Chip style",
     optionLabel: "Ring only",
     key: "style",
     value: "ring-only",
@@ -179,6 +187,7 @@ const CASES: ReadonlyArray<AreaCase> = [
     area: "composer",
     areaLabel: "Composer",
     disclosingRegion: "model",
+    styleLabel: "Style",
     optionLabel: "Bars",
     key: "style",
     value: "bars",
@@ -210,7 +219,7 @@ describe("the same SurfaceSection tree in both hosts (L-03)", () => {
       expect(pageIds).toEqual(inspectorIds);
       expect(pageIds.length).toBeGreaterThan(0);
       expect(pageControls).toEqual(inspectorControls);
-      expect(pageControls).toContain("Style");
+      expect(pageControls).toContain(testCase.styleLabel);
     },
   );
 
@@ -222,10 +231,9 @@ describe("the same SurfaceSection tree in both hosts (L-03)", () => {
         within(row(pageSurface, testCase.disclosingRegion)).getByRole("button"),
       );
       fireEvent.click(
-        within(screen.getByRole("radiogroup", { name: "Style" })).getByRole(
-          "radio",
-          { name: testCase.optionLabel },
-        ),
+        within(
+          screen.getByRole("radiogroup", { name: testCase.styleLabel }),
+        ).getByRole("radio", { name: testCase.optionLabel }),
       );
       expect(overrideLeaf(testCase.disclosingRegion, testCase.key)).toBe(
         testCase.value,
@@ -240,10 +248,9 @@ describe("the same SurfaceSection tree in both hosts (L-03)", () => {
         ),
       );
       fireEvent.click(
-        within(screen.getByRole("radiogroup", { name: "Style" })).getByRole(
-          "radio",
-          { name: testCase.optionLabel },
-        ),
+        within(
+          screen.getByRole("radiogroup", { name: testCase.styleLabel }),
+        ).getByRole("radio", { name: testCase.optionLabel }),
       );
       expect(overrideLeaf(testCase.disclosingRegion, testCase.key)).toBe(
         testCase.value,

@@ -42,15 +42,20 @@ function Harness(): ReactNode {
 }
 
 function row(id: string): HTMLElement {
-  const node = document.querySelector(`[data-sortable-id="${id}"]`);
+  const node = document.querySelector(
+    `[data-sortable-id="${id}"], [data-region-section="${id}"]`,
+  );
   if (!(node instanceof HTMLElement)) throw new Error(`no such row: ${id}`);
   return node;
 }
 
+/** A reading's section is always open; every other row says so on its grab. */
 function rowExpanded(id: string): boolean {
+  const node = row(id);
   return (
-    row(id).querySelector("[data-row-grab]")?.getAttribute("aria-expanded") ===
-    "true"
+    node.hasAttribute("data-region-section") ||
+    node.querySelector("[data-row-grab]")?.getAttribute("aria-expanded") ===
+      "true"
   );
 }
 
@@ -435,14 +440,21 @@ describe("layoutAreaChanged (L-91)", () => {
   it("reads Presets off the whole-layout modified flag, not a surface diff", () => {
     expect(layoutAreaChanged("presets", DEFAULT_LAYOUT_SNAPSHOT)).toBe(false);
 
-    // Applying a preset alone is not a modification (it clears the delta
-    // rather than creating one - `layoutModified` reads the delta), so this
-    // needs an actual arrangement change to light the Presets area's dot.
+    // A placement change is not one a preset puts back (T5): it lights its
+    // own area's dot and leaves the Presets dot dark.
     act(() => {
       useLayoutStore.getState().setArrangement({
         ...DEFAULT_ARRANGEMENT,
         tabStripPlacement: "left",
       });
+    });
+    expect(layoutAreaChanged("presets", useLayoutStore.getState())).toBe(false);
+    expect(layoutAreaChanged("topBar", useLayoutStore.getState())).toBe(true);
+
+    // Applying a preset alone is not a modification either (it clears the
+    // delta rather than creating one); a value moved off it is.
+    act(() => {
+      useLayoutStore.getState().setRegionValues("mic", { shown: "hidden" });
     });
     expect(layoutAreaChanged("presets", useLayoutStore.getState())).toBe(true);
   });

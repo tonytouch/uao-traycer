@@ -1,55 +1,67 @@
 import {
-  fineTuneRowLiveWhileHidden,
   readControlValue,
   writeControlValue,
   type RegionControlValue,
 } from "@/components/layout-editor/inspector/region-control-io";
 import type { FineTuneRowFacts } from "@/components/layout-editor/inspector/rows/fine-tune-row";
+import {
+  AREA_ROWS,
+  type AreaRowId,
+} from "@/components/layout-editor/regions/area-rows";
+import { TOOLBAR_STYLE_EXAMPLES } from "@/components/layout-editor/regions/composer-regions";
 import { LAYOUT_REGIONS } from "@/components/layout-editor/regions/layout-regions";
+import {
+  READING_SPOT_LABELS,
+  READING_SPOTS,
+  readingSpot,
+  withReadingSpot,
+} from "@/components/layout-editor/regions/reading-placement";
+import { readingPlacement } from "@/lib/layout/reading-density";
 import {
   LAYOUT_REGION_LIST,
   regionFacts,
-  regionRowAvailable,
   type AnyGrammarRow,
 } from "@/components/layout-editor/regions/region-facts";
 import {
   ACCESS_DISPLAY_OPTIONS,
   AUTO_SHOWN_HIDDEN_OPTIONS,
-  BAR_HOST_OPTIONS,
   DISCLOSURE_HIDDEN_OPTIONS,
   DISCLOSURE_OPTIONS,
   DOCK_DISPLAY_OPTIONS,
-  edgeSideOptions,
   EDGE_SIDE_OPTIONS,
+  LOCATION_ROW_ID,
   READING_WIDTH_OPTIONS,
   SHOWN_HIDDEN_OPTIONS,
+  SIDE_ROW_ID,
   SIDE_STRIP_VIEW_OPTIONS,
   TAB_OVERFLOW_OPTIONS,
   TAB_STRIP_PLACEMENT_OPTIONS,
   type SegmentOption,
 } from "@/components/layout-editor/regions/region-grammar";
 import {
+  outlivesGate,
+  type LayoutFormContext,
+  type RowDependency,
+} from "@/components/layout-editor/regions/row-availability";
+import {
   orderGroupListLabel,
   SURFACE_ORDER_GROUPS,
+  toolbarMembers,
 } from "@/components/layout-editor/regions/surface-groups";
-import { USAGE_PROVIDER_LEVEL } from "@/components/layout-editor/regions/usage-provider-level";
 import {
   regionShownOnValue,
   setRegionShown,
   toggleHiddenProvider,
 } from "@/components/layout-editor/layout-gestures";
 import { LAYOUT } from "@/components/settings/panels/layout-settings.definitions";
-import { CONTEXT_USAGE_ROW_KEYS } from "@/lib/context-usage-rows";
 import {
   writeArrangement,
   writeArrangementField,
 } from "@/lib/layout/arrangement-gestures";
 import {
   asBarRegionId,
-  AUTOMATIC_LIMIT_SELECTION,
   barPlacement,
   insertRailDivider,
-  isAutomaticLimitSelection,
   movedWithin,
   moveRailEntry,
   railPanelToStackBelow,
@@ -59,15 +71,9 @@ import {
   unstackRail,
   unstackRailPanel,
   WIDE_READING_WIDTH_MAX_PX,
-  withBarHost,
-  withBarSide,
-  type BarHost,
   type EdgeSide,
-  type BarRegionId,
   type LayoutArrangement,
   type OrderGroupId,
-  type StatusBarProviderLimitSelection,
-  type TabStripPlacement,
 } from "@/lib/layout/layout-arrangement";
 import { resetLayout } from "@/lib/layout/layout-diff";
 import {
@@ -92,17 +98,12 @@ import {
 import type { RegionId } from "@/lib/layout/region-id";
 import { providerDisplayName } from "@/lib/provider-ordering";
 import type { RateLimitProviderId } from "@/lib/rate-limit-providers";
-import { isWindowedRateLimitProvider } from "@/lib/rate-limits/rate-limit-window-catalog";
-import {
-  isVoiceInputRowAvailable,
-  type SettingsAvailabilityContext,
-} from "@/lib/settings/settings-availability";
+import type { SettingsAvailabilityContext } from "@/lib/settings/settings-availability";
 import { useLayoutEditorStore } from "@/stores/layout/layout-editor-store";
 import {
   getLayoutSnapshot,
   useLayoutStore,
 } from "@/stores/layout/layout-store";
-import type { SweepProviderUsage } from "@/components/layout-editor/__tests__/layout-sweep-fixtures";
 
 /**
  * The plan: every layout setting VALUE the product can write, as data, in the
@@ -126,7 +127,6 @@ export type SweepSource =
   | "order-list"
   | "rail-structure"
   | "provider-display"
-  | "provider-limits"
   | "surface-row"
   | "arrangement-field"
   | "preset"
@@ -140,24 +140,16 @@ export const SWEEP_SOURCES: ReadonlyArray<SweepSource> = [
   "order-list",
   "rail-structure",
   "provider-display",
-  "provider-limits",
   "surface-row",
   "arrangement-field",
   "preset",
   "reset",
 ];
 
-/** What a step may read of the live column: what the providers report and draw. */
-export interface SweepContext {
-  readonly providerUsage: (
-    providerId: RateLimitProviderId,
-  ) => SweepProviderUsage | null;
-}
-
 /** One write, named, through the product's own writer. */
 export interface SweepStep {
   readonly label: string;
-  readonly run: (context: SweepContext) => void;
+  readonly run: () => void;
 }
 
 export interface SweepEntry {
@@ -184,7 +176,7 @@ export interface SweepEntry {
    * The registry rows this entry exercises, for the completeness guard:
    * `display:<region>`, `position-host:<region>`, `position-side:<region>`,
    * `style:<region>:<key>`, `fine-tune:<region>:<row id>`, `order:<group>`,
-   * `rail:<what>`, `provider-display`, `provider-limits`,
+   * `rail:<what>`, `provider-display`,
    * `arrangement:<field>`, `definition:<key>`.
    */
   readonly covers: ReadonlyArray<string>;
@@ -203,8 +195,6 @@ export interface SweepPlanInput {
   readonly availability: SettingsAvailabilityContext;
   /** The providers the watched host has signed in, in the strip's order. */
   readonly configuredProviders: ReadonlyArray<RateLimitProviderId>;
-  /** What each configured provider reports and draws, read from the mounted column. */
-  readonly usage: ReadonlyMap<RateLimitProviderId, SweepProviderUsage>;
 }
 
 // ── Census key spellings ────────────────────────────────────────────────────
@@ -268,38 +258,6 @@ function writeAutoRailVisibility(region: RegionId, next: string): void {
   const patch: Partial<LayoutValues[RegionId]> = {};
   Reflect.set(patch, "shown", next);
   recordedPatch(region, patch);
-}
-
-function writeLimitSelection(
-  providerId: RateLimitProviderId,
-  selection: StatusBarProviderLimitSelection,
-): void {
-  useLayoutEditorStore.getState().recordGesture(() => {
-    const arrangement = useLayoutStore.getState().arrangement;
-    const providerLimits = { ...arrangement.providerLimits };
-    if (isAutomaticLimitSelection(selection)) delete providerLimits[providerId];
-    else providerLimits[providerId] = selection;
-    useLayoutStore
-      .getState()
-      .setArrangement({ ...arrangement, providerLimits });
-  });
-}
-
-function pickedWindow(
-  selection: StatusBarProviderLimitSelection,
-  order: ReadonlyArray<string>,
-  windowKey: string,
-  checked: boolean,
-): StatusBarProviderLimitSelection {
-  const next = new Set(selection.limitKeys);
-  if (checked) next.add(windowKey);
-  else next.delete(windowKey);
-  if (next.size === 0) return selection;
-  const live = order.filter((key) => next.has(key));
-  const stale = selection.limitKeys.filter(
-    (key) => next.has(key) && !order.includes(key),
-  );
-  return { limitKeys: [...live, ...stale] };
 }
 
 function applyPresetWrite(presetId: LayoutPresetId): void {
@@ -376,22 +334,9 @@ function sizeOptions(
 function displayControl(
   region: RegionId,
   values: LayoutValues,
-  availability: SettingsAvailabilityContext,
 ): DisplayControl | null {
   const regionValues = values[region];
   const hidden = regionValuesHidden(regionValues);
-  if (region === "mic") {
-    if (!isVoiceInputRowAvailable(availability)) return null;
-    return {
-      ariaLabel: "Microphone display",
-      options: SHOWN_HIDDEN_OPTIONS,
-      current: values.mic.shown !== "hidden" ? "shown" : "hidden",
-      write: (next) => {
-        setRegionShown("mic", next === "shown");
-      },
-      mirrors: () => null,
-    };
-  }
   const ariaLabel = `${regionFacts(region).name} display`;
   if (isAutoRailRegionId(region)) {
     return {
@@ -484,9 +429,38 @@ function arrangementStep(
   };
 }
 
-// ── Building ────────────────────────────────────────────────────────────────
+// ── What a row needs first, asked of the registry ───────────────────────────
+//
+// A row that depends on something is drawn either way (P1): a row whose rule
+// answers `disabled` does nothing until its controller is set, and one that
+// answers `absent` is not drawn in this shell at all. So what a person does
+// first to reach a control is read off the row's own rule rather than typed
+// beside it: the plan asks the rule, and where it says `disabled` it finds
+// which of the few writes below makes it `live`. A rule no write here
+// unlocks is a loud error, not a silent entry the page would then refuse.
 
 const NO_GIVEN: ReadonlyArray<SweepStep> = [];
+
+/**
+ * The context every row's rule reads, for the layout the plan starts from.
+ * General > Voice input stays at its shipped value, on: the sweep never writes
+ * it, and the Microphone's rule reads nothing else of it.
+ */
+function formContext(input: SweepPlanInput): LayoutFormContext {
+  const { shipped, availability } = input;
+  return {
+    values: effectiveLayoutValues(shipped.basePreset, shipped.overrides),
+    arrangement: shipped.arrangement,
+    shell: availability,
+    facts: { voiceInputEnabled: true },
+  };
+}
+
+/** One write that can unlock a row, and what it does to the form's context. */
+interface Unlock {
+  readonly step: SweepStep;
+  readonly applied: (context: LayoutFormContext) => LayoutFormContext;
+}
 
 /** The strip at an edge, which a side view and a foot-hosted reading need. */
 const TAB_PLACEMENT_LEFT: SweepStep = arrangementFieldStep(
@@ -495,14 +469,158 @@ const TAB_PLACEMENT_LEFT: SweepStep = arrangementFieldStep(
   "left",
 );
 
+const UNLOCKS: ReadonlyArray<Unlock> = [
+  {
+    step: controlStep(
+      "contextUsage",
+      "pinBreakdown",
+      true,
+      "Context usage / Pin breakdown: on",
+    ),
+    applied: (context) => ({
+      ...context,
+      values: {
+        ...context.values,
+        contextUsage: { ...context.values.contextUsage, pinBreakdown: true },
+      },
+    }),
+  },
+  {
+    step: controlStep(
+      "usageLimits",
+      "density",
+      "detailed",
+      "Usage limits density: Detailed",
+    ),
+    applied: (context) => ({
+      ...context,
+      values: {
+        ...context.values,
+        usageLimits: { ...context.values.usageLimits, density: "detailed" },
+      },
+    }),
+  },
+  {
+    step: controlStep(
+      "resourceMonitor",
+      "density",
+      "detailed",
+      "Resource monitor density: Detailed",
+    ),
+    applied: (context) => ({
+      ...context,
+      values: {
+        ...context.values,
+        resourceMonitor: {
+          ...context.values.resourceMonitor,
+          density: "detailed",
+        },
+      },
+    }),
+  },
+  {
+    step: arrangementStep("Usage limits location: Status bar left", (now) =>
+      withReadingSpot(now, "usageLimits", "status-bar-left"),
+    ),
+    applied: (context) => ({
+      ...context,
+      arrangement: withReadingSpot(
+        context.arrangement,
+        "usageLimits",
+        "status-bar-left",
+      ),
+    }),
+  },
+  {
+    step: TAB_PLACEMENT_LEFT,
+    applied: (context) => ({
+      ...context,
+      arrangement: { ...context.arrangement, tabStripPlacement: "left" },
+    }),
+  },
+  {
+    step: arrangementFieldStep("Reading width: Wide", "readingWidth", "wide"),
+    applied: (context) => ({
+      ...context,
+      arrangement: { ...context.arrangement, readingWidth: "wide" },
+    }),
+  },
+];
+
+/** Every way to take one write, then every pair, in the catalog's order. */
+const UNLOCK_ATTEMPTS: ReadonlyArray<ReadonlyArray<Unlock>> = [
+  ...UNLOCKS.map((unlock) => [unlock]),
+  ...UNLOCKS.flatMap((first, index) =>
+    UNLOCKS.slice(index + 1).map((second) => [first, second]),
+  ),
+];
+
+/**
+ * What a person does first for the row `id` to be operable, by its own rule:
+ * nothing while it is plain live, the first writes that make it live while it
+ * is disabled, and `null` where it is absent - not a control in this shell.
+ *
+ * A row that is live WITH a note is operable but not always seen to work: a
+ * Compact monitor says it shows CPU only, and its Metrics still count where
+ * agent rows print them. Where a write makes the row plainly live (Detailed),
+ * the plan starts from there, so what the control does shows on screen; where
+ * none does, the row is taken as it is.
+ */
+function givenFor(
+  context: LayoutFormContext,
+  id: string,
+  depends: RowDependency,
+): ReadonlyArray<SweepStep> | null {
+  const start = depends.availability(context);
+  if (start.kind === "absent") return null;
+  if (start.kind === "live" && start.note === null) return NO_GIVEN;
+  const unlocked = UNLOCK_ATTEMPTS.find((attempt) => {
+    const after = depends.availability(
+      attempt.reduce((now, unlock) => unlock.applied(now), context),
+    );
+    return after.kind === "live" && after.note === null;
+  });
+  if (unlocked !== undefined) return unlocked.map((unlock) => unlock.step);
+  if (start.kind === "live") return NO_GIVEN;
+  throw new Error(
+    `${id} stays disabled ("${start.reason}") after every write the sweep plan knows`,
+  );
+}
+
+// ── Building ────────────────────────────────────────────────────────────────
+
 type StyleGrammarRow = Extract<AnyGrammarRow, { readonly kind: "style" }>;
+
+/** A reading's Show switch, in its section's header. */
+function showSwitchEntries(
+  region: RegionId,
+  values: LayoutValues,
+): ReadonlyArray<SweepEntry> {
+  const name = regionFacts(region).name;
+  const shown = !regionValuesHidden(values[region]);
+  return [
+    {
+      id: `region-display:${region}:${shown ? "hidden" : "shown"}`,
+      source: "region-display",
+      mirrors: null,
+      given: NO_GIVEN,
+      write: {
+        label: `Show ${name}: ${shown ? "off" : "on"}`,
+        run: () => {
+          setRegionShown(region, !shown);
+        },
+      },
+      covers: [`display:${region}`],
+      controls: [switchControl(region, `Show ${name}`)],
+    },
+  ];
+}
 
 function displayEntries(
   region: RegionId,
   values: LayoutValues,
-  availability: SettingsAvailabilityContext,
 ): ReadonlyArray<SweepEntry> {
-  const display = displayControl(region, values, availability);
+  const display = displayControl(region, values);
   if (display === null) return [];
   return display.options
     .filter((option) => option.value !== display.current)
@@ -525,116 +643,72 @@ function displayEntries(
 function positionHostEntries(
   region: RegionId,
   arrangement: LayoutArrangement,
+  given: ReadonlyArray<SweepStep>,
 ): ReadonlyArray<SweepEntry> {
   const bar = asBarRegionId(region);
   if (bar === null) return [];
   const name = regionFacts(region).name;
-  const current = barPlacement(arrangement, bar).host;
-  const field = bar === "usageLimits" ? "usageHost" : "resourceHost";
-  return BAR_HOST_OPTIONS.filter((option) => option.value !== current).map(
-    (option) => {
-      const host: BarHost = option.value === "header" ? "header" : "status-bar";
-      return {
-        id: `region-position:${region}:host:${option.value}`,
-        source: "region-position",
-        mirrors: null,
-        given: NO_GIVEN,
-        write: arrangementStep(`${name} position: ${option.label}`, (now) =>
-          withBarHost(now, bar, host),
-        ),
-        covers: [`position-host:${region}`, `arrangement:${field}`],
-        controls: [radioControl(region, `${name} position`, option.label)],
-      };
-    },
-  );
+  const current = readingSpot(barPlacement(arrangement, bar));
+  const hostField = bar === "usageLimits" ? "usageHost" : "resourceHost";
+  const sideField = bar === "usageLimits" ? "usageSide" : "resourceSide";
+  return READING_SPOTS.filter((spot) => spot !== current).map((spot) => ({
+    id: `region-position:${region}:spot:${spot}`,
+    source: "region-position",
+    mirrors: null,
+    given,
+    write: arrangementStep(
+      `${name} location: ${READING_SPOT_LABELS[spot]}`,
+      (now) => withReadingSpot(now, bar, spot),
+    ),
+    // The tab strip writes the host alone and a status bar spot the end too,
+    // so the pair is covered by the three spots between them.
+    covers: [
+      `position-host:${region}`,
+      `arrangement:${hostField}`,
+      `arrangement:${sideField}`,
+    ],
+    controls: [
+      radioControl(region, `${name} location`, READING_SPOT_LABELS[spot]),
+    ],
+  }));
 }
 
-/** The stored side field a region's side row writes. */
-function sideField(
-  bar: BarRegionId | null,
-): "minimapSide" | "usageSide" | "resourceSide" {
-  if (bar === null) return "minimapSide";
-  return bar === "usageLimits" ? "usageSide" : "resourceSide";
-}
-
-interface SideCase {
-  readonly idPart: string;
-  readonly placement: TabStripPlacement;
-  readonly given: ReadonlyArray<SweepStep>;
-}
-
-/**
- * The placements a side row is swept at. A reading hosted in the tab strip
- * reads its ends as Start and End once the strip stands at an edge (its foot),
- * a different drawing of the same stored side: swept there as well.
- */
-function sideCases(
-  bar: BarRegionId | null,
-  arrangement: LayoutArrangement,
-): ReadonlyArray<SideCase> {
-  const shipped: SideCase = {
-    idPart: "side",
-    placement: arrangement.tabStripPlacement,
-    given: NO_GIVEN,
-  };
-  if (bar === null || barPlacement(arrangement, bar).host !== "header") {
-    return [shipped];
-  }
-  return [
-    shipped,
-    { idPart: "side-foot", placement: "left", given: [TAB_PLACEMENT_LEFT] },
-  ];
-}
-
+/** The minimap's edge, the one Side row left. */
 function positionSideEntries(
   region: RegionId,
   arrangement: LayoutArrangement,
+  given: ReadonlyArray<SweepStep>,
 ): ReadonlyArray<SweepEntry> {
-  const bar = asBarRegionId(region);
-  if (bar === null && region !== "minimap") {
+  if (region !== "minimap") {
     throw new Error(
       `${region} has a position-side row this plan does not know how to write`,
     );
   }
   const name = regionFacts(region).name;
-  const current =
-    bar === null
-      ? arrangement.minimapSide
-      : barPlacement(arrangement, bar).side;
-  const field = sideField(bar);
-  const entries: SweepEntry[] = [];
-  for (const sideCase of sideCases(bar, arrangement)) {
-    const options =
-      bar === null
-        ? EDGE_SIDE_OPTIONS
-        : edgeSideOptions(
-            barPlacement(arrangement, bar).host,
-            sideCase.placement,
-          );
-    for (const option of options.filter((entry) => entry.value !== current)) {
-      const side: EdgeSide = option.value === "left" ? "left" : "right";
-      entries.push({
-        id: `region-position:${region}:${sideCase.idPart}:${option.value}`,
-        source: "region-position",
-        mirrors: null,
-        given: sideCase.given,
-        write: arrangementStep(`${name} side: ${option.label}`, (now) =>
-          bar === null
-            ? { ...now, minimapSide: side }
-            : withBarSide(now, bar, side),
-        ),
-        covers: [`position-side:${region}`, `arrangement:${field}`],
-        controls: [radioControl(region, `${name} side`, option.label)],
-      });
-    }
-  }
-  return entries;
+  return EDGE_SIDE_OPTIONS.filter(
+    (option) => option.value !== arrangement.minimapSide,
+  ).map((option) => {
+    const side: EdgeSide = option.value === "left" ? "left" : "right";
+    return {
+      id: `region-position:${region}:side:${option.value}`,
+      source: "region-position",
+      mirrors: null,
+      given,
+      write: arrangementStep(`${name} side: ${option.label}`, (now) => ({
+        ...now,
+        minimapSide: side,
+      })),
+      covers: [`position-side:${region}`, "arrangement:minimapSide"],
+      controls: [radioControl(region, `${name} side`, option.label)],
+    };
+  });
 }
 
 function styleEntries(
   region: RegionId,
   row: StyleGrammarRow,
   values: LayoutValues,
+  given: ReadonlyArray<SweepStep>,
 ): ReadonlyArray<SweepEntry> {
   const regionValues = values[region];
   return row.examples
@@ -648,7 +722,7 @@ function styleEntries(
       id: `region-style:${region}:${row.key}:${example.id}`,
       source: "region-style",
       mirrors: "StyleExamples onChange",
-      given: NO_GIVEN,
+      given,
       write: {
         label: `${row.label}: ${example.label}`,
         run: () => {
@@ -663,71 +737,82 @@ function styleEntries(
 function grammarRowEntries(
   region: RegionId,
   row: AnyGrammarRow,
-  values: LayoutValues,
-  arrangement: LayoutArrangement,
+  context: LayoutFormContext,
 ): ReadonlyArray<SweepEntry> {
+  const { values, arrangement } = context;
   switch (row.kind) {
-    case "position-host":
-      return positionHostEntries(region, arrangement);
-    case "position-side":
-      return positionSideEntries(region, arrangement);
+    case "position-host": {
+      const given = givenFor(
+        context,
+        `${region}/${LOCATION_ROW_ID}`,
+        row.depends,
+      );
+      return given === null
+        ? []
+        : positionHostEntries(region, arrangement, given);
+    }
+    case "position-side": {
+      const given = givenFor(context, `${region}/${SIDE_ROW_ID}`, row.depends);
+      return given === null
+        ? []
+        : positionSideEntries(region, arrangement, given);
+    }
     case "position-order":
     case "children":
       return [];
-    case "style":
-      return styleEntries(region, row, values);
+    case "style": {
+      const given = givenFor(context, `${region}/${row.key}`, row.depends);
+      return given === null ? [] : styleEntries(region, row, values, given);
+    }
     case "fine-tune":
-      return fineTuneEntries(region, row.rows, values);
+      return fineTuneEntries(region, row.rows, context);
     default:
       throw new Error(`${region} has a grammar row this plan does not know`);
   }
 }
 
 function regionPlan(input: SweepPlanInput): ReadonlyArray<SweepEntry> {
-  const { shipped, availability } = input;
-  const values = effectiveLayoutValues(shipped.basePreset, shipped.overrides);
+  const context = formContext(input);
   const entries: SweepEntry[] = [];
   for (const facts of LAYOUT_REGION_LIST) {
     const region = facts.id;
-    entries.push(...displayEntries(region, values, availability));
+    // A region its shell gate leaves out of this shell is no row, so no control.
+    if (!facts.shellGate(context.shell)) continue;
+    entries.push(
+      ...(asBarRegionId(region) === null
+        ? displayEntries(region, context.values)
+        : showSwitchEntries(region, context.values)),
+    );
     const declared: ReadonlyArray<AnyGrammarRow> = LAYOUT_REGIONS[region].rows;
     for (const row of declared) {
-      if (!regionRowAvailable(region, row, false)) continue;
-      entries.push(
-        ...grammarRowEntries(region, row, values, shipped.arrangement),
-      );
+      entries.push(...grammarRowEntries(region, row, context));
     }
   }
   return entries;
 }
 
-/** What a person does first to make one detail row's controls operable. */
+/**
+ * What a person does first to make one detail row's controls operable: what
+ * its own rule asks (`unlocks`), and the region shown while it is Hidden
+ * unless the row is one something else still reads.
+ */
 function fineTuneGiven(
   region: RegionId,
   row: FineTuneRowFacts,
-  values: LayoutValues,
+  form: LayoutFormContext,
+  unlocks: ReadonlyArray<SweepStep>,
 ): ReadonlyArray<SweepStep> {
-  const regionValues = values[region];
-  const given: SweepStep[] = [];
-  if (
-    regionValuesHidden(regionValues) &&
-    !fineTuneRowLiveWhileHidden(row, regionValues)
-  ) {
-    given.push(showRegionStep(region));
-  }
-  if (
-    row.requires !== null &&
-    readControlValue(regionValues, row.requires) !== true
-  ) {
-    given.push(
-      controlStep(region, row.requires, true, `${region} ${row.requires}: on`),
-    );
-  }
-  return given;
+  const hiddenGate =
+    regionValuesHidden(form.values[region]) &&
+    !outlivesGate(row.depends.availability(form))
+      ? [showRegionStep(region)]
+      : NO_GIVEN;
+  return [...unlocks, ...hiddenGate];
 }
 
 /** What one fine-tune row's entries are written from. */
 interface FineTuneContext {
+  readonly arrangement: LayoutArrangement;
   readonly region: RegionId;
   readonly row: FineTuneRowFacts;
   readonly regionValues: LayoutValues[RegionId];
@@ -772,6 +857,30 @@ function switchRowEntries(
   ];
 }
 
+/**
+ * Compact only differs from Auto where Auto is Detailed, so a Compact pick is
+ * made from the status bar; Detailed differs from Auto wherever it starts, in
+ * a tab strip.
+ */
+function densityGiven(
+  context: FineTuneContext,
+  picked: string,
+): ReadonlyArray<SweepStep> {
+  const { region, row, arrangement } = context;
+  const bar = asBarRegionId(region);
+  if (bar === null || row.id !== "density" || picked !== "compact") {
+    return context.given;
+  }
+  if (readingPlacement(arrangement, bar) === "status-bar") return context.given;
+  return [
+    ...context.given,
+    arrangementStep(
+      `${regionFacts(region).name} location: Status bar left`,
+      (now) => withReadingSpot(now, bar, "status-bar-left"),
+    ),
+  ];
+}
+
 function segmentRowEntries(
   context: FineTuneContext,
   key: RegionValueKey,
@@ -783,7 +892,7 @@ function segmentRowEntries(
     .filter((option) => option.value !== current)
     .map((option) =>
       fineTuneEntry(
-        context,
+        { ...context, given: densityGiven(context, option.value) },
         `:${option.value}`,
         controlStep(region, key, option.value, `${row.label}: ${option.label}`),
         radioControl(region, row.label, option.label),
@@ -794,23 +903,6 @@ function segmentRowEntries(
 interface ChecksOption {
   readonly key: RegionValueKey;
   readonly label: string;
-  readonly requires: RegionValueKey | null;
-}
-
-/** What a person does first to make a check operable: switch its parent on. */
-function checkGiven(
-  context: FineTuneContext,
-  requires: RegionValueKey | null,
-): ReadonlyArray<SweepStep> {
-  if (
-    requires === null ||
-    readControlValue(context.regionValues, requires) === true
-  ) {
-    return context.given;
-  }
-  const label = `${context.region} ${requires}: on`;
-  if (context.given.some((step) => step.label === label)) return context.given;
-  return [...context.given, controlStep(context.region, requires, true, label)];
 }
 
 function checksRowEntries(
@@ -821,7 +913,7 @@ function checksRowEntries(
   return options.map((option) => {
     const current = readControlValue(regionValues, option.key) === true;
     return fineTuneEntry(
-      { ...context, given: checkGiven(context, option.requires) },
+      context,
       `:${option.key}`,
       controlStep(
         region,
@@ -863,7 +955,9 @@ function fieldChecksRowEntries(
           nextList,
           `${row.label} / ${option.label}: ${checked ? "off" : "on"}`,
         ),
-        checkControl(region, option.label),
+        // Each is a row of its own list, named `Show <field>` (C2), so the
+        // page keys it by that row's id rather than by the region's.
+        checkControl(option.value, `Show ${option.label}`),
       ),
     );
   }
@@ -893,61 +987,26 @@ function fineTuneRowEntries(
 function fineTuneEntries(
   region: RegionId,
   rows: ReadonlyArray<FineTuneRowFacts>,
-  values: LayoutValues,
+  form: LayoutFormContext,
 ): ReadonlyArray<SweepEntry> {
-  return rows.flatMap((row) =>
-    fineTuneRowEntries({
+  return rows.flatMap((row) => {
+    const unlocks = givenFor(form, `${region}/${row.id}`, row.depends);
+    // A detail row its rule leaves out of this shell is not on the page.
+    if (unlocks === null) return [];
+    return fineTuneRowEntries({
+      arrangement: form.arrangement,
       region,
       row,
-      regionValues: values[region],
-      given: fineTuneGiven(region, row, values),
-    }),
-  );
-}
-
-/**
- * The tab strip's foot draws its readings as one row in a fixed order: the
- * header's left end, then its right end, usage before resources inside an end.
- * With usage at the start and resources at the end, either reading moved to the
- * other end leaves that order as it was; the two moves together reverse it.
- * The single moves are swept above and are silent by construction; this is the
- * entry that proves the foot reads the sides at all.
- */
-function footOrderEntries(input: SweepPlanInput): ReadonlyArray<SweepEntry> {
-  const arrangement = input.shipped.arrangement;
-  if (
-    arrangement.usageHost !== "header" ||
-    arrangement.resourceHost !== "header" ||
-    arrangement.usageSide !== "left" ||
-    arrangement.resourceSide !== "right"
-  ) {
-    return [];
-  }
-  return [
-    {
-      id: "region-position:resourceMonitor:side-foot:order-flip",
-      source: "region-position",
-      mirrors: null,
-      given: [
-        TAB_PLACEMENT_LEFT,
-        arrangementStep("Usage limits side: End", (now) =>
-          withBarSide(now, "usageLimits", "right"),
-        ),
-      ],
-      write: arrangementStep("Resource monitor side: Start", (now) =>
-        withBarSide(now, "resourceMonitor", "left"),
-      ),
-      covers: ["position-side:resourceMonitor", "arrangement:resourceSide"],
-      controls: [
-        radioControl("resourceMonitor", "Resource monitor side", "Start"),
-      ],
-    },
-  ];
+      regionValues: form.values[region],
+      given: fineTuneGiven(region, row, form, unlocks),
+    });
+  });
 }
 
 // ── Ordered lists ───────────────────────────────────────────────────────────
 
-interface OrderedList {
+/** One of the arrangement's order groups, as the page lists it. */
+interface GroupList {
   readonly group: OrderGroupId;
   /** The list's accessible name, which the page keys its rows by. */
   readonly label: string;
@@ -956,14 +1015,68 @@ interface OrderedList {
   readonly move: (id: string, toIndex: number) => void;
 }
 
+/** A list the page lets a keyboard reorder, and how the plan writes it. */
+interface OrderedList extends Omit<GroupList, "group"> {
+  /** The part of an entry's id that names the list. */
+  readonly group: string;
+  /** What a person does first for its rows to be operable. */
+  readonly given: ReadonlyArray<SweepStep>;
+  readonly covers: ReadonlyArray<string>;
+  /** The product's own move this entry re-states. */
+  readonly mirrors: string;
+}
+
+/**
+ * The pinned breakdown's rows, a sortable check list of its own (C2): a drag
+ * writes `pinnedContextFieldOrder`, and the list is only operable once Pin
+ * breakdown is on.
+ */
+function pinnedFieldsList(input: SweepPlanInput): OrderedList {
+  const arrangement = input.shipped.arrangement;
+  const now = (): LayoutArrangement => useLayoutStore.getState().arrangement;
+  const row = LAYOUT_REGIONS.contextUsage.rows
+    .flatMap((candidate) =>
+      candidate.kind === "fine-tune" ? candidate.rows : [],
+    )
+    .find((candidate) => candidate.id === "pinnedFields");
+  if (row === undefined)
+    throw new Error("Context usage has no pinned fields row");
+  const given = givenFor(
+    formContext(input),
+    "contextUsage/pinnedFields",
+    row.depends,
+  );
+  if (given === null) throw new Error("the pinned fields row is not drawn");
+  return {
+    group: "pinnedFields",
+    label: row.label,
+    ids: arrangement.pinnedContextFieldOrder,
+    movable: arrangement.pinnedContextFieldOrder.map(() => true),
+    move: (id, toIndex) => {
+      const current = now();
+      const moved = current.pinnedContextFieldOrder.find(
+        (entry) => entry === id,
+      );
+      if (moved === undefined) return;
+      writeArrangementField(
+        "pinnedContextFieldOrder",
+        movedById(current.pinnedContextFieldOrder, moved, toIndex),
+      );
+    },
+    given,
+    covers: [
+      "fine-tune:contextUsage:pinnedFields",
+      "arrangement:pinnedContextFieldOrder",
+    ],
+    mirrors: "FieldChecksList onMove",
+  };
+}
+
 /** The lists the page lets a keyboard reorder, as it builds their rows. */
 function orderedLists(input: SweepPlanInput): ReadonlyArray<OrderedList> {
-  const { shipped, availability, configuredProviders } = input;
+  const { shipped, configuredProviders } = input;
   const arrangement = shipped.arrangement;
-  const voice = isVoiceInputRowAvailable(availability);
-  const toolbar = <Id extends string>(
-    ids: ReadonlyArray<Id>,
-  ): ReadonlyArray<Id> => ids.filter((id) => id !== "mic" || voice);
+  const context = formContext(input);
   const allMovable = (ids: ReadonlyArray<string>): ReadonlyArray<boolean> =>
     ids.map(() => true);
   const now = (): LayoutArrangement => useLayoutStore.getState().arrangement;
@@ -971,9 +1084,9 @@ function orderedLists(input: SweepPlanInput): ReadonlyArray<OrderedList> {
     configuredProviders.includes(id),
   );
   const dock = arrangement.dock;
-  const left = toolbar(arrangement.toolbarLeft);
-  const right = toolbar(arrangement.toolbarRight);
-  const lists: OrderedList[] = [];
+  const left = toolbarMembers("toolbarLeft", false, context);
+  const right = toolbarMembers("toolbarRight", false, context);
+  const lists: GroupList[] = [];
   for (const group of SURFACE_ORDER_GROUPS.composer) {
     if (group === "dock") {
       lists.push({
@@ -1059,7 +1172,26 @@ function orderedLists(input: SweepPlanInput): ReadonlyArray<OrderedList> {
       });
     },
   });
-  return lists;
+  return [
+    ...lists.map((list): OrderedList => ({
+      ...list,
+      // Provider order is visible where the reading lists its profiles: the
+      // status bar, not the tab strip's glyph.
+      given:
+        list.group === "usageProviders"
+          ? [
+              arrangementStep(
+                "Usage limits location: Status bar left",
+                (current) =>
+                  withReadingSpot(current, "usageLimits", "status-bar-left"),
+              ),
+            ]
+          : NO_GIVEN,
+      covers: [`order:${list.group}`, `arrangement:${list.group}`],
+      mirrors: "OrderGroupRows onMove",
+    })),
+    pinnedFieldsList(input),
+  ];
 }
 
 /**
@@ -1085,15 +1217,15 @@ function orderEntries(input: SweepPlanInput): ReadonlyArray<SweepEntry> {
       entries.push({
         id: `order-list:${list.group}:${row.id}:${direction}`,
         source: "order-list",
-        mirrors: "OrderGroupRows onMove",
-        given: NO_GIVEN,
+        mirrors: list.mirrors,
+        given: list.given,
         write: {
           label: `${list.label}: ${row.id} ${direction}`,
           run: () => {
             list.move(row.id, to);
           },
         },
-        covers: [`order:${list.group}`, `arrangement:${list.group}`],
+        covers: list.covers,
         controls: [orderControl(list.label, row.id, direction)],
       });
     });
@@ -1195,12 +1327,11 @@ function railEntries(input: SweepPlanInput): ReadonlyArray<SweepEntry> {
 // ── Providers ───────────────────────────────────────────────────────────────
 
 function providerEntries(input: SweepPlanInput): ReadonlyArray<SweepEntry> {
-  const { shipped, configuredProviders, usage } = input;
+  const { shipped } = input;
   const arrangement = shipped.arrangement;
   const entries: SweepEntry[] = [];
   for (const providerId of arrangement.usageProviders) {
     const name = providerDisplayName(providerId);
-    const configured = configuredProviders.includes(providerId);
     const hidden = arrangement.hiddenProviders.includes(providerId);
     entries.push({
       id: `provider-display:${providerId}:${hidden ? "shown" : "hidden"}`,
@@ -1219,95 +1350,9 @@ function providerEntries(input: SweepPlanInput): ReadonlyArray<SweepEntry> {
       },
       covers: ["provider-display", "arrangement:hiddenProviders"],
       controls: [
-        radioControl(
-          providerId,
-          `${name} display`,
-          hidden ? "Shown" : "Hidden",
-        ),
+        buttonControl(providerId, `${hidden ? "Show" : "Hide"} ${name}`),
       ],
     });
-    if (!configured || !isWindowedRateLimitProvider(providerId)) continue;
-    const facts = usage.get(providerId);
-    if (facts === undefined || facts.windows.length === 0) continue;
-    const choose: SweepStep = {
-      label: `${name} ${USAGE_PROVIDER_LEVEL.limitsLabel}: Choose...`,
-      run: (context) => {
-        const live = context.providerUsage(providerId);
-        if (live === null || live.windows.length === 0) {
-          throw new Error(`${providerId} reports no window to choose from`);
-        }
-        const seed =
-          live.drawnKeys.length > 0
-            ? live.drawnKeys
-            : live.windows.slice(0, 1).map((window) => window.windowKey);
-        writeLimitSelection(providerId, { limitKeys: seed });
-      },
-    };
-    entries.push({
-      id: `provider-limits:${providerId}:choose`,
-      source: "provider-limits",
-      mirrors: "ProviderLimitsPick writeSelection",
-      given: NO_GIVEN,
-      write: choose,
-      covers: ["provider-limits", "arrangement:providerLimits"],
-      controls: [
-        radioControl(providerId, USAGE_PROVIDER_LEVEL.limitsLabel, "Choose..."),
-      ],
-    });
-    entries.push({
-      id: `provider-limits:${providerId}:automatic`,
-      source: "provider-limits",
-      mirrors: "ProviderLimitsPick writeSelection",
-      given: [choose],
-      write: {
-        label: `${name} ${USAGE_PROVIDER_LEVEL.limitsLabel}: Automatic (recommended)`,
-        run: () => {
-          writeLimitSelection(providerId, AUTOMATIC_LIMIT_SELECTION);
-        },
-      },
-      covers: ["provider-limits", "arrangement:providerLimits"],
-      controls: [
-        radioControl(
-          providerId,
-          USAGE_PROVIDER_LEVEL.limitsLabel,
-          "Automatic (recommended)",
-        ),
-      ],
-    });
-    // What Choose... seeds is checked, and the last checked window cannot be
-    // unticked, so the page offers a tick on the others only.
-    const seeded =
-      facts.drawnKeys.length > 0
-        ? facts.drawnKeys
-        : facts.windows.slice(0, 1).map((window) => window.windowKey);
-    for (const window of facts.windows) {
-      if (seeded.includes(window.windowKey)) continue;
-      entries.push({
-        id: `provider-limits:${providerId}:window:${window.windowKey}`,
-        source: "provider-limits",
-        mirrors: "ProviderLimitsPick writeSelection",
-        given: [choose],
-        write: {
-          label: `${name} window ${window.label}: on`,
-          run: (context) => {
-            const live = context.providerUsage(providerId);
-            const order = (live ?? facts).windows.map(
-              (entry) => entry.windowKey,
-            );
-            const selection =
-              useLayoutStore.getState().arrangement.providerLimits[
-                providerId
-              ] ?? AUTOMATIC_LIMIT_SELECTION;
-            writeLimitSelection(
-              providerId,
-              pickedWindow(selection, order, window.windowKey, true),
-            );
-          },
-        },
-        covers: ["provider-limits", "arrangement:providerLimits"],
-        controls: [checkControl(providerId, window.label)],
-      });
-    }
   }
   return entries;
 }
@@ -1354,6 +1399,7 @@ function segmentFieldEntries<K extends SegmentFieldKey>(
 
 function sidebarSideEntries(
   arrangement: LayoutArrangement,
+  given: ReadonlyArray<SweepStep>,
 ): ReadonlyArray<SweepEntry> {
   return EDGE_SIDE_OPTIONS.filter(
     (option) => option.value !== arrangement.sidebarSide,
@@ -1363,7 +1409,7 @@ function sidebarSideEntries(
       id: `surface-row:sidebarSide:${option.value}`,
       source: "surface-row",
       mirrors: null,
-      given: NO_GIVEN,
+      given,
       write: arrangementFieldStep(
         `Sidebar side: ${option.label}`,
         "sidebarSide",
@@ -1375,99 +1421,171 @@ function sidebarSideEntries(
   });
 }
 
-function switchSurfaceEntries(
-  input: SweepPlanInput,
+function resourceReadingsEntries(
+  context: LayoutFormContext,
+  given: ReadonlyArray<SweepStep>,
 ): ReadonlyArray<SweepEntry> {
-  const { shipped, availability } = input;
-  const definitions = LAYOUT.definitions;
-  const values = effectiveLayoutValues(shipped.basePreset, shipped.overrides);
-  const entries: SweepEntry[] = [];
-  if (definitions.resourceReadings.availableWhen(availability)) {
-    const on = values.resourceMonitor.agentRows;
-    entries.push({
+  const label = LAYOUT.definitions.resourceReadings.label;
+  const on = context.values.resourceMonitor.agentRows;
+  return [
+    {
       id: "surface-row:resourceReadings",
       source: "surface-row",
       mirrors: null,
-      given: NO_GIVEN,
+      given,
       write: controlStep(
         "resourceMonitor",
         "agentRows",
         !on,
-        `${definitions.resourceReadings.label}: ${on ? "off" : "on"}`,
+        `${label}: ${on ? "off" : "on"}`,
       ),
       covers: ["definition:resourceReadings"],
-      controls: [switchControl(NO_ROW, definitions.resourceReadings.label)],
-    });
-  }
-  if (definitions.mobileFooter.availableWhen(availability)) {
-    entries.push({
+      controls: [switchControl(NO_ROW, label)],
+    },
+  ];
+}
+
+/**
+ * The Composer's Toolbar style (C3): the whole toolbar's chrome, written on
+ * Model like Model's own Style, but an area row of its own.
+ */
+function toolbarStyleEntries(
+  context: LayoutFormContext,
+  given: ReadonlyArray<SweepStep>,
+): ReadonlyArray<SweepEntry> {
+  const label = LAYOUT.definitions.toolbarStyle.label;
+  return TOOLBAR_STYLE_EXAMPLES.filter(
+    (example) =>
+      example.patch.toolbarStyle !== context.values.model.toolbarStyle,
+  ).map((example) => ({
+    id: `surface-row:toolbarStyle:${example.id}`,
+    source: "surface-row",
+    mirrors: "StyleExamples onChange",
+    given,
+    write: {
+      label: `${label}: ${example.label}`,
+      run: () => {
+        recordedPatch("model", example.patch);
+      },
+    },
+    covers: ["definition:toolbarStyle"],
+    controls: [radioControl(NO_ROW, label, example.label)],
+  }));
+}
+
+function mobileFooterEntries(
+  context: LayoutFormContext,
+  given: ReadonlyArray<SweepStep>,
+): ReadonlyArray<SweepEntry> {
+  const label = LAYOUT.definitions.mobileFooter.label;
+  return [
+    {
       id: "surface-row:mobileFooter",
       source: "surface-row",
       mirrors: null,
-      given: NO_GIVEN,
+      given,
       write: arrangementFieldStep(
-        `${definitions.mobileFooter.label}: on`,
+        `${label}: on`,
         "mobileFooter",
-        !shipped.arrangement.mobileFooter,
+        !context.arrangement.mobileFooter,
       ),
       covers: ["definition:mobileFooter", "arrangement:mobileFooter"],
-      controls: [switchControl(NO_ROW, definitions.mobileFooter.label)],
-    });
-  }
-  return entries;
+      controls: [switchControl(NO_ROW, label)],
+    },
+  ];
 }
 
-function surfaceEntries(input: SweepPlanInput): ReadonlyArray<SweepEntry> {
-  const { shipped, availability } = input;
-  const arrangement = shipped.arrangement;
-  const definitions = LAYOUT.definitions;
-  const entries: SweepEntry[] = [];
-  if (definitions.tabStripPlacement.availableWhen(availability)) {
-    entries.push(
-      ...segmentFieldEntries({
+/**
+ * The slider under Reading width: no census control (a thumb is not a radio,
+ * switch, checkbox or button), so it is written as an arrangement field, from
+ * where the registry says it is operable.
+ */
+function wideReadingWidthEntries(
+  given: ReadonlyArray<SweepStep>,
+): ReadonlyArray<SweepEntry> {
+  return [
+    {
+      id: "arrangement-field:wideReadingWidthPx",
+      source: "arrangement-field",
+      mirrors: null,
+      given,
+      write: arrangementFieldStep(
+        "Wide column width: max",
+        "wideReadingWidthPx",
+        WIDE_READING_WIDTH_MAX_PX,
+      ),
+      covers: ["arrangement:wideReadingWidthPx"],
+      controls: [],
+    },
+  ];
+}
+
+/** One area row's entries, from where the registry says it can be operated. */
+function areaRowEntries(
+  id: AreaRowId,
+  context: LayoutFormContext,
+  given: ReadonlyArray<SweepStep>,
+): ReadonlyArray<SweepEntry> {
+  const arrangement = context.arrangement;
+  switch (id) {
+    case "tabStripPlacement":
+      return segmentFieldEntries({
         key: "tabStripPlacement",
         label: "Tab placement",
         options: TAB_STRIP_PLACEMENT_OPTIONS,
         current: arrangement.tabStripPlacement,
-        given: NO_GIVEN,
-      }),
-    );
-  }
-  if (definitions.sideStripView.availableWhen(availability)) {
-    entries.push(
-      ...segmentFieldEntries({
+        given,
+      });
+    case "taskTabLayout":
+      return segmentFieldEntries({
+        key: "taskTabLayout",
+        label: "Tab overflow",
+        options: TAB_OVERFLOW_OPTIONS,
+        current: arrangement.taskTabLayout,
+        given,
+      });
+    case "sideStripView":
+      return segmentFieldEntries({
         key: "sideStripView",
         label: "Side tab view",
         options: SIDE_STRIP_VIEW_OPTIONS,
         current: arrangement.sideStripView,
-        // The view only means something while the tabs sit at an edge.
-        given: [TAB_PLACEMENT_LEFT],
-      }),
-    );
+        given,
+      });
+    case "sidebarSide":
+      return sidebarSideEntries(arrangement, given);
+    case "resourceReadings":
+      return resourceReadingsEntries(context, given);
+    case "readingWidth":
+      return segmentFieldEntries({
+        key: "readingWidth",
+        label: "Reading width",
+        options: READING_WIDTH_OPTIONS,
+        current: arrangement.readingWidth,
+        given,
+      });
+    case "wideReadingWidth":
+      return wideReadingWidthEntries(given);
+    case "toolbarStyle":
+      return toolbarStyleEntries(context, given);
+    case "mobileFooter":
+      return mobileFooterEntries(context, given);
   }
-  entries.push(
-    ...segmentFieldEntries({
-      key: "taskTabLayout",
-      label: "Tab overflow",
-      options: TAB_OVERFLOW_OPTIONS,
-      current: arrangement.taskTabLayout,
-      given: NO_GIVEN,
-    }),
-  );
-  if (definitions.sidebarSide.availableWhen(availability)) {
-    entries.push(...sidebarSideEntries(arrangement));
-  }
-  entries.push(
-    ...segmentFieldEntries({
-      key: "readingWidth",
-      label: "Reading width",
-      options: READING_WIDTH_OPTIONS,
-      current: arrangement.readingWidth,
-      given: NO_GIVEN,
-    }),
-    ...switchSurfaceEntries(input),
-  );
-  return entries;
+}
+
+/**
+ * Every area row, in the registry's own order and from where its rule says it
+ * can be operated: a row the shell leaves out (the tab strip's rows in the
+ * installed app, the small-screen footer anywhere but the phone layout) has
+ * no entry, and one a controller disables is unlocked by the writes a person
+ * makes first.
+ */
+function surfaceEntries(input: SweepPlanInput): ReadonlyArray<SweepEntry> {
+  const context = formContext(input);
+  return AREA_ROWS.flatMap((row) => {
+    const given = givenFor(context, row.id, row.depends);
+    return given === null ? [] : areaRowEntries(row.id, context, given);
+  });
 }
 
 // ── Presets, Reset, and the arrangement fields no row writes ────────────────
@@ -1512,27 +1630,13 @@ function resetEntries(): ReadonlyArray<SweepEntry> {
   ];
 }
 
+/**
+ * The fields no row writes. The pinned breakdown's order and the wide column
+ * width are written by a row's own list and slider, so those are the order
+ * list's and the area row's entries (`pinnedFieldsList`, `areaRowEntries`).
+ */
 function arrangementFieldEntries(): ReadonlyArray<SweepEntry> {
-  const pinBreakdown = controlStep(
-    "contextUsage",
-    "pinBreakdown",
-    true,
-    "Context usage / Pin breakdown: on",
-  );
   return [
-    {
-      id: "arrangement-field:pinnedContextFieldOrder",
-      source: "arrangement-field",
-      mirrors: null,
-      given: [pinBreakdown],
-      write: arrangementFieldStep(
-        "Pinned breakdown order: reversed",
-        "pinnedContextFieldOrder",
-        [...CONTEXT_USAGE_ROW_KEYS].reverse(),
-      ),
-      covers: ["arrangement:pinnedContextFieldOrder"],
-      controls: [],
-    },
     {
       id: "arrangement-field:statusBarParked",
       source: "arrangement-field",
@@ -1559,23 +1663,6 @@ function arrangementFieldEntries(): ReadonlyArray<SweepEntry> {
       ],
       controls: [],
     },
-    {
-      id: "arrangement-field:wideReadingWidthPx",
-      source: "arrangement-field",
-      mirrors: null,
-      // The wide-column-width row only draws once Reading width is Wide
-      // (`WideReadingWidthRow`).
-      given: [
-        arrangementFieldStep("Reading width: Wide", "readingWidth", "wide"),
-      ],
-      write: arrangementFieldStep(
-        "Wide column width: max",
-        "wideReadingWidthPx",
-        WIDE_READING_WIDTH_MAX_PX,
-      ),
-      covers: ["arrangement:wideReadingWidthPx"],
-      controls: [],
-    },
   ];
 }
 
@@ -1584,7 +1671,6 @@ export function buildSweepPlan(
 ): ReadonlyArray<SweepEntry> {
   const plan = [
     ...regionPlan(input),
-    ...footOrderEntries(input),
     ...orderEntries(input),
     ...railEntries(input),
     ...providerEntries(input),

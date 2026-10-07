@@ -5,6 +5,7 @@ import {
   useLayoutStore,
 } from "@/stores/layout/layout-store";
 import type { BarRegionId } from "@/lib/layout/layout-arrangement";
+import { useLayoutEditorStore } from "@/stores/layout/layout-editor-store";
 
 const viewport = vi.hoisted(() => ({ mobile: false }));
 vi.mock("@/hooks/ui/use-mobile-viewport", () => ({
@@ -142,7 +143,7 @@ describe("<StatusBarVisibilityMenu />", () => {
     );
   });
 
-  it("'Move to header' takes everything the strip is holding, and only that", () => {
+  it("'Move to tab strip' takes everything the strip is holding, and only that", () => {
     useLayoutStore.getState().setArrangement({
       ...useLayoutStore.getState().arrangement,
       usageHost: "status-bar",
@@ -152,7 +153,9 @@ describe("<StatusBarVisibilityMenu />", () => {
     renderMenu(PROVIDERS, BOTH_READINGS);
     openMenu();
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Move to header" }));
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "Move to tab strip" }),
+    );
 
     // The menu belongs to the STRIP, so it moves the strip's readings - both
     // of them here - and each keeps the end it was on (L-156).
@@ -177,7 +180,9 @@ describe("<StatusBarVisibilityMenu />", () => {
     renderMenu(PROVIDERS, BOTH_READINGS);
     openMenu();
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Move to header" }));
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "Move to tab strip" }),
+    );
 
     const { arrangement } = useLayoutStore.getState();
     expect(arrangement.resourceHost).toBe("header");
@@ -185,7 +190,7 @@ describe("<StatusBarVisibilityMenu />", () => {
     expect(arrangement.usageSide).toBe("right");
   });
 
-  it("drops 'Move to header' on a narrow viewport, where it would move nothing", () => {
+  it("drops 'Move to tab strip' on a narrow viewport, where it would move nothing", () => {
     // Below `md` the shell answers with `mobileFooter` and ignores `placement`
     // altogether, while the mobile header draws its usage controls whatever
     // `placement` says. The item would write a preference the user cannot see
@@ -196,7 +201,7 @@ describe("<StatusBarVisibilityMenu />", () => {
     openMenu();
 
     expect(
-      screen.queryByRole("menuitem", { name: "Move to header" }),
+      screen.queryByRole("menuitem", { name: "Move to tab strip" }),
     ).toBeNull();
     // The gate is on that one item, not on the menu.
     expect(
@@ -245,6 +250,160 @@ describe("<StatusBarVisibilityMenu />", () => {
 });
 
 /**
+ * The menu's shape as a reader hears it: every item's name in order, with a
+ * rule written "|". A rule may only sit BETWEEN two groups that drew
+ * something, so none leads, trails or doubles in any state the bar can be in.
+ */
+function menuShape(): ReadonlyArray<string> {
+  return Array.from(screen.getByRole("menu").children).map((child) =>
+    child.getAttribute("role") === "separator" ? "|" : child.textContent,
+  );
+}
+
+function expectNoStrayRule(shape: ReadonlyArray<string>): void {
+  expect(shape.at(0)).not.toBe("|");
+  expect(shape.at(-1)).not.toBe("|");
+  expect(shape.join(",")).not.toContain("|,|");
+}
+
+describe("<StatusBarVisibilityMenu /> shape", () => {
+  it("offers Usage limits' own switch with the providers under it, then Resource monitor", () => {
+    renderMenu(PROVIDERS, BOTH_READINGS);
+    openMenu();
+
+    const shape = menuShape();
+
+    expect(shape).toEqual([
+      "Usage limits",
+      "Codex",
+      "Claude Code",
+      "Resource monitor",
+      "Move to tab strip",
+      "|",
+      "Customize layout...",
+    ]);
+    expect(
+      screen
+        .getByRole("menuitemcheckbox", { name: "Usage limits" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    expectNoStrayRule(shape);
+  });
+
+  it("puts the providers on their own where this bar does not draw Usage limits", () => {
+    renderMenu(PROVIDERS, ["resourceMonitor"]);
+    openMenu();
+
+    const shape = menuShape();
+
+    expect(shape).toEqual([
+      "Resource monitor",
+      "Codex",
+      "Claude Code",
+      "Move to tab strip",
+      "|",
+      "Customize layout...",
+    ]);
+    expectNoStrayRule(shape);
+  });
+
+  it.each([
+    {
+      name: "no providers on the desktop layout",
+      mobile: false,
+      providers: [],
+      regions: BOTH_READINGS,
+      expected: [
+        "Usage limits",
+        "Resource monitor",
+        "Move to tab strip",
+        "|",
+        "Customize layout...",
+      ],
+    },
+    {
+      name: "a narrow viewport with providers only",
+      mobile: true,
+      providers: PROVIDERS,
+      regions: [],
+      expected: ["Codex", "Claude Code", "|", "Customize layout..."],
+    },
+    {
+      name: "a narrow viewport with no providers and a bar drawing nothing",
+      mobile: true,
+      providers: [],
+      regions: [],
+      expected: ["Customize layout..."],
+    },
+    {
+      name: "a narrow viewport with one reading and no providers",
+      mobile: true,
+      providers: [],
+      regions: ["resourceMonitor"],
+      expected: ["Resource monitor", "|", "Customize layout..."],
+    },
+    {
+      name: "the desktop layout with nothing else to offer",
+      mobile: false,
+      providers: [],
+      regions: [],
+      expected: ["Move to tab strip", "|", "Customize layout..."],
+    },
+  ] satisfies ReadonlyArray<{
+    name: string;
+    mobile: boolean;
+    providers: ReadonlyArray<StatusBarMenuProvider>;
+    regions: ReadonlyArray<BarRegionId>;
+    expected: ReadonlyArray<string>;
+  }>)("draws a rule only between two groups: $name", (scenario) => {
+    viewport.mobile = scenario.mobile;
+    renderMenu(scenario.providers, scenario.regions);
+    openMenu();
+
+    const shape = menuShape();
+
+    expect(shape).toEqual(scenario.expected);
+    expectNoStrayRule(shape);
+  });
+});
+
+describe("<StatusBarVisibilityMenu /> while another window holds the editor (T6)", () => {
+  afterEach(() => {
+    useLayoutEditorStore.setState({ lockedBy: "none" });
+  });
+
+  it("disables 'Customize layout...' and describes it with the reason", () => {
+    useLayoutEditorStore.setState({ lockedBy: "other-window" });
+    renderMenu(PROVIDERS, BOTH_READINGS);
+    openMenu();
+
+    const item = screen.getByRole("menuitem", { name: "Customize layout..." });
+
+    expect(item.getAttribute("aria-disabled")).toBe("true");
+    const describedBy = item.getAttribute("aria-describedby");
+    expect(describedBy).not.toBeNull();
+    expect(
+      describedBy === null
+        ? null
+        : document.getElementById(describedBy)?.textContent,
+    ).toBe("Open in another window. Your layout is saved there.");
+
+    fireEvent.click(item);
+    expect(openLayoutEditorMock).not.toHaveBeenCalled();
+  });
+
+  it("is a plain, enabled item with no description while the editor is free", () => {
+    renderMenu(PROVIDERS, BOTH_READINGS);
+    openMenu();
+
+    const item = screen.getByRole("menuitem", { name: "Customize layout..." });
+
+    expect(item.getAttribute("aria-disabled")).toBeNull();
+    expect(item.getAttribute("aria-describedby")).toBeNull();
+  });
+});
+
+/**
  * L-159: the menu names what the BAR is drawing. Since L-156 either reading
  * can be in the top bar, where it carries its own menu, so a menu keyed on a
  * literal offered verbs for a region nowhere near the pointer and a switch
@@ -264,29 +423,6 @@ describe("<StatusBarVisibilityMenu /> names what the bar holds (L-159)", () => {
     expect(
       screen.queryByRole("menuitemcheckbox", { name: "Resource monitor" }),
     ).toBeNull();
-  });
-
-  it("offers verbs for the readings the bar draws, and no others", () => {
-    renderMenu(PROVIDERS, ["resourceMonitor"]);
-    openMenu();
-
-    expect(
-      screen.getByRole("menuitem", { name: "Hide Resource monitor" }),
-    ).not.toBeNull();
-    expect(
-      screen.queryByRole("menuitem", { name: "Hide Usage limits" }),
-    ).toBeNull();
-    cleanup();
-
-    renderMenu(PROVIDERS, BOTH_READINGS);
-    openMenu();
-
-    expect(
-      screen.getByRole("menuitem", { name: "Hide Usage limits" }),
-    ).not.toBeNull();
-    expect(
-      screen.getByRole("menuitem", { name: "Hide Resource monitor" }),
-    ).not.toBeNull();
   });
 
   it("offers one way into the editor however many readings it names", () => {

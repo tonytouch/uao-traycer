@@ -10,6 +10,7 @@ import {
   type LayoutValues,
 } from "@/lib/layout/layout-values";
 import { PRESET_VALUES } from "@/lib/layout/layout-presets";
+import type { ReadingDensity } from "@/lib/layout/reading-density";
 import type { RailRegionId, RegionId } from "@/lib/layout/region-id";
 import { useIsMobileViewport } from "@/hooks/ui/use-mobile-viewport";
 import { useLayoutEditorStore } from "@/stores/layout/layout-editor-store";
@@ -174,6 +175,17 @@ export function useRegionShown(
 }
 
 /**
+ * What the user chose for how much a reading says, before the placement
+ * resolves `auto`. Pass it to `resolveReadingDensity` with the spot the reading
+ * is drawn at; no consumer picks a form from this value directly.
+ */
+export function useRegionDensity(
+  regionId: "usageLimits" | "resourceMonitor",
+): ReadingDensity {
+  return useRegionValue(regionId, "density");
+}
+
+/**
  * One arrangement field, subscribed to exactly that field.
  *
  * There is deliberately no whole-arrangement hook: every reader wants one or
@@ -305,6 +317,19 @@ export function useBarPlacements(): Readonly<
  * as soon as anything is hosted here at all, so a hidden reading's ghost
  * stays a click away to switch back on rather than disappearing along with
  * the strip it belongs to.
+ *
+ * The ONE answer to "is the strip on screen": the shell that mounts it and
+ * the task frame that drops its bottom border for it both read it here.
+ *
+ * A phone-layout VIEWPORT, not a mobile build: a narrow desktop window behaves
+ * the same way. There both hosts are ignored and the gate is the footer's own
+ * switch, `mobileFooter` (L-51, off by default), and they are ignored for the
+ * CONTENTS too (L-162): a footer switched on draws both readings whichever bar
+ * each names, at fixed ends, because the phone has one bar and a footer that
+ * honoured a header pick would silently drop a readout. The picks are kept,
+ * so the desktop window they were made in still honours them. The same "a
+ * reading is on, or a session is open" rule applies (U1): with both readings
+ * hidden the switch alone used to mount an empty, bordered footer.
  */
 export function useStatusBarVisible(): boolean {
   const isMobileViewport = useIsMobileViewport();
@@ -314,7 +339,8 @@ export function useStatusBarVisible(): boolean {
   const usageShown = useRegionShown("usageLimits");
   const resourcesShown = useRegionShown("resourceMonitor");
   const editing = useLayoutEditorStore((state) => state.session !== null);
-  if (isMobileViewport) return mobileFooter;
+  if (isMobileViewport)
+    return mobileFooter && (editing || usageShown || resourcesShown);
   const hostedHere =
     usageHost === "status-bar" || resourceHost === "status-bar";
   if (!hostedHere) return false;

@@ -75,7 +75,15 @@ import type {
   RegionId,
 } from "@/lib/layout/region-id";
 import { cn } from "@/lib/utils";
-import type { StatusBarRateLimitWindow } from "@/hooks/rate-limits/use-status-bar-rate-limit-segments";
+import type {
+  StatusBarProviderSegmentModel,
+  StatusBarRateLimitWindow,
+} from "@/hooks/rate-limits/use-status-bar-rate-limit-segments";
+import type { StatusBarResourceMetricView } from "@/lib/resources/status-bar-resource-reading";
+import { UsageGlyph } from "@/components/layout/header/rate-limit-icon";
+import { StatusBarMetric } from "@/components/layout/status-bar/status-bar-resource-segment";
+import { resolvedReadingDensity } from "@/lib/layout/reading-density";
+import { LayoutOverrideProvider } from "@/providers/layout-override-provider";
 
 /**
  * The only way a region is drawn outside the canvas (L-11).
@@ -104,6 +112,11 @@ import type { StatusBarRateLimitWindow } from "@/hooks/rate-limits/use-status-ba
  * value in, one picture out. That is the passivity contract `lib/layout-overrides.ts`
  * spells out, and it is why the specimen data below is static rather than the
  * watched host's own numbers.
+ *
+ * "Value in" holds for a leaf that reads through the override seam too: every
+ * entry point here lays the values it was handed over its leaf, so the toolbar
+ * chips' chrome, which each chip reads off `model.toolbarStyle` itself, is the
+ * picture's answer and never the store's.
  */
 
 export type { HostContextId };
@@ -203,17 +216,29 @@ export function depictRegion<K extends RegionId>(
   arrangement: LayoutArrangement,
 ): ReactNode {
   const depict = REGION_DEPICTIONS[regionId];
+  // The leaf is drawn under the values it is a picture of, so a real
+  // component that reads its own region through the override seam draws
+  // them rather than the store's.
   return (
-    <HostContextFrame host={hostContextFor(regionId, values, arrangement)}>
-      {depict(values, arrangement)}
-    </HostContextFrame>
+    <LayoutOverrideProvider
+      value={{ values: { [regionId]: values }, arrangement }}
+    >
+      <HostContextFrame host={hostContextFor(regionId, values, arrangement)}>
+        {depict(values, arrangement)}
+      </HostContextFrame>
+    </LayoutOverrideProvider>
   );
 }
 
 /**
  * {@link depictRegion}, for a caller holding a whole `LayoutValues` rather
- * than one region's bag - the inspector's sections and its Style examples,
- * which walk the map and draw whichever region is open.
+ * than one region's bag - the inspector's sections, its Style examples and
+ * the preset miniatures, which walk the map and draw whichever region is open.
+ *
+ * The whole map is laid over the leaf, not just its region's bag: the toolbar
+ * chips all draw their chrome from `model.toolbarStyle` (`toolbar-buttons.tsx`),
+ * so a picture of the mic under a preset or a Toolbar style example has to
+ * carry the model's answer too, or it draws the live setting.
  *
  * It lives here and not in the registry: `regions/` is the registry layer
  * (G1-11), and a depiction import there closes a module cycle back through
@@ -226,13 +251,17 @@ export function regionDepiction<K extends RegionId>(
   values: LayoutValues,
   arrangement: LayoutArrangement,
 ): ReactNode {
-  return depictRegion(region, values[region], arrangement);
+  return (
+    <LayoutOverrideProvider value={{ values }}>
+      {depictRegion(region, values[region], arrangement)}
+    </LayoutOverrideProvider>
+  );
 }
 
 /**
  * What one style row's examples draw: the region itself, except for Model's
  * Reasoning control, whose values change the picker's footer rather than the
- * chip.
+ * chip, and Usage limits' Reading style, whose card has room for two profiles.
  */
 export function regionStyleDepiction(
   region: RegionId,
@@ -242,8 +271,19 @@ export function regionStyleDepiction(
 ): ReactNode {
   if (region === "model" && styleKey === "reasoningControl")
     return <ModelFooterDepiction control={values.model.reasoningControl} />;
+  if (region === "usageLimits" && styleKey === "readingStyle")
+    return regionDepiction(region, values, {
+      ...arrangement,
+      usageProviders: depictedUsageProviders(arrangement).slice(
+        0,
+        READING_STYLE_CARD_PROFILES,
+      ),
+    });
   return regionDepiction(region, values, arrangement);
 }
+
+/** What a Reading style card shows of the status bar: this many profiles. */
+const READING_STYLE_CARD_PROFILES = 2;
 
 /**
  * Every full-size dock row in ONE joined frame (L-97).
@@ -267,22 +307,24 @@ export function depictDockRows(
   arrangement: LayoutArrangement,
 ): ReactNode {
   return (
-    <HostContextFrame host="dock">
-      {rows.map((regionId, index) => (
-        <div
-          key={regionId}
-          // The same hairline `ChatLowerDock` gives a panel it draws below
-          // another one (`separated`), which is what tells two rows apart
-          // inside one frame now that the gap between two cards is gone.
-          //
-          // `undefined` and not `cn(null)`, which is the empty string: the
-          // first row was shipping a bare `class=""` (R2-10).
-          className={index === 0 ? undefined : "border-t border-border/50"}
-        >
-          {depictDockRow(regionId, values[regionId], arrangement)}
-        </div>
-      ))}
-    </HostContextFrame>
+    <LayoutOverrideProvider value={{ values, arrangement }}>
+      <HostContextFrame host="dock">
+        {rows.map((regionId, index) => (
+          <div
+            key={regionId}
+            // The same hairline `ChatLowerDock` gives a panel it draws below
+            // another one (`separated`), which is what tells two rows apart
+            // inside one frame now that the gap between two cards is gone.
+            //
+            // `undefined` and not `cn(null)`, which is the empty string: the
+            // first row was shipping a bare `class=""` (R2-10).
+            className={index === 0 ? undefined : "border-t border-border/50"}
+          >
+            {depictDockRow(regionId, values[regionId], arrangement)}
+          </div>
+        ))}
+      </HostContextFrame>
+    </LayoutOverrideProvider>
   );
 }
 
@@ -364,65 +406,59 @@ const INERT_DIFF_OPENER: ChatSnapshotDiffOpener = {
 
 // ── Per-region renderers ────────────────────────────────────────────────────
 
-/**
- * The segment itself, which the cluster repeats once per shown provider.
- *
- * `windows` is the one place a picture is drawn from live numbers rather than
- * from the specimen, and it is the provider level that needs it (L-96): the
- * limits a user ticks there are that provider's OWN windows, so a stage drawn
- * from the specimen would answer a tick with a picture that never changes.
- * The caller reads them; this module still asks for nothing (the passivity
- * contract in the header).
- *
- * `null` requests specimen data. An empty live list stays empty: the provider
- * level must never turn an absent reading into an invented one.
- */
+/** The segment itself, which the cluster repeats once per shown provider. */
 function depictUsageProviderSegment(
   providerId: RateLimitProviderId,
   values: UsageLimitsValues,
-  windows: ReadonlyArray<StatusBarRateLimitWindow> | null,
 ): ReactNode {
-  if (!isWindowedRateLimitProvider(providerId)) return null;
-  if (windows !== null && windows.length === 0) {
-    return (
-      <span className="text-ui-xs text-muted-foreground">
-        No limits reported
-      </span>
-    );
-  }
-  const drawn = windows ?? [specimenWindow(providerId)];
   return (
     <StatusBarUsageReadings
       display={{
         percentMode: values.amount,
-        showModeWord: values.word,
-        showBar: values.bar,
-        showPercent: values.percent,
         showTimer: values.reset,
+        readingStyle: values.readingStyle,
       }}
       cluster={{
         kind: "segments",
-        segments: [
-          {
-            providerId,
-            profileId: null,
-            account: null,
-            hidden: false,
-            state: "live",
-            reason: null,
-            windows: drawn,
-            shown: drawn,
-            tightest: tightestRateLimitWindow(drawn),
-          },
-        ],
+        segments: [specimenSegment(providerId)],
       }}
     />
   );
 }
 
+/** One provider's segment over its specimen window. */
+function specimenSegment(
+  providerId: RateLimitProviderId,
+): StatusBarProviderSegmentModel {
+  const drawn = [specimenWindow(providerId)];
+  return {
+    providerId,
+    profileId: null,
+    account: null,
+    hidden: false,
+    state: "live",
+    reason: null,
+    windows: drawn,
+    shown: drawn,
+    tightest: tightestRateLimitWindow(drawn),
+  };
+}
+
+/** The providers a usage picture draws: shown, and reporting windows at all. */
+function depictedUsageProviders(
+  arrangement: LayoutArrangement,
+): ReadonlyArray<RateLimitProviderId> {
+  return arrangement.usageProviders.filter(
+    (id) =>
+      isWindowedRateLimitProvider(id) &&
+      !arrangement.hiddenProviders.includes(id),
+  );
+}
+
 /**
  * EVERY shown provider that reports windows, in the arrangement's own order
- * (P2, R3-03).
+ * (P2, R3-03): Detailed as one segment each, Compact as the one glyph over all
+ * of them, as the live reading resolves its density at its spot.
  *
  * The arrangement is the whole answer: a caller that wants only the watched
  * host's providers narrows it first (`useLiveUsageArrangement`), so a picture
@@ -433,59 +469,83 @@ function depictUsageLimits(
   values: UsageLimitsValues,
   arrangement: LayoutArrangement,
 ): ReactNode {
-  return arrangement.usageProviders
-    .filter(
-      (id) =>
-        isWindowedRateLimitProvider(id) &&
-        !arrangement.hiddenProviders.includes(id),
-    )
-    .map((providerId) => (
-      <span key={providerId} className="inline-flex shrink-0 items-center">
-        {depictUsageProviderSegment(providerId, values, null)}
+  const providers = depictedUsageProviders(arrangement);
+  if (
+    resolvedReadingDensity(values.density, arrangement, "usageLimits") ===
+    "compact"
+  ) {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1">
+        <UsageGlyph
+          cluster={{
+            kind: "segments",
+            segments: providers.map((id) => specimenSegment(id)),
+          }}
+        />
       </span>
-    ));
+    );
+  }
+  return providers.map((providerId) => (
+    <span key={providerId} className="inline-flex shrink-0 items-center">
+      {depictUsageProviderSegment(providerId, values)}
+    </span>
+  ));
 }
 
 /**
  * The four metric readings, in the canonical order the strip prints them.
  *
- * Labels and markup mirror `StatusBarResourceSegment` rather than mounting it:
- * that component resolves its readings through `useStatusBarResourceMetricViews`,
- * which subscribes to the desktop sampler and the resource registry, so a
- * picture of it cannot be one of its mounts.
+ * Drawn through the strip's own `StatusBarMetric` rather than by mounting
+ * `StatusBarResourceSegment`: that component resolves its readings through
+ * `useStatusBarResourceMetrics`, which subscribes to the desktop sampler and
+ * the resource registry, so a picture of it cannot be one of its mounts. The
+ * specimen is the sample shell's, which never warns, exactly as the live sample
+ * shell does not.
  */
-const RESOURCE_SPECIMEN: ReadonlyArray<{
-  readonly key: keyof ResourceMonitorValues;
-  readonly label: string;
-  readonly value: string;
-}> = [
-  { key: "cpu", label: "cpu", value: SAMPLE_RESOURCE_VALUES.cpu },
-  { key: "memory", label: "mem", value: SAMPLE_RESOURCE_VALUES.memory },
-  { key: "processes", label: "procs", value: SAMPLE_RESOURCE_VALUES.processes },
-  { key: "ramShare", label: "ram", value: SAMPLE_RESOURCE_VALUES.ramShare },
-];
+const RESOURCE_SPECIMEN: ReadonlyArray<StatusBarResourceMetricView> = (
+  [
+    ["cpu", "cpu"],
+    ["memory", "mem"],
+    ["processes", "procs"],
+    ["ramShare", "ram"],
+  ] as const
+).map(([metric, label]) => ({
+  metric,
+  label,
+  value: SAMPLE_RESOURCE_VALUES[metric],
+  unavailableReason: null,
+}));
 
-function depictResourceMonitor(values: ResourceMonitorValues): ReactNode {
-  const readings = RESOURCE_SPECIMEN.filter(
-    (reading) => values[reading.key] === true,
-  );
+/**
+ * Compact is the CPU icon alone whatever Metrics says; Detailed is
+ * the chosen metrics, as the live reading resolves its density at its spot.
+ */
+function depictResourceMonitor(
+  values: ResourceMonitorValues,
+  arrangement: LayoutArrangement,
+): ReactNode {
+  const compact =
+    resolvedReadingDensity(values.density, arrangement, "resourceMonitor") ===
+    "compact";
+  const readings = RESOURCE_SPECIMEN.filter((view) => values[view.metric]);
   return (
     <span className="inline-flex h-6 max-w-full shrink-0 items-center gap-1.5 px-2 text-muted-foreground">
       <Cpu className="size-3 shrink-0" aria-hidden />
-      {readings.map((reading, index) => (
-        <span
-          key={reading.key}
-          className="inline-flex min-w-0 items-center gap-1"
-        >
-          {index === 0 ? null : (
-            <span aria-hidden className="text-muted-foreground/60">
-              ·
+      {compact
+        ? null
+        : readings.map((view, index) => (
+            <span
+              key={view.metric}
+              className="inline-flex min-w-0 items-center gap-1"
+            >
+              {index === 0 ? null : (
+                <span aria-hidden className="text-muted-foreground/60">
+                  ·
+                </span>
+              )}
+              <StatusBarMetric view={view} warning={false} />
             </span>
-          )}
-          <span className="text-muted-foreground/80">{reading.label}</span>
-          <span className="truncate">{reading.value}</span>
-        </span>
-      ))}
+          ))}
     </span>
   );
 }

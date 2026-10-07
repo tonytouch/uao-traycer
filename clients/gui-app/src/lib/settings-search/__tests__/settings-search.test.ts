@@ -33,6 +33,7 @@ const DESKTOP: SettingsAvailabilityContext = {
   }),
   featureSettings: null,
   mobileApp: false,
+  phoneLayout: false,
 };
 
 /** The installed mobile app: no desktop bridges, push permission present. */
@@ -47,6 +48,7 @@ const MOBILE: SettingsAvailabilityContext = {
   }),
   featureSettings: null,
   mobileApp: true,
+  phoneLayout: true,
 };
 
 /** A desktop feature-settings bridge: only its presence gates Experimental. */
@@ -203,25 +205,48 @@ describe("settings search", () => {
     expect(scopes).toContain("Host");
   });
 
-  it("reaches the ported Agent office default view row, group breadcrumb included", () => {
-    // T6's `agentOffice` group and `agentOfficeDefaultView` row were ported
-    // onto main's declarative model by hand - a row cannot exist in that
-    // model without becoming a search entry, but a typo in its anchor or a
-    // group id that does not resolve would still compile and render. This
-    // proves the entry the port actually produced, not merely that some
-    // entry with this row's words exists.
+  it("reaches the Agent office default view row, group breadcrumb included", () => {
+    // The row used to sit under its own Agent office group; it is now a row
+    // of Appearance ▸ Tasks. A typo in its anchor or a group id that does
+    // not resolve would still compile and render. This proves the entry the
+    // page actually produced.
     expect(landingFor("office default view", DESKTOP)).toBe(
       "appearance#appearance-agent-office-default-view",
     );
     const results = searchSettings("office default view", DESKTOP);
     expect(results[0].entry.kind).toBe("setting");
-    expect(results[0].entry.label).toBe("Default view");
-    expect(results[0].entry.group).toBe("Agent office");
+    expect(results[0].entry.label).toBe("Agent office default view");
+    expect(results[0].entry.group).toBe("Tasks");
 
     // "layout" is a keyword, not a word the label contains - the same
     // distinction "finds a setting by a word its label does not contain"
     // makes above, pinned for this row specifically.
-    expect(labelsFor("layout", DESKTOP)).toContain("Default view");
+    expect(labelsFor("layout", DESKTOP)).toContain("Agent office default view");
+  });
+
+  it("lands wallpaper-effect vocabulary on the Start page group, not the Appearance page", () => {
+    // These rows contribute to the Start page group. They used to contribute
+    // to the page, so a search opened Appearance on Themes, where none of
+    // them is.
+    for (const query of [
+      "Effect strength",
+      "Tint wallpaper with theme accent color",
+    ]) {
+      expect(landingFor(query, DESKTOP), query).toBe(
+        "appearance#appearance-start-page",
+      );
+      const pageHits = searchSettings(query, DESKTOP).filter(
+        (result) =>
+          result.entry.section === "appearance" && result.entry.anchor === null,
+      );
+      expect(pageHits, query).toEqual([]);
+    }
+    expect(searchSettings("Effect strength", DESKTOP)[0].entry).toMatchObject({
+      section: "appearance",
+      kind: "group",
+      label: "Start page",
+      anchor: "appearance-start-page",
+    });
   });
 
   it("matches on a two-word query that spans the page and the row", () => {
@@ -268,13 +293,14 @@ describe("settings search", () => {
       ).toEqual([]);
     });
 
-    it("offers every region but the microphone in the installed mobile app too", () => {
+    it("offers every region but the microphone and the minimap in the installed mobile app too", () => {
       // A region the strip does not host is hosted by the header instead, so
       // no shell withholds one for that reason - the switch that used to gate
-      // the whole page is gone with the page. The mic alone follows its own
-      // row's availability, which the mobile app lacks.
+      // the whole page is gone with the page. Two regions follow their own
+      // row's availability, which the mobile app lacks: the mic (it refuses
+      // dictation) and the minimap (its edge rail is never drawn there, so it
+      // has no row and no search entry).
       const cases: ReadonlyArray<readonly [string, string]> = [
-        ["minimap", "minimap"],
         ["usage limits", "usageLimits"],
         ["resource monitor", "resourceMonitor"],
       ];
@@ -282,6 +308,7 @@ describe("settings search", () => {
         expect(launchesFor(query, MOBILE), query).toContain(region);
       }
       expect(launchesFor("microphone", MOBILE)).not.toContain("mic");
+      expect(launchesFor("minimap", MOBILE)).not.toContain("minimap");
     });
 
     it("still lets the page win on its own name", () => {
@@ -297,6 +324,30 @@ describe("settings search", () => {
       expect(landingsFor("top bar", DESKTOP)).toContain(
         "layout#layout-surface-top-bar",
       );
+    });
+
+    it("agrees with the form in a narrow browser tab: the rows it keeps live with a note are searchable, the installed app's absent ones are not", () => {
+      // The phone layout without the installed app: the same layout the
+      // window can widen out of, so the form keeps these rows (live, noting
+      // "Applies on wider windows.") and search must not hide them.
+      const NARROW_BROWSER: SettingsAvailabilityContext = {
+        ...DESKTOP,
+        phoneLayout: true,
+      };
+
+      expect(launchesFor("minimap", NARROW_BROWSER)).toContain("minimap");
+      for (const label of [
+        "Tab overflow",
+        "Readings on agent rows",
+        "Reading width",
+        "Status bar on small screens",
+      ]) {
+        expect(labelsFor(label, NARROW_BROWSER), label).toContain(label);
+      }
+      // The installed app, the same phone layout at every width, has none of
+      // the desktop-layout rows, whatever the window.
+      expect(launchesFor("minimap", MOBILE)).not.toContain("minimap");
+      expect(labelsFor("Reading width", MOBILE)).not.toContain("Reading width");
     });
 
     it("indexes the small-screen status bar row in the installed app only", () => {
@@ -343,10 +394,10 @@ describe("settings search", () => {
 
     it("offers the phone's push row on mobile and withholds it on desktop", () => {
       expect(labelsFor("push notifications", MOBILE)).toContain(
-        "Push notifications",
+        "Push notifications on this phone",
       );
       expect(labelsFor("push notifications", DESKTOP)).not.toContain(
-        "Push notifications",
+        "Push notifications on this phone",
       );
     });
 

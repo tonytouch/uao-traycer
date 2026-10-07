@@ -142,7 +142,7 @@ export function HostIdentityCard(props: {
   const arch = formatArchitecture(host.platform);
   const version = formatHostVersion(props.version);
   // One line of provenance, in words a person reads rather than the build
-  // target string the registry happens to store. This is the page's ONLY
+  // target string the registry happens to store. This is the card's ONLY
   // version, on purpose.
   const facts = [platform, arch, version].filter(
     (part): part is string => part !== null && part.length > 0,
@@ -218,8 +218,7 @@ export function HostIdentityCard(props: {
                 repeats the `Local` tag, and the relay route line was
                 deliberately dropped with the meta row — but an offline or
                 unknown host's detail is the actionable half of its answer:
-                "Last seen 2h ago", when reachability was checked, that remote
-                access needs an upgrade. Suppressing those left them rendered
+                "Last seen 2h ago", when reachability was checked. Suppressing those left them rendered
                 nowhere, since the picker deliberately shows only a dot. */}
             {host.health.tone === "live" ||
             (host.health.detail ?? "").length === 0 ? null : (
