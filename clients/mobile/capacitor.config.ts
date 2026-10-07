@@ -2,7 +2,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
 import { KeyboardResize } from "@capacitor/keyboard";
 
 /**
- * Capacitor configuration for the Traycer mobile runner.
+ * Capacitor configuration for the UAO mobile runner.
  *
  * `webDir` points at `dist/web/` - the output folder produced by Vite when
  * building `src/web/index.html`. The mobile renderer consumes the `gui-app`
@@ -29,12 +29,13 @@ import { KeyboardResize } from "@capacitor/keyboard";
  * to the WebView origin - localStorage, IndexedDB, cookies. Cheap today, a
  * migration afterwards.
  *
- * Debug builds separately carry a loopback-scoped cleartext exemption
- * (`android/app/src/debug/`), which the dev loop needs either way.
+ * Debug builds replace the main cleartext config with a loopback-scoped
+ * exemption (`android/app/src/debug/`), which the dev loop needs either way.
+ * Release uses the main config so Tailscale `http://100.x` can load.
  */
 const config: CapacitorConfig = {
-  appId: "com.traycer.app",
-  appName: "Traycer",
+  appId: "com.tonytouch.uao",
+  appName: "UAO",
   webDir: "dist/web",
   server: {
     iosScheme: "http",

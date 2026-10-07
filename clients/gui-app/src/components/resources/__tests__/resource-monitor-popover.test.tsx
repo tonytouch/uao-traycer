@@ -115,31 +115,7 @@ vi.mock("@/lib/host/stream-runtime-context", async (importOriginal) => {
   };
 });
 
-// The plan-restricted branch is the only thing in this popover that reaches the
-// runner bridge, and it needs both a provider (`useRunnerHost` throws without
-// one) and a QueryClient. Faking those two boundaries keeps the REAL upgrade
-// button under test — stubbing the component itself would assert its own test
-// id and nothing about what this surface actually offers.
-//
-// `importOriginal` rather than a fixed factory, deliberately: a fixed one goes
-// stale the moment either module gains an export some other component in this
-// tree already calls, and fails at the call site rather than here.
-const openLinkMock = vi.hoisted(() => vi.fn());
-
-vi.mock("@/providers/use-runner-host", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/providers/use-runner-host")>();
-  return {
-    ...actual,
-    useRunnerHost: () => ({ authnBaseUrl: "https://authn.example" }),
-  };
-});
-
-vi.mock("@/lib/links/open-link", () => ({
-  useOpenLink: () => openLinkMock,
-}));
-
-// The scope's own six hooks (both host lists, the runner host, the plan gate)
+// The scope's own hooks (both host lists, the runner host)
 // are not this suite's subject - it mocks at the scope boundary, exactly as the
 // Settings panel suites and the usage popover's do.
 const hostScopeMock = vi.hoisted(() => ({
@@ -901,7 +877,6 @@ afterEach(() => {
   stopTerminalOwnerMock.mutate.mockClear();
   managedCommandStopMock.mutate.mockClear();
   agentSessionCountsMock.byEpicId = new Map();
-  openLinkMock.mockClear();
   Reflect.deleteProperty(globalThis, "runnerHost");
   routerMock.navigate.mockReset();
   routerMock.pathname = "/epics/epic-1/tab-1";
@@ -4770,94 +4745,6 @@ describe("ResourceMonitorPopover · host picker", () => {
     expect(resourcesRegistry.getGlobal()).toBeNull();
   });
 
-  it("offers an upgrade, not a connectivity story, for a plan-restricted pick", () => {
-    const returnToActive = vi.fn();
-    hostScopeMock.scope = watchingSecondHostScope({
-      // `unreachable` is how a plan-gated route surfaces - the server refuses
-      // the attach - so this is the SAME status as the test above and the
-      // reason is the only thing telling them apart.
-      status: "unreachable",
-      host: hostScopeOptionFixture({
-        hostId: "host-b",
-        name: "host-b",
-        isActive: false,
-        isLocalMachine: false,
-        planRestricted: true,
-      }),
-      returnToActive,
-    });
-    hostScopeMock.hasExplicitPick = true;
-    installStubFactory();
-    renderPopover();
-
-    fireEvent.click(screen.getByRole("button", { name: "Resources" }));
-
-    // The offline copy would send someone to debug a network that is working.
-    expect(
-      screen.queryByTestId("resource-monitor-host-unavailable"),
-    ).toBeNull();
-    expect(
-      screen.getByTestId("resource-monitor-host-plan-restricted"),
-    ).not.toBeNull();
-    // The remedy is the same button the Settings gate offers, so the two
-    // surfaces cannot drift on what a person is supposed to do next — and it
-    // has to ACT, or it is decoration with the right test id.
-    fireEvent.click(screen.getByTestId("host-scope-plan-upgrade"));
-    expect(openLinkMock).toHaveBeenCalledWith(
-      expect.any(String),
-      "account",
-      null,
-    );
-
-    // Still a way back, for someone who would rather keep watching than pay.
-    fireEvent.click(
-      screen.getByTestId("resource-monitor-host-return-to-active"),
-    );
-    expect(returnToActive).toHaveBeenCalled();
-  });
-
-  // App Store review guideline 3.1.1: the installed app may not present or
-  // link to a subscription it cannot sell through Apple. The state is still
-  // reported and the way back is still offered - only the plan wording and
-  // the remedy go.
-  it("reports the plan-restricted pick with no upgrade in the installed mobile app", () => {
-    setMobileApp(true);
-    const returnToActive = vi.fn();
-    hostScopeMock.scope = watchingSecondHostScope({
-      status: "unreachable",
-      host: hostScopeOptionFixture({
-        hostId: "host-b",
-        name: "host-b",
-        isActive: false,
-        isLocalMachine: false,
-        planRestricted: true,
-      }),
-      returnToActive,
-    });
-    hostScopeMock.hasExplicitPick = true;
-    installStubFactory();
-    renderPopover();
-
-    fireEvent.click(screen.getByRole("button", { name: "Resources" }));
-
-    const notice = screen.getByTestId("resource-monitor-host-plan-restricted");
-    expect(notice.textContent).toContain(
-      "host-b is not available to the mobile app on the current plan",
-    );
-    expect(notice.textContent).toContain(
-      "Manage this from the Traycer desktop app.",
-    );
-    expect(notice.textContent).not.toContain("paid plan");
-    expect(screen.queryByTestId("host-scope-plan-upgrade")).toBeNull();
-    expect(openLinkMock).not.toHaveBeenCalled();
-
-    // The escape hatch is not a purchase, so it stays.
-    fireEvent.click(
-      screen.getByTestId("resource-monitor-host-return-to-active"),
-    );
-    expect(returnToActive).toHaveBeenCalled();
-  });
-
   it("refuses a stream whose snapshot is not attributed to the watched host", () => {
     hostScopeMock.scope = watchingSecondHostScope({});
     hostScopeMock.hasExplicitPick = true;
@@ -5462,6 +5349,137 @@ describe("ResourceMonitorPopover · header-button forms (G6)", () => {
     renderPopoverForm("readout");
     const readoutButton = screen.getByTestId("resource-monitor-header-button");
     expect(readoutButton.className).toMatch(/\bw-full\b/);
+  });
+
+  describe("Compact forms (strip, readout)", () => {
+    function emitCpu(
+      stub: { readonly emit: () => ResourcesStreamCallbacks },
+      cpu: number,
+    ): void {
+      act(() => {
+        stub.emit().onSnapshot(
+          projection({
+            app: { ...app(), cpuPercent: cpu },
+            owners: [owner({})],
+          }),
+        );
+      });
+    }
+
+    it("draws the CPU icon alone in the top strip, whatever Metrics says, with the reading one hover away", async () => {
+      useLayoutStore.getState().setRegionValues("resourceMonitor", {
+        cpu: false,
+        memory: true,
+      });
+      const stub = renderPopoverForm("strip");
+      emitCpu(stub, 16);
+
+      const button = screen.getByTestId("resource-monitor-header-button");
+      expect(button.getAttribute("data-variant")).toBe("muted");
+      expect(button.getAttribute("aria-label")).toBe("Resources");
+      expect(button.textContent).toBe("");
+      expect(within(button).queryByTestId("resource-cpu-reading")).toBeNull();
+      expect(button.querySelector("svg")).not.toBeNull();
+
+      fireEvent.focus(button);
+      expect((await screen.findByRole("tooltip")).textContent).toContain(
+        "Resources · CPU 16%",
+      );
+    });
+
+    it("says cpu before the percent in the expanded strip's outlined tile", () => {
+      const stub = renderPopoverForm("readout");
+      emitCpu(stub, 16);
+
+      const button = screen.getByTestId("resource-monitor-header-button");
+      expect(button.getAttribute("data-variant")).toBe("outline");
+      expect(button.className).toMatch(/\bw-full\b/);
+      expect(
+        within(button).getByTestId("resource-cpu-reading").textContent,
+      ).toBe("cpu 16%");
+    });
+
+    it("says why there is no CPU reading in the strip icon's tooltip, before the first sample", async () => {
+      renderPopoverForm("strip");
+
+      const button = screen.getByTestId("resource-monitor-header-button");
+      fireEvent.focus(button);
+      const tooltip = (await screen.findByRole("tooltip")).textContent;
+      expect(tooltip).toContain("Resources · Waiting for resource data.");
+    });
+
+    // The threshold itself is held once, at the status bar segment.
+    it("turns the top strip's CPU icon the warning color once CPU crosses the threshold, and prints no number", () => {
+      const stub = renderPopoverForm("strip");
+      const icon = (): Element | null =>
+        screen
+          .getByTestId("resource-monitor-header-button")
+          .querySelector("svg");
+
+      emitCpu(stub, 84);
+      expect(icon()?.getAttribute("class")).not.toContain(
+        "text-warning-foreground",
+      );
+      emitCpu(stub, 85);
+      expect(icon()?.getAttribute("class")).toContain(
+        "text-warning-foreground",
+      );
+      expect(
+        screen.getByTestId("resource-monitor-header-button").textContent,
+      ).toBe("");
+    });
+
+    it("keeps the background stream with every metric off, since CPU is always read", () => {
+      useLayoutStore.getState().setRegionValues("resourceMonitor", {
+        cpu: false,
+        memory: false,
+        processes: false,
+        ramShare: false,
+      });
+      renderPopoverForm("strip");
+
+      expect(resourcesRegistry.getGlobal()).not.toBeNull();
+    });
+  });
+
+  it("Detailed in the side strip draws the chosen metrics as a full-width ghost block", () => {
+    const stub = renderPopoverForm("rows");
+    act(() => {
+      stub.emit().onSnapshot(projection({ app: app(), owners: [owner({})] }));
+    });
+
+    const button = screen.getByTestId("resource-monitor-header-button");
+    expect(button.getAttribute("data-variant")).toBe("ghost");
+    expect(button.className).toMatch(/\bw-full\b/);
+    expect(
+      within(button).getByTestId("status-bar-resource-metric-cpu"),
+    ).not.toBeNull();
+    expect(button.getAttribute("aria-label")).toBe(
+      "Resources: cpu 1.0%, procs 1",
+    );
+  });
+
+  it("Detailed reads the CPU value in the warning color once it crosses the threshold", () => {
+    const stub = renderPopoverForm("rows");
+    const emitCpu = (cpu: number): void => {
+      act(() => {
+        stub.emit().onSnapshot(
+          projection({
+            app: { ...app(), cpuPercent: cpu },
+            owners: [owner({})],
+          }),
+        );
+      });
+    };
+    const cpuValue = (): string | undefined =>
+      within(screen.getByTestId("resource-monitor-header-button")).getByTestId(
+        "status-bar-resource-metric-cpu",
+      ).lastElementChild?.className;
+
+    emitCpu(16);
+    expect(cpuValue()).not.toContain("text-warning-foreground");
+    emitCpu(92);
+    expect(cpuValue()).toContain("text-warning-foreground");
   });
 
   it("stays icon-only in the glyph form, whatever the metrics say", () => {

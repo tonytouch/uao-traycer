@@ -2,10 +2,6 @@ import { LAYOUT_REGION_LIST } from "@/components/layout-editor/regions/region-fa
 import { SURFACE_GROUPS } from "@/components/layout-editor/regions/region-grammar";
 import type { RegionId } from "@/lib/layout/region-id";
 import type { SettingsSearchEntry } from "@/lib/settings-search/settings-definitions";
-import {
-  alwaysAvailable,
-  isVoiceInputRowAvailable,
-} from "@/lib/settings/settings-availability";
 
 /**
  * One settings-search result per layout region, generated from the registry.
@@ -19,8 +15,9 @@ import {
  * an anchor result: there is no per-region element on the page to scroll to,
  * and `launch` is what the result acts on - the editor, opened on that region.
  *
- * Microphone follows the Voice input availability rule, so search never
- * offers a layout region that the mobile app cannot render.
+ * A region its shell gate leaves out of this shell is left out here too, by
+ * that same declared gate (`shellGate`): the Microphone where dictation is
+ * refused, the Minimap where its rail is never drawn.
  */
 export const LAYOUT_LAUNCH_ENTRIES: ReadonlyArray<SettingsSearchEntry> =
   LAYOUT_REGION_LIST.map((region) => ({
@@ -28,8 +25,7 @@ export const LAYOUT_LAUNCH_ENTRIES: ReadonlyArray<SettingsSearchEntry> =
     anchor: null,
     launch: region.id,
     kind: "setting",
-    availableWhen:
-      region.id === "mic" ? isVoiceInputRowAvailable : alwaysAvailable,
+    availableWhen: region.shellGate,
     label: region.name,
     description: region.where,
     group: surfaceLabel(region.surface),
@@ -42,7 +38,8 @@ export const LAYOUT_LAUNCH_ENTRIES: ReadonlyArray<SettingsSearchEntry> =
  * A region is a row of its surface card's list now (L-95), and every list row
  * already carries its own id - so the row a result or the width-gate redirect
  * has to land on is `[data-sortable-id="<regionId>"]`, which is stable because
- * the registry's ids are. It is NOT a `data-settings-anchor`: those are the
+ * the registry's ids are. The two readings of Usage and resources are sections
+ * rather than list rows, and carry `data-region-section` instead. It is NOT a `data-settings-anchor`: those are the
  * search index's own tokens, one per indexed entry, and a region's result is a
  * LAUNCH entry that opens the editor rather than scrolling this page (see
  * `SETTINGS.md` § Launch results).
@@ -52,7 +49,7 @@ export const LAYOUT_LAUNCH_ENTRIES: ReadonlyArray<SettingsSearchEntry> =
  * two can be on screen together in a split.
  */
 export function layoutRegionRowSelector(regionId: RegionId): string {
-  return `[data-sortable-id="${regionId}"]`;
+  return `[data-sortable-id="${regionId}"], [data-region-section="${regionId}"]`;
 }
 
 function surfaceLabel(surface: string): string {

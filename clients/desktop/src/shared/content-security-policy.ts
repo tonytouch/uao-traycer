@@ -103,9 +103,16 @@ function computeCspDirectives(
   env: NodeJS.ProcessEnv,
   uao: boolean,
 ): readonly string[] {
+  // Android and a phone browser embed Agent OS, CloudRoom, and OpenMuse at
+  // http://100.x. CSP cannot name 100.64.0.0/10, and a <domain> rule does not
+  // match raw IPs, so the UAO shell allows the http scheme. Traycer's policy
+  // stays frame-src 'none' and does not gain that scheme.
   const frameSrc = uao
-    ? `frame-src ${UAO_EMBEDDED_TOOL_ORIGINS}`
+    ? `frame-src ${UAO_EMBEDDED_TOOL_ORIGINS} http: https:`
     : "frame-src 'none'";
+  const connectSrc = uao
+    ? `connect-src 'self' blob: data: https: http: wss: ws: sentry-ipc:${devConnectSrcExtras(env)}`
+    : `connect-src 'self' blob: data: https: wss: ws: sentry-ipc: http://localhost:5173 ws://localhost:5173${devConnectSrcExtras(env)}`;
 
   return [
     "default-src 'self'",
@@ -113,9 +120,7 @@ function computeCspDirectives(
     "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
-    `connect-src 'self' blob: data: https: wss: ws: sentry-ipc: http://localhost:5173 ws://localhost:5173${devConnectSrcExtras(
-      env,
-    )}`,
+    connectSrc,
     frameSrc,
     "object-src 'none'",
     "base-uri 'self'",
@@ -133,4 +138,6 @@ export const CONTENT_SECURITY_POLICY = CSP_DIRECTIVES.join("; ");
 
 // Fixed packaged policy: development environment overrides must not change
 // runtime headers independently of the CSP baked into the HTML.
-export const UAO_CONTENT_SECURITY_POLICY = computeCspDirectives({}, true).join("; ");
+export const UAO_CONTENT_SECURITY_POLICY = computeCspDirectives({}, true).join(
+  "; ",
+);

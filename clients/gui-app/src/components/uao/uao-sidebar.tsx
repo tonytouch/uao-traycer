@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
+  Globe,
   Inbox,
   MessageCircle,
   Mic,
@@ -40,6 +41,7 @@ const icons: Readonly<Record<string, LucideIcon>> = {
   "bar-chart-2": BarChart2,
   boxes: Boxes,
   "file-text": FileText,
+  globe: Globe,
   inbox: Inbox,
   "message-circle": MessageCircle,
   mic: Mic,
@@ -101,7 +103,13 @@ export function UaoSidebar({
     const tooltipText = livesIn ? `${pane.label} (in ${livesIn})` : pane.label;
 
     return (
-      <TooltipWrapper key={pane.id} label={tooltipText} side="right" sideOffset={undefined} align={undefined}>
+      <TooltipWrapper
+        key={pane.id}
+        label={tooltipText}
+        side="right"
+        sideOffset={undefined}
+        align={undefined}
+      >
         <button
           type="button"
           aria-label={tooltipText}

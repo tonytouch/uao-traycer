@@ -1,4 +1,6 @@
+import crypto from "node:crypto";
 import http from "node:http";
+import https from "node:https";
 import fs from "node:fs";
 import path from "node:path";
 import { URL } from "node:url";
@@ -8,9 +10,12 @@ import {
   isUaoProxyDocument,
 } from "../shared/content-security-policy";
 import {
-  handleOrcaHttpRequest,
-  handleOrcaTerminalStreamUpgrade,
-} from "./uao-orca-adapter";
+  UAO_WORKSPACES_PREFIX,
+  UAO_WORKSPACES_SERVER_PREFIX,
+  handleWorkspaceHttpRequest,
+  handleWorkspaceStreamUpgrade,
+} from "./uao-workspace-http";
+import { WorkspaceRuntime } from "./uao-workspace-runtime";
 
 const MIME_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -59,7 +64,71 @@ export const UAO_PROXY_DIR_PREFIXES: readonly string[] = [
 export interface UaoServerOptions {
   readonly staticDir: string;
   readonly backendPort: number | undefined;
+  /** Backend host the proxy dials; defaults to loopback. Set for a remote UAO backend. */
+  readonly backendHost?: string | undefined;
+  /**
+   * Reach the backend through another machine's `uao-serve` (its `tailscale
+   * serve` https address) instead of dialing the backend directly. That
+   * gateway is the only path the backend treats as loopback, which the
+   * butler's /ask and /speak require. `pairingSecret` is sent as the
+   * pairing header and never reaches the renderer.
+   */
+  readonly upstream?: UaoUpstream | undefined;
   readonly port?: number;
+  /** Interface to bind. Defaults to loopback; anything else needs `pairingSecret`. */
+  readonly host?: string;
+  /**
+   * Extra browser origins (scheme + host[:port], no path) allowed in the
+   * Host/Origin/Referer boundary checks, e.g. a tailnet HTTPS origin.
+   * Requires `pairingSecret`.
+   */
+  readonly allowedOrigins?: readonly string[];
+  /**
+   * When set, every request except `GET /uao-pair?token=...` must carry the
+   * pairing cookie or the `x-uao-pairing` header. At least 32 characters.
+   */
+  readonly pairingSecret?: string;
+  /**
+   * Serve the workspace and agent-terminal routes (`/uao-api/workspaces/*`).
+   * They run local processes, so remote deployments should turn them off.
+   * Default true.
+   */
+  readonly workspaces?: boolean;
+  /** Runtime to serve; defaults to one rooted at `~/.uao/workspaces`. */
+  readonly workspaceRuntime?: WorkspaceRuntime;
+}
+
+export const UAO_PAIR_PATH = "/uao-pair";
+export const UAO_PAIR_COOKIE = "uao_pair";
+export const UAO_PAIR_HEADER = "x-uao-pairing";
+export const UAO_PAIRING_SECRET_MIN_LENGTH = 32;
+/**
+ * The Android shell's launcher page lives on another origin and hands off with
+ * a top-level navigation, which browsers label `Sec-Fetch-Site: cross-site`.
+ * Only these two paths may be loaded that way: the pairing hand-off and the
+ * static shell it redirects to (the redirect keeps the cross-site label).
+ */
+const CROSS_SITE_NAVIGATION_PATHS: ReadonlySet<string> = new Set([
+  UAO_PAIR_PATH,
+  "/desktop/uao.html",
+]);
+const PAIR_FAILURE_LIMIT = 10;
+const PAIR_FAILURE_WINDOW_MS = 60_000;
+
+export interface UaoUpstream {
+  readonly url: string;
+  readonly pairingSecret: string;
+}
+
+/** Where proxied requests go and which identity headers they carry. */
+interface BackendTarget {
+  readonly secure: boolean;
+  readonly hostname: string;
+  readonly port: number;
+  /** Origin the backend sees as itself; used to rewrite its redirects. */
+  readonly origin: string;
+  readonly hostHeader: string;
+  readonly pairingSecret: string | undefined;
 }
 
 export interface UaoServerInstance {
@@ -90,7 +159,7 @@ const FRAME_BOOTSTRAP = `<script>
 export async function handleUaoFrameDocument(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  backendPort: number,
+  backend: BackendTarget,
 ): Promise<boolean> {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   if (
@@ -103,11 +172,14 @@ export async function handleUaoFrameDocument(
   const abort = () => controller.abort();
   res.once("close", abort);
   try {
-    const response = await fetch(`http://127.0.0.1:${backendPort}/${url.search}`, {
+    const response = await fetch(`${backend.origin}${backend.pairingSecret !== undefined ? "/uao-api" : ""}/${url.search}`, {
       headers: {
         Accept: "text/html",
         ...(process.env.AGENT_OS_TOKEN
           ? { "x-agent-os-token": process.env.AGENT_OS_TOKEN }
+          : {}),
+        ...(backend.pairingSecret !== undefined
+          ? { [UAO_PAIR_HEADER]: backend.pairingSecret }
           : {}),
       },
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
@@ -129,7 +201,12 @@ export async function handleUaoFrameDocument(
       }
     }
     let html = Buffer.concat(chunks).toString("utf8");
-    if (response.ok && response.headers.get("content-type")?.includes("text/html")) {
+    // A gateway has already injected the bootstrap into its document.
+    if (
+      backend.pairingSecret === undefined &&
+      response.ok &&
+      response.headers.get("content-type")?.includes("text/html")
+    ) {
       html = html.replace(/<head(?:\s[^>]*)?>/i, (head) => head + FRAME_BOOTSTRAP);
     }
     const headers = Object.fromEntries(response.headers);
@@ -152,30 +229,116 @@ export async function handleUaoFrameDocument(
   return true;
 }
 
-function isValidHost(host: string | undefined, port: number): boolean {
+interface BoundaryAllowList {
+  readonly hosts: ReadonlySet<string>;
+  readonly origins: ReadonlySet<string>;
+}
+
+function buildAllowList(
+  port: number,
+  extraOrigins: readonly string[],
+): BoundaryAllowList {
+  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  const origins = new Set([
+    `http://127.0.0.1:${port}`,
+    `http://localhost:${port}`,
+  ]);
+  for (const origin of extraOrigins) {
+    origins.add(origin);
+    hosts.add(new URL(origin).host);
+  }
+  return { hosts, origins };
+}
+
+function isValidHost(
+  host: string | undefined,
+  allow: BoundaryAllowList,
+): boolean {
   if (host === undefined || host.length === 0) return false;
-  return host === `127.0.0.1:${port}` || host === `localhost:${port}`;
+  return allow.hosts.has(host);
 }
 
-function isValidOrigin(origin: string | undefined, port: number): boolean {
+function isValidOrigin(
+  origin: string | undefined,
+  allow: BoundaryAllowList,
+): boolean {
   if (origin === undefined || origin.length === 0) return true;
-  return (
-    origin === `http://127.0.0.1:${port}` ||
-    origin === `http://localhost:${port}`
-  );
+  return allow.origins.has(origin);
 }
 
-function isValidReferer(referer: string | undefined, port: number): boolean {
+function isValidReferer(
+  referer: string | undefined,
+  allow: BoundaryAllowList,
+): boolean {
   if (referer === undefined || referer.length === 0) return true;
   try {
-    const parsed = new URL(referer);
-    return (
-      parsed.origin === `http://127.0.0.1:${port}` ||
-      parsed.origin === `http://localhost:${port}`
-    );
+    return allow.origins.has(new URL(referer).origin);
   } catch {
     return false;
   }
+}
+
+function isCrossSiteNavigationAllowed(req: http.IncomingMessage): boolean {
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  if (
+    req.headers["sec-fetch-mode"] !== "navigate" ||
+    req.headers["sec-fetch-dest"] !== "document"
+  ) {
+    return false;
+  }
+  const pathname = (req.url ?? "").split("?")[0] ?? "";
+  return CROSS_SITE_NAVIGATION_PATHS.has(pathname);
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "::1" || host === "localhost";
+}
+
+/** Normalises and validates `allowedOrigins`; throws on anything but origin-only http(s). */
+function normalizeAllowedOrigins(origins: readonly string[]): string[] {
+  return origins.map((raw) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw new Error(`Invalid allowed origin: ${raw}`);
+    }
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.pathname !== "/" ||
+      parsed.search !== "" ||
+      parsed.hash !== "" ||
+      parsed.username !== "" ||
+      parsed.password !== ""
+    ) {
+      throw new Error(`Allowed origin must be scheme://host[:port]: ${raw}`);
+    }
+    return parsed.origin;
+  });
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ha = crypto.createHash("sha256").update(a).digest();
+  const hb = crypto.createHash("sha256").update(b).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
+function readCookie(header: string | undefined, name: string): string | null {
+  if (header === undefined) return null;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return null;
+}
+
+/** Cookie value derived from the secret, so the raw secret never sits in the cookie jar. */
+function pairingSessionToken(secret: string): string {
+  return crypto
+    .createHmac("sha256", secret)
+    .update("uao-pairing-session-v1")
+    .digest("hex");
 }
 
 function parseRequestUrl(rawUrl: string, origin: string): URL | null {
@@ -193,15 +356,48 @@ function parseRequestUrl(rawUrl: string, origin: string): URL | null {
 
 function forwardHeaders(
   req: http.IncomingMessage,
-  backendPort: number,
+  backend: BackendTarget,
 ): http.OutgoingHttpHeaders {
   const headers: http.OutgoingHttpHeaders = {
     ...req.headers,
-    host: `127.0.0.1:${backendPort}`,
-    origin: `http://127.0.0.1:${backendPort}`,
+    host: backend.hostHeader,
+    origin: backend.origin,
   };
+  if (backend.pairingSecret !== undefined) {
+    // The gateway checks Referer against its own origins and refuses
+    // anything labelled cross-site; this proxy is not a browser page.
+    headers.referer = `${backend.origin}/`;
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase().startsWith("sec-fetch-")) delete headers[name];
+    }
+  }
+  // Pairing credentials stop at this proxy, and client-asserted network
+  // identity must not reach a backend that trusts such headers.
+  delete headers[UAO_PAIR_HEADER];
+  delete headers["x-forwarded-for"];
+  delete headers["x-forwarded-host"];
+  delete headers["x-forwarded-proto"];
+  delete headers["x-real-ip"];
+  delete headers.forwarded;
+  // `tailscale serve` adds identity headers (tailscale-user-login, ...). The
+  // backend counts tailscale-user-login as a forwarding header and then
+  // refuses the loopback exemption, so none of them may pass through.
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase().startsWith("tailscale-")) delete headers[name];
+  }
+  if (typeof headers.cookie === "string") {
+    const kept = headers.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .filter((part) => !part.startsWith(`${UAO_PAIR_COOKIE}=`));
+    if (kept.length > 0) headers.cookie = kept.join("; ");
+    else delete headers.cookie;
+  }
   if (process.env.AGENT_OS_TOKEN) {
     headers["x-agent-os-token"] = process.env.AGENT_OS_TOKEN;
+  }
+  if (backend.pairingSecret !== undefined) {
+    headers[UAO_PAIR_HEADER] = backend.pairingSecret;
   }
   return headers;
 }
@@ -262,6 +458,20 @@ function isSafeUnderRoot(targetPath: string, rootDir: string): boolean {
   }
 }
 
+/**
+ * Workspaces on the machine behind `upstream` (as opposed to this machine's at
+ * `UAO_WORKSPACES_PREFIX`). The renderer picks between them with the server
+ * prefix; it is rewritten to the gateway's own prefix and never leaves this
+ * process.
+ */
+export function remapServerWorkspacesPath(pathname: string): string | null {
+  if (pathname === UAO_WORKSPACES_SERVER_PREFIX) return UAO_WORKSPACES_PREFIX;
+  if (pathname.startsWith(`${UAO_WORKSPACES_SERVER_PREFIX}/`)) {
+    return `${UAO_WORKSPACES_PREFIX}${pathname.slice(UAO_WORKSPACES_SERVER_PREFIX.length)}`;
+  }
+  return null;
+}
+
 export function matchUaoProxyRoute(pathname: string): {
   readonly matched: boolean;
   readonly isUaoApi: boolean;
@@ -308,11 +518,170 @@ export function matchUaoProxyRoute(pathname: string): {
 export function startUaoServer(
   options: UaoServerOptions,
 ): Promise<UaoServerInstance> {
-  const backendHost = "127.0.0.1";
-  const backendPort = options.backendPort ?? 5050;
+  const upstreamUrl =
+    options.upstream !== undefined ? new URL(options.upstream.url) : undefined;
+  if (upstreamUrl !== undefined && upstreamUrl.protocol !== "https:") {
+    throw new Error("UAO upstream must be an https URL.");
+  }
+  const backendHost =
+    upstreamUrl?.hostname ?? options.backendHost ?? "127.0.0.1";
+  const backendPort =
+    upstreamUrl !== undefined
+      ? Number(upstreamUrl.port || 443)
+      : (options.backendPort ?? 5050);
+  const backend: BackendTarget =
+    upstreamUrl !== undefined && options.upstream !== undefined
+      ? {
+          secure: true,
+          hostname: backendHost,
+          port: backendPort,
+          origin: upstreamUrl.origin,
+          hostHeader: upstreamUrl.host,
+          pairingSecret: options.upstream.pairingSecret,
+        }
+      : {
+          secure: false,
+          hostname: backendHost,
+          port: backendPort,
+          origin: `http://${backendHost}:${backendPort}`,
+          hostHeader: `127.0.0.1:${backendPort}`,
+          pairingSecret: undefined,
+        };
+  const viaGateway = backend.pairingSecret !== undefined;
+  const requestBackend = backend.secure ? https.request : http.request;
   const staticDir = path.resolve(options.staticDir);
+  const bindHost = options.host ?? "127.0.0.1";
+  const workspacesEnabled = options.workspaces !== false;
+  const workspaceRuntime = options.workspaceRuntime ?? new WorkspaceRuntime({});
+  const pairingSecret = options.pairingSecret;
+
+  let extraOrigins: string[];
+  try {
+    extraOrigins = normalizeAllowedOrigins(options.allowedOrigins ?? []);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  if (
+    pairingSecret === undefined &&
+    (!isLoopbackHost(bindHost) || extraOrigins.length > 0)
+  ) {
+    return Promise.reject(
+      new Error(
+        "A pairing secret is required when binding a non-loopback host or allowing extra origins.",
+      ),
+    );
+  }
+  if (
+    pairingSecret !== undefined &&
+    pairingSecret.length < UAO_PAIRING_SECRET_MIN_LENGTH
+  ) {
+    return Promise.reject(
+      new Error(
+        `The pairing secret must be at least ${UAO_PAIRING_SECRET_MIN_LENGTH} characters.`,
+      ),
+    );
+  }
+  const sessionToken =
+    pairingSecret === undefined ? null : pairingSessionToken(pairingSecret);
+  const pairFailures = new Map<string, { count: number; resetAt: number }>();
+
+  function pairingThrottled(remote: string | undefined): boolean {
+    const entry = pairFailures.get(remote ?? "");
+    if (entry === undefined) return false;
+    if (Date.now() >= entry.resetAt) {
+      pairFailures.delete(remote ?? "");
+      return false;
+    }
+    return entry.count >= PAIR_FAILURE_LIMIT;
+  }
+
+  function recordPairFailure(remote: string | undefined): void {
+    const key = remote ?? "";
+    const now = Date.now();
+    const entry = pairFailures.get(key);
+    if (entry === undefined || now >= entry.resetAt) {
+      pairFailures.set(key, {
+        count: 1,
+        resetAt: now + PAIR_FAILURE_WINDOW_MS,
+      });
+    } else {
+      entry.count += 1;
+    }
+  }
+
+  /** "ok", "missing" (no credential), or "bad" (a credential that did not match). */
+  function checkPairing(req: http.IncomingMessage): "ok" | "missing" | "bad" {
+    if (pairingSecret === undefined || sessionToken === null) return "ok";
+    const header = req.headers[UAO_PAIR_HEADER];
+    if (typeof header === "string" && header.length > 0) {
+      return safeEqual(header, pairingSecret) ? "ok" : "bad";
+    }
+    const cookie = readCookie(req.headers.cookie, UAO_PAIR_COOKIE);
+    if (cookie === null) return "missing";
+    return safeEqual(cookie, sessionToken) ? "ok" : "missing";
+  }
+
+  /**
+   * Workspace routes run local processes. When this server is a pairing gateway
+   * they additionally demand the pairing *header* (what the desktop proxy
+   * sends), so a phone browser holding only the pairing cookie gets no shell.
+   */
+  function pairedByHeader(req: http.IncomingMessage): boolean {
+    const header = req.headers[UAO_PAIR_HEADER];
+    return (
+      pairingSecret !== undefined &&
+      typeof header === "string" &&
+      header.length > 0 &&
+      safeEqual(header, pairingSecret)
+    );
+  }
+
+  function handlePairRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    parsed: URL,
+    allow: BoundaryAllowList,
+  ): void {
+    const remote = req.socket.remoteAddress;
+    if (req.method !== "GET") {
+      res.writeHead(405, { Allow: "GET", "Content-Type": "text/plain" });
+      res.end("Method Not Allowed");
+      return;
+    }
+    if (pairingThrottled(remote)) {
+      res.writeHead(429, { "Content-Type": "text/plain", "Retry-After": "60" });
+      res.end("Too many pairing attempts");
+      return;
+    }
+    const token = parsed.searchParams.get("token") ?? "";
+    if (
+      pairingSecret === undefined ||
+      sessionToken === null ||
+      !safeEqual(token, pairingSecret)
+    ) {
+      recordPairFailure(remote);
+      res.writeHead(401, { "Content-Type": "text/plain" });
+      res.end("Pairing failed");
+      return;
+    }
+    pairFailures.delete(remote ?? "");
+    const hostHeader = req.headers.host ?? "";
+    const secure = [...allow.origins].some(
+      (origin) =>
+        origin.startsWith("https://") && new URL(origin).host === hostHeader,
+    );
+    res.writeHead(303, {
+      Location: "/desktop/uao.html",
+      "Set-Cookie": `${UAO_PAIR_COOKIE}=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000${secure ? "; Secure" : ""}`,
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+    });
+    res.end();
+  }
   const trackedSockets = new Set<Socket>();
-  const backendAgent = new http.Agent({ keepAlive: false });
+  const backendAgent = backend.secure
+    ? new https.Agent({ keepAlive: false })
+    : new http.Agent({ keepAlive: false });
 
   return new Promise<UaoServerInstance>((resolveServer, rejectServer) => {
     const server = http.createServer();
@@ -330,24 +699,28 @@ export function startUaoServer(
         const addr = server.address() as AddressInfo | null;
         const port = addr !== null ? addr.port : 0;
         const serverOrigin = `http://127.0.0.1:${port}`;
+        const allow = buildAllowList(port, extraOrigins);
 
         // 1. Boundary check: Host and Origin
-        if (!isValidHost(req.headers.host, port)) {
+        if (!isValidHost(req.headers.host, allow)) {
           res.writeHead(403, { "Content-Type": "text/plain" });
           res.end("Forbidden: Invalid Host");
           return;
         }
 
+        const crossSiteNavigation =
+          pairingSecret !== undefined && isCrossSiteNavigationAllowed(req);
         if (
-          !isValidOrigin(req.headers.origin, port) ||
-          req.headers["sec-fetch-site"] === "cross-site"
+          !isValidOrigin(req.headers.origin, allow) ||
+          (req.headers["sec-fetch-site"] === "cross-site" &&
+            !crossSiteNavigation)
         ) {
           res.writeHead(403, { "Content-Type": "text/plain" });
           res.end("Forbidden: Invalid Origin");
           return;
         }
 
-        if (!isValidReferer(req.headers.referer, port)) {
+        if (!crossSiteNavigation && !isValidReferer(req.headers.referer, allow)) {
           res.writeHead(403, { "Content-Type": "text/plain" });
           res.end("Forbidden: Invalid Referer");
           return;
@@ -359,7 +732,7 @@ export function startUaoServer(
           res.end("Bad Request");
           return;
         }
-        const pathname = parsed.pathname;
+        let pathname = parsed.pathname;
         if (
           ![
             "GET",
@@ -376,6 +749,22 @@ export function startUaoServer(
           return;
         }
 
+        // 1b. Pairing gate: nothing past this point is reachable unpaired.
+        if (pairingSecret !== undefined && pathname === UAO_PAIR_PATH) {
+          handlePairRequest(req, res, parsed, allow);
+          return;
+        }
+        const pairing = checkPairing(req);
+        if (pairing !== "ok") {
+          if (pairing === "bad") recordPairFailure(req.socket.remoteAddress);
+          res.writeHead(401, {
+            "Content-Type": "text/plain",
+            "Cache-Control": "no-store",
+          });
+          res.end("Pairing required");
+          return;
+        }
+
         // 2. Prevent service worker takeover at root
         if (isServiceWorkerRequest(pathname, req.headers)) {
           res.writeHead(404, { "Content-Type": "text/plain" });
@@ -383,20 +772,55 @@ export function startUaoServer(
           return;
         }
 
-        // 2b. Direct bounded Orca CLI adapter
+        // 2a. Runtime config for the renderer (read-only, no secrets).
+        if (pathname === "/desktop/uao-config.json" && req.method === "GET") {
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          });
+          res.end(JSON.stringify({ workspacesServer: viaGateway }));
+          return;
+        }
+
+        // 2b. Workspaces on the upstream machine: rewrite and fall through to the proxy.
+        const serverWorkspacesPath = remapServerWorkspacesPath(pathname);
+        if (serverWorkspacesPath !== null) {
+          if (!viaGateway) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({ ok: false, error: "No server configured for workspaces" }),
+            );
+            return;
+          }
+          pathname = serverWorkspacesPath;
+        }
+
+        // 2c. This machine's workspaces and agent terminals
         if (
-          pathname === "/uao-api/orca" ||
-          pathname.startsWith("/uao-api/orca/")
+          serverWorkspacesPath === null &&
+          (pathname === UAO_WORKSPACES_PREFIX ||
+            pathname.startsWith(`${UAO_WORKSPACES_PREFIX}/`))
         ) {
-          void handleOrcaHttpRequest(req, res, {
-            port,
-            serverOrigin,
+          if (!workspacesEnabled) {
+            res.writeHead(404, { "Content-Type": "text/plain" });
+            res.end("Not Found");
+            return;
+          }
+          if (pairingSecret !== undefined && !pairedByHeader(req)) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({ ok: false, error: "Workspaces need the desktop pairing header" }),
+            );
+            return;
+          }
+          void handleWorkspaceHttpRequest(req, res, {
+            runtime: workspaceRuntime,
             parsedUrl: parsed,
           }).catch(() => {
             if (!res.headersSent)
               res.writeHead(500, { "Content-Type": "application/json" });
             res.end(
-              JSON.stringify({ ok: false, error: "Orca request failed" }),
+              JSON.stringify({ ok: false, error: "Workspace request failed" }),
             );
           });
           return;
@@ -501,7 +925,7 @@ export function startUaoServer(
           req.method === "GET" && pathname === "/uao-api/" &&
           parsed.searchParams.get("desktop-frame") === "1"
         ) {
-          void handleUaoFrameDocument(req, res, backendPort);
+          void handleUaoFrameDocument(req, res, backend);
           return;
         }
 
@@ -512,11 +936,11 @@ export function startUaoServer(
           return;
         }
 
-        const targetBackendPath = `${proxyRoute.backendPath}${parsed.search}`;
-        const headers = forwardHeaders(req, backendPort);
+        const targetBackendPath = `${viaGateway ? pathname : proxyRoute.backendPath}${parsed.search}`;
+        const headers = forwardHeaders(req, backend);
         delete headers.connection;
 
-        const backendReq = http.request(
+        const backendReq = requestBackend(
           {
             hostname: backendHost,
             port: backendPort,
@@ -546,10 +970,10 @@ export function startUaoServer(
               try {
                 const target = new URL(
                   location,
-                  `http://${backendHost}:${backendPort}${targetBackendPath}`,
+                  `${backend.origin}${targetBackendPath}`,
                 );
-                if (target.origin === `http://${backendHost}:${backendPort}`) {
-                  responseHeaders.location = `${proxyRoute.isUaoApi ? "/uao-api" : ""}${target.pathname}${target.search}${target.hash}`;
+                if (target.origin === backend.origin) {
+                  responseHeaders.location = `${proxyRoute.isUaoApi && !viaGateway ? "/uao-api" : ""}${target.pathname}${target.search}${target.hash}`;
                 }
               } catch {
                 delete responseHeaders.location;
@@ -566,7 +990,7 @@ export function startUaoServer(
             res.end(
               JSON.stringify({
                 error: "UAO backend unreachable",
-                backend: `http://${backendHost}:${backendPort}`,
+                backend: backend.origin,
               }),
             );
           } else {
@@ -597,12 +1021,13 @@ export function startUaoServer(
         const addr = server.address() as AddressInfo | null;
         const port = addr !== null ? addr.port : 0;
         const serverOrigin = `http://127.0.0.1:${port}`;
+        const allow = buildAllowList(port, extraOrigins);
 
         const parsed = parseRequestUrl(req.url ?? "/", serverOrigin);
         if (
-          !isValidHost(req.headers.host, port) ||
-          !isValidOrigin(req.headers.origin, port) ||
-          !isValidReferer(req.headers.referer, port) ||
+          !isValidHost(req.headers.host, allow) ||
+          !isValidOrigin(req.headers.origin, allow) ||
+          !isValidReferer(req.headers.referer, allow) ||
           req.headers["sec-fetch-site"] === "cross-site" ||
           req.method !== "GET" ||
           req.headers.upgrade?.toLowerCase() !== "websocket" ||
@@ -612,13 +1037,35 @@ export function startUaoServer(
           return;
         }
 
-        if (parsed.pathname === "/uao-api/orca/terminal/stream") {
-          void handleOrcaTerminalStreamUpgrade(req, socket, head, {
-            port,
-            serverOrigin,
+        const pairing = checkPairing(req);
+        if (pairing !== "ok") {
+          if (pairing === "bad") recordPairFailure(req.socket.remoteAddress);
+          socket.end(
+            "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+          );
+          return;
+        }
+
+        const serverWorkspacesPath = remapServerWorkspacesPath(parsed.pathname);
+        if (serverWorkspacesPath !== null) {
+          if (!viaGateway) {
+            socket.destroy();
+            return;
+          }
+          parsed.pathname = serverWorkspacesPath;
+        }
+
+        if (
+          serverWorkspacesPath === null &&
+          parsed.pathname === `${UAO_WORKSPACES_PREFIX}/terminal/stream`
+        ) {
+          if (!workspacesEnabled || (pairingSecret !== undefined && !pairedByHeader(req))) {
+            socket.destroy();
+            return;
+          }
+          void handleWorkspaceStreamUpgrade(req, socket, head, {
+            runtime: workspaceRuntime,
             parsedUrl: parsed,
-            userDataPath: undefined,
-            subscribeRuntimeImpl: undefined,
           }).catch(() => {
             socket.destroy();
           });
@@ -631,13 +1078,13 @@ export function startUaoServer(
           return;
         }
 
-        const targetBackendPath = `${proxyRoute.backendPath}${parsed.search}`;
-        const backendReq = http.request({
+        const targetBackendPath = `${viaGateway ? parsed.pathname : proxyRoute.backendPath}${parsed.search}`;
+        const backendReq = requestBackend({
           hostname: backendHost,
           port: backendPort,
           path: targetBackendPath,
           method: req.method,
-          headers: forwardHeaders(req, backendPort),
+          headers: forwardHeaders(req, backend),
           agent: backendAgent,
         });
         backendReq.on("socket", trackSocket);
@@ -689,14 +1136,14 @@ export function startUaoServer(
       },
     );
 
-    server.listen(options.port ?? 0, "127.0.0.1", () => {
+    server.listen(options.port ?? 0, bindHost, () => {
       const addr = server.address() as AddressInfo | null;
       if (addr === null) {
         rejectServer(new Error("Failed to bind UAO runtime server address"));
         return;
       }
       const port = addr.port;
-      const origin = `http://127.0.0.1:${port}`;
+      const origin = `http://${bindHost.includes(":") ? `[${bindHost}]` : bindHost}:${port}`;
 
       resolveServer({
         port,

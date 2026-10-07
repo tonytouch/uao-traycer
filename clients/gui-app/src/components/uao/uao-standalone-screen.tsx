@@ -19,7 +19,7 @@ import { discardDrafts } from "@/lib/uao/draft-persistence";
 import { uaoQueryOptions } from "@/lib/uao/query-options";
 import { UaoEmbeddedPane } from "./uao-embedded-pane";
 import { UaoKanbanTasksPane } from "./uao-kanban-tasks-pane";
-import { UaoOrcaWorkspacesPane } from "./uao-orca-workspaces-pane";
+import { UaoWorkspacesPane } from "./uao-workspaces-pane";
 import { UaoPaneBoundary } from "./uao-pane-boundary";
 import { UaoOfficePane } from "./uao-office-pane";
 import {
@@ -29,10 +29,13 @@ import {
   isNativeUaoPane,
   NAV_GROUPS,
   normalizeNavId,
-  ORCA_PANE_ID,
+  WORKSPACES_PANE_ID,
   OFFICE_PANE_ID,
+  UAO_AGENTS_PANE_ID,
   WORKSPACE_PANE_ID,
 } from "./uao-nav-registry";
+import { rememberUaoAgentsTab } from "./uao-agents-tabs";
+import { UaoAgentsHub } from "./uao-agents-hub";
 import { UaoSidebar } from "./uao-sidebar";
 import { UaoTaskDetailPane } from "./uao-task-detail-pane";
 import { UaoWorktabsBar } from "./uao-worktabs-bar";
@@ -332,20 +335,21 @@ function UaoStandaloneScreenInner() {
   });
 
   const [tabsState, setTabsState] = useState<PersistedWorktabsState>(() => {
-    const initialHash =
-      typeof window !== "undefined" && window.location.hash
-        ? normalizeNavId(window.location.hash)
-        : null;
+    const rawHash = typeof window !== "undefined" ? window.location.hash : "";
+    const initialHash = rawHash !== "" ? normalizeNavId(rawHash) : null;
 
-    let savedParsed: PersistedWorktabsState | null = null;
+    let persisted: unknown = null;
     if (typeof window !== "undefined") {
       try {
         const raw = localStorage.getItem(WORKTABS_STORAGE_KEY);
-        if (raw) savedParsed = sanitizePersistedWorktabs(JSON.parse(raw));
+        if (raw) persisted = JSON.parse(raw);
       } catch {
-        // ignore parse error
+        persisted = null;
       }
+      rememberUaoAgentsTab(rawHash, persisted, localStorage);
     }
+    const savedParsed =
+      persisted === null ? null : sanitizePersistedWorktabs(persisted);
 
     if (initialHash) {
       // New nav hash takes precedence over restore
@@ -480,6 +484,7 @@ function UaoStandaloneScreenInner() {
   // Listen to browser / Electron back/forward navigation
   useEffect(() => {
     const handleHashChange = () => {
+      rememberUaoAgentsTab(window.location.hash, null, window.localStorage);
       const target = normalizeNavId(window.location.hash);
       setTabsState((prev) => {
         if (prev.activeRouteId === target) return prev;
@@ -556,7 +561,12 @@ function UaoStandaloneScreenInner() {
             aria-label="Refresh connection status"
           >
             {boardsQuery.isFetching ? (
-              <AgentSpinningDots className={undefined} testId={undefined} variant={undefined} tone="muted" />
+              <AgentSpinningDots
+                className={undefined}
+                testId={undefined}
+                variant={undefined}
+                tone="muted"
+              />
             ) : (
               <RefreshCw className="size-3 text-muted-foreground" />
             )}
@@ -624,28 +634,46 @@ function UaoStandaloneScreenInner() {
             />
           </div>
 
-          {/* Persistent Orca Terminal Workspaces */}
+          {/* Persistent Workspace Terminal Workspaces */}
           <div
-            id={`uao-panel-${ORCA_PANE_ID}`}
+            id={`uao-panel-${WORKSPACES_PANE_ID}`}
             role="tabpanel"
-            aria-labelledby={`uao-tab-${ORCA_PANE_ID}`}
-            hidden={tabsState.activeOwnerId !== ORCA_PANE_ID}
+            aria-labelledby={`uao-tab-${WORKSPACES_PANE_ID}`}
+            hidden={tabsState.activeOwnerId !== WORKSPACES_PANE_ID}
             className="h-full min-h-0"
           >
-            <UaoPaneBoundary label="Orca Workspaces">
-              <UaoOrcaWorkspacesPane
-                active={tabsState.activeOwnerId === ORCA_PANE_ID}
+            <UaoPaneBoundary label="Workspaces & Agent Terminals">
+              <UaoWorkspacesPane
+                active={tabsState.activeOwnerId === WORKSPACES_PANE_ID}
               />
             </UaoPaneBoundary>
           </div>
 
+          {visitedOwners.has(UAO_AGENTS_PANE_ID) ? (
+            <div
+              id={`uao-panel-${UAO_AGENTS_PANE_ID}`}
+              role="tabpanel"
+              aria-labelledby={`uao-tab-${UAO_AGENTS_PANE_ID}`}
+              hidden={tabsState.activeOwnerId !== UAO_AGENTS_PANE_ID}
+              className="h-full min-h-0"
+            >
+              <UaoPaneBoundary label="Agents">
+                <UaoAgentsHub />
+              </UaoPaneBoundary>
+            </div>
+          ) : null}
           {visitedOwners.has(OFFICE_PANE_ID) ? (
-            <div id={`uao-panel-${OFFICE_PANE_ID}`} role="tabpanel"
+            <div
+              id={`uao-panel-${OFFICE_PANE_ID}`}
+              role="tabpanel"
               aria-labelledby={`uao-tab-${OFFICE_PANE_ID}`}
               hidden={tabsState.activeOwnerId !== OFFICE_PANE_ID}
-              className="h-full min-h-0">
+              className="h-full min-h-0"
+            >
               <UaoPaneBoundary label="Office">
-                <UaoOfficePane active={tabsState.activeOwnerId === OFFICE_PANE_ID} />
+                <UaoOfficePane
+                  active={tabsState.activeOwnerId === OFFICE_PANE_ID}
+                />
               </UaoPaneBoundary>
             </div>
           ) : null}
@@ -653,8 +681,7 @@ function UaoStandaloneScreenInner() {
           {tabsState.tabs
             .filter(
               (tab) =>
-                !isNativeUaoPane(tab.ownerId) &&
-                visitedOwners.has(tab.ownerId),
+                !isNativeUaoPane(tab.ownerId) && visitedOwners.has(tab.ownerId),
             )
             .map((tab) => (
               <div

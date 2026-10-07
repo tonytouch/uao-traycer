@@ -54,31 +54,31 @@ export function hostLifecycleOptionCopy(
     {
       mode: "background",
       label: "Keep the host running in the background",
-      description: `Agents keep working after you quit, and your phone can still reach this ${machine}. The host starts at login.`,
+      description: `Agents keep working after you quit Traycer. You can still connect to this ${machine} from your other devices. The host starts when you log in.`,
     },
     {
       mode: "ask",
       label: "Ask me each time",
       description:
-        "If anything is running you choose whether to keep it going. The host starts with the app.",
+        "The host starts when you open Traycer. When you quit, choose whether to keep work running or stop it. A host you started in a terminal keeps running.",
     },
     {
       mode: "stop-if-idle",
       label: "Stop the host if nothing is running, otherwise ask",
       description:
-        "Quit is instant when the host is idle. The host starts with the app.",
+        "The host starts when you open Traycer. When you quit, it stops if nothing is running; otherwise, you choose whether to keep work running or stop it. A host you started in a terminal keeps running.",
     },
     {
       mode: "linked",
       label: "Stop the host with the app",
       description:
-        "Quitting ends any running agents. The host starts and stops with Traycer, like Docker Desktop's engine.",
+        "The host starts when you open Traycer and stops when you quit, ending work running on it. A host you started in a terminal keeps running.",
     },
     {
       mode: "none",
       label: `Don't run a host on this ${machine}`,
       description:
-        "Traycer connects only to remote hosts. Use this if your host runs in WSL or on another machine.",
+        "Traycer connects only to remote hosts, where your agents and terminals run. No host starts when you open Traycer on this machine.",
     },
   ];
 }
@@ -87,9 +87,9 @@ export function hostLifecycleCardSubtitle(machine: string): string {
   return `Choose what happens to the host on this ${machine}. Agents, terminals and shells run on the host.`;
 }
 
-/** Why the `none` option is disabled for a plan with no remote hosts. */
-export const HOST_LIFECYCLE_NONE_PLAN_REASON =
-  "Your plan doesn't include remote hosts, so Traycer needs a host on this machine.";
+/** Why the `none` option is disabled while signed out. */
+export const HOST_LIFECYCLE_NONE_SIGNED_OUT_REASON =
+  "Sign in to use remote hosts. Until then, Traycer needs a host on this machine.";
 
 /**
  * Why the modes that run a host here are held while the host's Scheduled Task
@@ -256,6 +256,26 @@ export const HOST_QUIT_DESCRIPTION_BUSY_RETRY =
   "Something started on the host while it was stopping, so it was left running. Keep it running, or stop it now and end this work.";
 export const HOST_QUIT_DESCRIPTION_IDLE =
   "Quitting Traycer can keep the host running so your phone can still reach it, or stop it now.";
+/**
+ * Stop-if-idle's "terminals in use" round: the host answered idle while
+ * `count` terminals with a live shell have had a line entered in them. A
+ * command running inside the shell with no output is one of those, and the
+ * host cannot tell it from a prompt, so the quit asks before it stops. The
+ * title carries the count; the terminals are not listed (the window's own
+ * list holds dead and never-used ones, which the count leaves out).
+ */
+export function hostQuitTerminalsInUseTitle(count: number): string {
+  return count === 1
+    ? "1 terminal is still in use"
+    : `${count} terminals are still in use`;
+}
+
+export function hostQuitTerminalsInUseDescription(count: number): string {
+  return count === 1
+    ? "Stopping the host ends it. Quitting Traycer can keep the host running so it carries on, or stop it now."
+    : "Stopping the host ends them. Quitting Traycer can keep the host running so they carry on, or stop it now.";
+}
+
 /**
  * Says only what Traycer does. Whether the host ends, and when, depends on how
  * it was started: a service-run host is stopped here, but a terminal-started

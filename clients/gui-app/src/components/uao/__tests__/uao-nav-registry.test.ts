@@ -13,11 +13,18 @@ import {
   normalizeNavId,
   PRIORITY_PANE_IDS,
   WORKSPACE_PANE_ID,
-  ORCA_PANE_ID,
+  WORKSPACES_PANE_ID,
   OFFICE_PANE_ID,
   isNativeUaoPane,
   FEATURE_OWNER_MAP,
+  UAO_AGENTS_PANE_ID,
 } from "../uao-nav-registry";
+import {
+  legacyAgentsTabFromPersisted,
+  rememberUaoAgentsTab,
+  UAO_AGENTS_TAB_STORAGE_KEY,
+} from "../uao-agents-tabs";
+import { openWorktab, sanitizePersistedWorktabs } from "../uao-worktabs-state";
 import {
   buildCspDirectives,
   isUaoDevMode,
@@ -26,10 +33,10 @@ import {
 } from "../../../../../desktop/src/shared/content-security-policy";
 
 describe("UAO Navigation Registry & Inventory", () => {
-  it("contains the original UAO panes plus tasks, Orca and Office workspaces", () => {
-    expect(ALL_NAV_PANES).toHaveLength(37);
+  it("contains the original UAO panes plus tasks, Workspace and Office workspaces", () => {
+    expect(ALL_NAV_PANES).toHaveLength(38);
     const uniqueIds = new Set(ALL_NAV_PANES.map((p) => p.id));
-    expect(uniqueIds.size).toBe(37);
+    expect(uniqueIds.size).toBe(38);
   });
 
   it("sets command-center as the default pane", () => {
@@ -61,13 +68,13 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(ws?.group).toBe("workspace");
   });
 
-  it("includes the orca workspaces pane with correct ID, group, and label", () => {
-    expect(ORCA_PANE_ID).toBe("orca-workspaces");
-    const orca = findNavPane(ORCA_PANE_ID);
-    expect(orca).toBeDefined();
-    expect(orca?.label).toBe("Orca Workspaces");
-    expect(orca?.group).toBe("workspace");
-    expect(isNativeUaoPane(ORCA_PANE_ID)).toBe(true);
+  it("includes the workspace workspaces pane with correct ID, group, and label", () => {
+    expect(WORKSPACES_PANE_ID).toBe("workspaces");
+    const workspace = findNavPane(WORKSPACES_PANE_ID);
+    expect(workspace).toBeDefined();
+    expect(workspace?.label).toBe("Workspaces & Agent Terminals");
+    expect(workspace?.group).toBe("workspace");
+    expect(isNativeUaoPane(WORKSPACES_PANE_ID)).toBe(true);
     expect(isNativeUaoPane(WORKSPACE_PANE_ID)).toBe(true);
     expect(
       ALL_NAV_PANES.filter((pane) => !isNativeUaoPane(pane.id)),
@@ -76,20 +83,41 @@ describe("UAO Navigation Registry & Inventory", () => {
 
   it("validates and normalizes route hashes correctly", () => {
     expect(isNativeUaoPane(OFFICE_PANE_ID)).toBe(true);
+    expect(isNativeUaoPane(UAO_AGENTS_PANE_ID)).toBe(true);
+    expect(findNavPane(UAO_AGENTS_PANE_ID)?.label).toBe("Agents");
+    expect(findNavPane(UAO_AGENTS_PANE_ID)?.group).toBe("priority");
+    expect(findNavPane("agent-os")).toBeUndefined();
+    expect(findNavPane("cloudroom")).toBeUndefined();
+    expect(findNavPane("openmuse")).toBeUndefined();
+    expect(isNativeUaoPane("agent-os")).toBe(false);
+    expect(isNativeUaoPane("cloudroom")).toBe(false);
+    expect(isNativeUaoPane("openmuse")).toBe(false);
+    const priority = NAV_GROUPS.find((group) => group.id === "priority");
+    expect(priority?.panes.map((pane) => pane.id)).toEqual([
+      UAO_AGENTS_PANE_ID,
+      "command-center",
+      "agent-cockpit",
+      "second-brain",
+    ]);
+    expect(normalizeNavId("#/agent-os")).toBe(UAO_AGENTS_PANE_ID);
+    expect(normalizeNavId("#/cloudroom")).toBe(UAO_AGENTS_PANE_ID);
+    expect(normalizeNavId("#/openmuse")).toBe(UAO_AGENTS_PANE_ID);
     expect(normalizeNavId("#/office")).toBe(OFFICE_PANE_ID);
-    expect(filterNavPanes("genoffice").map(pane => pane.id)).toEqual([OFFICE_PANE_ID]);
+    expect(filterNavPanes("genoffice").map((pane) => pane.id)).toEqual([
+      OFFICE_PANE_ID,
+    ]);
     expect(getFeatureOwnerId(OFFICE_PANE_ID)).toBe(OFFICE_PANE_ID);
     expect(isValidNavPaneId("command-center")).toBe(true);
     expect(isValidNavPaneId("agent-cockpit")).toBe(true);
     expect(isValidNavPaneId("second-brain")).toBe(true);
     expect(isValidNavPaneId("tasks-workspace")).toBe(true);
-    expect(isValidNavPaneId("orca-workspaces")).toBe(true);
+    expect(isValidNavPaneId("workspaces")).toBe(true);
     expect(isValidNavPaneId("non-existent-pane")).toBe(false);
 
     expect(normalizeNavId("#/second-brain")).toBe("second-brain");
     expect(normalizeNavId("#second-brain")).toBe("second-brain");
     expect(normalizeNavId("second-brain")).toBe("second-brain");
-    expect(normalizeNavId("#/orca-workspaces")).toBe("orca-workspaces");
+    expect(normalizeNavId("#/workspaces")).toBe("workspaces");
     expect(normalizeNavId("#/chat")).toBe("tasks-workspace");
     expect(normalizeNavId("chat")).toBe("tasks-workspace");
     expect(normalizeNavId("")).toBe("command-center");
@@ -150,15 +178,24 @@ describe("UAO Navigation Registry & Inventory", () => {
     expect(codingSearch.some((p) => p.id === "claude-code")).toBe(true);
     expect(codingSearch.some((p) => p.id === "coding-cli")).toBe(true);
 
-    // Orca search
-    const orcaSearch = filterNavPanes("orca");
-    expect(orcaSearch.some((p) => p.id === "orca-workspaces")).toBe(true);
+    // Workspace search
+    const workspaceSearch = filterNavPanes("workspace");
+    expect(workspaceSearch.some((p) => p.id === "workspaces")).toBe(true);
 
     // Empty search returns all panes
-    expect(filterNavPanes("")).toHaveLength(37);
+    expect(filterNavPanes("")).toHaveLength(38);
+    expect(filterNavPanes("openmuse").map((pane) => pane.id)).toEqual([
+      UAO_AGENTS_PANE_ID,
+    ]);
+    expect(filterNavPanes("cloudroom").map((pane) => pane.id)).toEqual([
+      UAO_AGENTS_PANE_ID,
+    ]);
+    expect(filterNavPanes("agent os").map((pane) => pane.id)).toEqual([
+      UAO_AGENTS_PANE_ID,
+    ]);
   });
 
-  it("labels backend terminal as Service Terminals vs Orca Workspaces", () => {
+  it("labels backend terminal as Service Terminals vs Workspaces & Agent Terminals", () => {
     const terminal = findNavPane("terminal");
     expect(terminal).toBeDefined();
     expect(terminal?.label).toBe("Service Terminals");
@@ -166,13 +203,75 @@ describe("UAO Navigation Registry & Inventory", () => {
   });
 
   it("organizes consolidated owner panes into the non-empty navigation groups", () => {
-    expect(NAV_GROUPS.map((group) => group.id)).toEqual(["priority", "workspace", "pinned", "agents", "system"]);
+    expect(NAV_GROUPS.map((group) => group.id)).toEqual([
+      "priority",
+      "workspace",
+      "pinned",
+      "agents",
+      "system",
+    ]);
     expect(NAV_GROUPS.every((group) => group.panes.length > 0)).toBe(true);
     const totalGroupPanes = NAV_GROUPS.reduce(
       (sum, g) => sum + g.panes.length,
       0,
     );
-    expect(totalGroupPanes).toBe(19);
+    expect(totalGroupPanes).toBe(20);
+  });
+
+  it("folds the three remote pages into the Agents hub", () => {
+    const persisted = {
+      tabs: [
+        { ownerId: "agent-os", routeTarget: "agent-os" },
+        { ownerId: "cloudroom", routeTarget: "cloudroom" },
+        { ownerId: "command-center", routeTarget: "command-center" },
+      ],
+      activeOwnerId: "cloudroom",
+      activeRouteId: "cloudroom",
+    };
+    expect(legacyAgentsTabFromPersisted(persisted)).toBe("cloudroom");
+    expect(sanitizePersistedWorktabs(persisted)).toEqual({
+      tabs: [
+        { ownerId: UAO_AGENTS_PANE_ID, routeTarget: UAO_AGENTS_PANE_ID },
+        { ownerId: "command-center", routeTarget: "command-center" },
+      ],
+      activeOwnerId: UAO_AGENTS_PANE_ID,
+      activeRouteId: UAO_AGENTS_PANE_ID,
+    });
+    expect(openWorktab([], "openmuse")).toEqual({
+      tabs: [{ ownerId: UAO_AGENTS_PANE_ID, routeTarget: UAO_AGENTS_PANE_ID }],
+      activeOwnerId: UAO_AGENTS_PANE_ID,
+      activeRouteId: UAO_AGENTS_PANE_ID,
+    });
+
+    let stored: string | null = null;
+    const storage = {
+      getItem: (key: string) =>
+        key === UAO_AGENTS_TAB_STORAGE_KEY ? stored : null,
+      setItem: (key: string, value: string) => {
+        if (key === UAO_AGENTS_TAB_STORAGE_KEY) stored = value;
+      },
+    };
+    rememberUaoAgentsTab("#/cloudroom", persisted, storage);
+    expect(stored).toBe("cloudroom");
+    rememberUaoAgentsTab("#/command-center", null, storage);
+    expect(stored).toBe("cloudroom");
+
+    let seeded: string | null = null;
+    rememberUaoAgentsTab(
+      "",
+      {
+        tabs: [{ ownerId: "openmuse", routeTarget: "openmuse" }],
+        activeOwnerId: "command-center",
+        activeRouteId: "command-center",
+      },
+      {
+        getItem: () => seeded,
+        setItem: (key, value) => {
+          if (key === UAO_AGENTS_TAB_STORAGE_KEY) seeded = value;
+        },
+      },
+    );
+    expect(seeded).toBe("openmuse");
   });
 });
 
@@ -199,20 +298,21 @@ describe("Dev-gated UAO Content-Security-Policy", () => {
 
     const directives = buildCspDirectives(uaoEnv);
 
-    // frame-src allows self and inspected tool origins
+    // frame-src keeps the same-origin shell and allows the Tailscale http pages.
     const frameSrc = directives.find((d) => d.startsWith("frame-src"));
-    expect(frameSrc).toBe(`frame-src ${UAO_EMBEDDED_TOOL_ORIGINS}`);
+    expect(frameSrc).toBe(
+      `frame-src ${UAO_EMBEDDED_TOOL_ORIGINS} http: https:`,
+    );
     expect(frameSrc).toContain("'self'");
-    expect(frameSrc).toBe("frame-src 'self'");
 
     // object-src, base-uri, and form-action remain strictly locked down
     expect(directives).toContain("object-src 'none'");
     expect(directives).toContain("base-uri 'self'");
     expect(directives).toContain("form-action 'self'");
 
-    // The backend is same-origin; no extra connection origins are needed.
     const connectSrc = directives.find((d) => d.startsWith("connect-src"));
-    expect(connectSrc).toBe(
+    expect(connectSrc).toContain(" http:");
+    expect(connectSrc).not.toBe(
       buildCspDirectives({}).find((d) => d.startsWith("connect-src")),
     );
   });

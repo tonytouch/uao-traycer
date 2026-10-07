@@ -25,8 +25,9 @@
  * preference has no shell-wide answer the moment it is per host or per
  * surface, and a predicate that reads one withholds a row from search while
  * its control is on screen. The one layout value that decides whether a
- * surface exists, `arrangement.mobileFooter`, is read by the row that writes
- * it (`layout-settings-panel.tsx`) rather than by a predicate.
+ * surface exists, `arrangement.mobileFooter`, is read by the layout form's
+ * own rules (`components/layout-editor/regions/row-availability.ts`) rather
+ * than by a predicate here.
  */
 import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
 import type { FeatureSettingsBridge } from "@/lib/desktop-feature-settings";
@@ -47,6 +48,15 @@ export interface SettingsAvailabilityContext {
    * evaluated earlier than that would freeze the wrong answer.
    */
   readonly mobileApp: boolean;
+  /**
+   * Whether the shell draws its PHONE layout right now: `useIsMobileViewport()`,
+   * the same predicate every renderer that swaps layouts reads. Always true in
+   * the installed app; in a browser tab it follows the window below 768px; the
+   * desktop app's 960px window floor keeps it false there. The one viewport
+   * fact here, because a layout row's availability keys on it (the form and
+   * the surface it describes must agree), and search has to agree with both.
+   */
+  readonly phoneLayout: boolean;
 }
 
 /** Rendered in every shell. */
@@ -77,16 +87,31 @@ export function isPreventSleepRowAvailable(
 }
 
 /**
- * Layout › Status bar ▸ "Show the status bar on small screens" - the one
- * surface-level row (L-51), which exists only where the footer is withheld by
- * default. Every region section on the page is drawn in every shell: a region
- * the strip does not host is hosted by the header instead, so there is nothing
- * for a second gate to withhold.
+ * Layout › Usage and resources ▸ "Status bar on small screens" (L-51): the
+ * switch the phone layout's footer mounts from (`useStatusBarVisible`), so it
+ * exists wherever that layout is drawn - the installed app, and a browser tab
+ * below 768px - and nowhere else.
  */
 export function isMobileFooterRowAvailable(
   context: SettingsAvailabilityContext,
 ): boolean {
-  return context.mobileApp;
+  return context.phoneLayout;
+}
+
+/**
+ * Layout rows the installed app can never draw, whatever its window: it
+ * always draws its own header and no tab strip or sidebar, so the tab
+ * strip's placement, view and overflow, the sidebar's side, the readings on
+ * agent rows (the phone's switcher lists draw none), the reading width (a
+ * phone is narrower than even the Comfortable column) and the minimap's edge
+ * rail (its minimap is the tile bar's drawer, which ignores the region) have
+ * no effect there. A narrow BROWSER tab keeps them: widening the window is
+ * the way back, which the form says (`wideLayoutRow`).
+ */
+export function isDesktopLayoutRowAvailable(
+  context: SettingsAvailabilityContext,
+): boolean {
+  return !context.mobileApp;
 }
 
 /**
@@ -102,20 +127,8 @@ export function isLayoutEditorAvailable(
   return !context.mobileApp;
 }
 
-/**
- * Layout › Chat › Minimap ▸ Side - the installed app never draws the edge
- * rail (the chat minimap is withheld on the phone layout, the artifact one
- * needs a fine pointer): its minimap is the tile bar's bottom drawer, which has
- * no side. The region's Shown switch still decides the drawer.
- */
-export function isMinimapSideRowAvailable(
-  context: SettingsAvailabilityContext,
-): boolean {
-  return !context.mobileApp;
-}
-
-/** General › Experimental — the desktop feature-settings bridge. */
-export function isExperimentalGroupAvailable(
+/** General › Agent roles — the desktop feature-settings bridge. */
+export function isAgentRolesRowAvailable(
   context: SettingsAvailabilityContext,
 ): boolean {
   return context.featureSettings !== null;
@@ -126,7 +139,7 @@ export function isExperimentalGroupAvailable(
  * Present in every desktop launch, including one with no local host (where
  * it is the only way back), and absent on the phone and in the browser.
  */
-export function isHostLifecycleGroupAvailable(
+export function isHostLifecycleRowAvailable(
   context: SettingsAvailabilityContext,
 ): boolean {
   return (
@@ -146,8 +159,8 @@ export function isZoomRowAvailable(
   );
 }
 
-/** Notifications › System — the OS notification-settings pointer. */
-export function isSystemNotificationsGroupAvailable(
+/** Sounds › OS notifications — the OS notification-settings pointer. */
+export function isSystemNotificationsRowAvailable(
   context: SettingsAvailabilityContext,
 ): boolean {
   return (
@@ -156,8 +169,8 @@ export function isSystemNotificationsGroupAvailable(
   );
 }
 
-/** Notifications › This phone — the OS push permission of a phone shell. */
-export function isPushPermissionGroupAvailable(
+/** Sounds › Push notifications — the OS push permission of a phone shell. */
+export function isPushPermissionRowAvailable(
   context: SettingsAvailabilityContext,
 ): boolean {
   return (

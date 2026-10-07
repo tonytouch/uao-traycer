@@ -1,4 +1,9 @@
 import {
+  isUaoAgentsTabId,
+  rewriteLegacyAgentsWorktabs,
+  UAO_AGENTS_PANE_ID,
+} from "./uao-agents-tabs";
+import {
   ALL_NAV_PANES,
   DEFAULT_PANE_ID,
   getFeatureOwnerId,
@@ -58,8 +63,9 @@ function isValidTabItem(
 export function sanitizePersistedWorktabs(
   raw: unknown,
 ): PersistedWorktabsState | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const obj = raw as Record<string, unknown>;
+  const migrated = rewriteLegacyAgentsWorktabs(raw);
+  if (typeof migrated !== "object" || migrated === null) return null;
+  const obj = migrated as Record<string, unknown>;
   if (!Array.isArray(obj.tabs)) return null;
 
   const seenOwners = new Set<string>();
@@ -105,6 +111,12 @@ export function sanitizePersistedWorktabs(
   };
 }
 
+function canonicalWorktabTarget(targetPaneId: string): string {
+  if (targetPaneId === "chat") return WORKSPACE_PANE_ID;
+  if (isUaoAgentsTabId(targetPaneId)) return UAO_AGENTS_PANE_ID;
+  return targetPaneId;
+}
+
 /**
  * Open or select a tab for a feature.
  * One tab per feature owner. If owner tab exists, updates its routeTarget.
@@ -114,9 +126,7 @@ export function openWorktab(
   tabs: readonly UaoWorktab[],
   targetPaneId: string,
 ): PersistedWorktabsState {
-  // If target is chat, owner is WORKSPACE_PANE_ID
-  const effectiveTarget =
-    targetPaneId === "chat" ? WORKSPACE_PANE_ID : targetPaneId;
+  const effectiveTarget = canonicalWorktabTarget(targetPaneId);
   const ownerId = getFeatureOwnerId(effectiveTarget);
 
   const existingIndex = tabs.findIndex((t) => t.ownerId === ownerId);

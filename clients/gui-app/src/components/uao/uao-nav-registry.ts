@@ -1,6 +1,10 @@
 /** Navigation snapshot from ultimate-agent-os/agent-os-ui/src/panes/registry.ts.
  * Screens stay owned by the backend-served UAO UI; refresh this inventory when it changes.
  */
+import { isUaoAgentsTabId, UAO_AGENTS_PANE_ID } from "./uao-agents-tabs";
+
+export { UAO_AGENTS_PANE_ID };
+
 export type UaoNavGroupId =
   | "priority"
   | "workspace"
@@ -22,11 +26,17 @@ export const PRIORITY_PANE_IDS = [
   "second-brain",
 ] as const;
 export const WORKSPACE_PANE_ID = "tasks-workspace";
-export const ORCA_PANE_ID = "orca-workspaces";
+export const WORKSPACES_PANE_ID = "workspaces";
 export const OFFICE_PANE_ID = "office";
 export function isNativeUaoPane(id: string): boolean {
-  return id === WORKSPACE_PANE_ID || id === ORCA_PANE_ID || id === OFFICE_PANE_ID;
+  return (
+    id === WORKSPACE_PANE_ID ||
+    id === WORKSPACES_PANE_ID ||
+    id === OFFICE_PANE_ID ||
+    id === UAO_AGENTS_PANE_ID
+  );
 }
+
 const paneRows: readonly (readonly [
   string,
   string,
@@ -34,6 +44,30 @@ const paneRows: readonly (readonly [
   UaoNavGroupId,
   readonly string[],
 ])[] = [
+  [
+    UAO_AGENTS_PANE_ID,
+    "Agents",
+    "users",
+    "priority",
+    [
+      "agents",
+      "agent os",
+      "cloudroom",
+      "openmuse",
+      "embed",
+      "webview",
+      "tailscale",
+      "remote",
+      "hermes",
+      "omniroute",
+      "5050",
+      "9840",
+      "8081",
+      "8797",
+      "session",
+      "codex",
+    ],
+  ],
   [
     "command-center",
     "Command Center",
@@ -63,18 +97,30 @@ const paneRows: readonly (readonly [
     ["tasks", "chat", "kanban", "board", "details"],
   ],
   [
-    "orca-workspaces",
-    "Orca Workspaces",
+    "workspaces",
+    "Workspaces & Agent Terminals",
     "terminal",
     "workspace",
-    ["orca", "workspaces", "worktree", "terminals", "agent", "screen"],
+    ["workspace", "workspaces", "worktree", "terminals", "agent", "screen"],
   ],
   [
     "office",
     "Office",
     "file-text",
     "workspace",
-    ["genoffice", "office", "word", "excel", "powerpoint", "documents", "spreadsheets", "slides", "pdf", "markdown", "html"],
+    [
+      "genoffice",
+      "office",
+      "word",
+      "excel",
+      "powerpoint",
+      "documents",
+      "spreadsheets",
+      "slides",
+      "pdf",
+      "markdown",
+      "html",
+    ],
   ],
   [
     "overview",
@@ -396,6 +442,7 @@ export function isValidNavPaneId(id: string): boolean {
 export function normalizeNavId(hashOrId: string): string {
   const id = hashOrId.replace(/^#\/?/, "").trim();
   if (id === "chat") return WORKSPACE_PANE_ID;
+  if (isUaoAgentsTabId(id)) return UAO_AGENTS_PANE_ID;
   return isValidNavPaneId(id) ? id : DEFAULT_PANE_ID;
 }
 export function filterNavPanes(query: string): readonly UaoNavPane[] {

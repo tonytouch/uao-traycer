@@ -72,7 +72,7 @@ const PRESET_CAPTIONS: Readonly<Record<LayoutPresetId, string>> = {
 };
 
 const PRESET_HELPER =
-  "Applying a preset replaces visibility and style choices. Placement, order and provider choices stay as they are. You can undo it.";
+  "Applying a preset replaces visibility and style choices. Your arrangement, such as placement, order, widths and provider choices, stays as it is. You can undo it.";
 
 /** One toast for every apply, so a second apply replaces the first's Undo. */
 const PRESET_TOAST_ID = "layout-preset-applied";
@@ -101,10 +101,16 @@ export function PresetsBlock(props: {
 }): ReactNode {
   const { reveal } = props;
   const snapshot = useLayoutSnapshot();
+  // Modified is the VALUES moved off the applied preset (T5), the one kind of
+  // change a preset puts back. Arrangement changes still show under View
+  // changes, with a note that presets keep them.
   const modified = layoutModified(snapshot);
+  const kept = layoutChanges(snapshot).arrangement.length;
+  const changed = modified || kept > 0;
   const page = useLayoutFormHost() === "page";
-  const open = useViewChangesOpen((state) => state.open) && modified;
+  const open = useViewChangesOpen((state) => state.open) && changed;
   const listId = useId();
+  const keptId = useId();
 
   return (
     <div data-testid="layout-presets-block" className="flex flex-col">
@@ -122,6 +128,9 @@ export function PresetsBlock(props: {
             arrangement={snapshot.arrangement}
             last={snapshot.basePreset === presetId}
             modified={snapshot.basePreset === presetId && modified}
+            keptNoteId={
+              snapshot.basePreset === presetId && kept > 0 ? keptId : null
+            }
             onApply={() => {
               applyPreset(presetId, reveal);
             }}
@@ -134,20 +143,34 @@ export function PresetsBlock(props: {
           page ? "px-4 py-2.5" : "px-3.5 py-2",
         )}
       >
-        <span className="flex min-w-0 items-center gap-2 text-ui-sm font-medium">
-          {modified ? (
-            <span
-              aria-hidden
-              data-testid="changed-dot"
-              className="size-1.5 shrink-0 rounded-full bg-info"
-            />
-          ) : null}
-          <span data-testid="preset-status-line" className="truncate">
-            {PRESET_LABELS[snapshot.basePreset]}
-            {modified ? " · Modified" : ""}
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className="flex min-w-0 items-center gap-2 text-ui-sm font-medium">
+            {modified ? (
+              <span
+                aria-hidden
+                data-testid="changed-dot"
+                className="size-1.5 shrink-0 rounded-full bg-info"
+              />
+            ) : null}
+            <span data-testid="preset-status-line" className="truncate">
+              {PRESET_LABELS[snapshot.basePreset]}
+              {modified ? " · Modified" : ""}
+            </span>
           </span>
+          {kept > 0 ? (
+            <span
+              id={keptId}
+              data-testid="preset-kept-note"
+              className="text-pretty text-ui-xs text-muted-foreground"
+            >
+              {/* Named for what it counts: every line under Arrangement in
+                  View changes - placement, order, widths, the phone footer
+                  and provider choices - none of which a preset touches. */}
+              {`Presets keep your arrangement: ${String(kept)} ${kept === 1 ? "change" : "changes"} under Arrangement.`}
+            </span>
+          ) : null}
         </span>
-        {modified ? (
+        {changed ? (
           <Button
             type="button"
             variant="outline"
@@ -186,32 +209,25 @@ function PresetCard(props: {
   readonly last: boolean;
   /** Whether this is the applied preset and the values have moved off it. */
   readonly modified: boolean;
+  /**
+   * On the applied card while arrangement changes exist: the note saying a
+   * preset keeps them, which the card's button is described by too (T5).
+   */
+  readonly keptNoteId: string | null;
   readonly onApply: () => void;
 }): ReactNode {
-  const { presetId, arrangement, last, modified, onApply } = props;
+  const { presetId, arrangement, last, modified, keptNoteId, onApply } = props;
   const captionId = useId();
   const modifiedId = useId();
   const name = PRESET_LABELS[presetId];
   return (
-    // A `<div role="button">`, not a native `<button>`: the miniature draws
-    // real depictions, a few of which render their own `<button>`, and a
-    // button inside a button is invalid HTML. The miniature is `inert`, so
-    // this card is the one control.
+    // A plain card with the button laid over it as a sibling: the miniature
+    // draws real depictions, a few of which render their own `<button>`, and
+    // a button around them would nest one in the other. The miniature is
+    // `inert`, so the overlay is the one control.
     <div
-      role="button"
-      tabIndex={0}
-      data-preset={presetId}
-      aria-label={`Apply ${name}`}
-      aria-describedby={modified ? `${modifiedId} ${captionId}` : captionId}
-      aria-current={last ? "true" : undefined}
-      onClick={onApply}
-      onKeyDown={(event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        onApply();
-      }}
       className={cn(
-        "relative flex min-w-0 cursor-default flex-col gap-1.5 rounded-lg border border-border p-1 pb-2 text-left transition-colors duration-100 hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "relative flex min-w-0 flex-col gap-1.5 rounded-lg border border-border p-1 pb-2 text-left transition-colors duration-100 hover:bg-foreground/5",
         last && "border-foreground/60 bg-foreground/5",
       )}
     >
@@ -255,6 +271,17 @@ function PresetCard(props: {
           {PRESET_CAPTIONS[presetId]}
         </span>
       </span>
+      <button
+        type="button"
+        data-preset={presetId}
+        aria-label={`Apply ${name}`}
+        aria-describedby={[modified ? modifiedId : null, captionId, keptNoteId]
+          .filter((id) => id !== null)
+          .join(" ")}
+        aria-current={last ? "true" : undefined}
+        onClick={onApply}
+        className="absolute -inset-px cursor-default rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      />
     </div>
   );
 }

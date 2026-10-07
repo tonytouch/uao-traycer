@@ -2,7 +2,7 @@ import { LayoutUsageProvider } from "@/components/layout-editor/inspector/provid
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
+  useId,
   useRef,
   useState,
   useSyncExternalStore,
@@ -31,6 +31,11 @@ import {
   SettingsMasterDetail,
   SettingsMasterSelect,
 } from "@/components/settings/settings-master-detail";
+import {
+  SETTINGS_AREA_BODY_PROPS,
+  useSettingsAnchorArea,
+  useSettingsAreaStartsAtTop,
+} from "@/components/settings/settings-master-detail-area";
 import { settingsRailRowClassName } from "@/components/settings/settings-rail-row";
 import { SettingsPanelShell } from "@/components/settings/settings-panel-shell";
 import { SettingsRow } from "@/components/settings/settings-row";
@@ -38,10 +43,10 @@ import { scrollPaneToCenter } from "@/components/settings/use-settings-anchor-re
 import { LAYOUT } from "@/components/settings/panels/layout-settings.definitions";
 import { Button } from "@/components/ui/button";
 import { useIsMobileViewport } from "@/hooks/ui/use-mobile-viewport";
-import { useSettingsAvailabilityContext } from "@/hooks/settings/use-settings-availability-context";
+import { LAYOUT_EDITOR_HELD_ELSEWHERE_REASON } from "@/lib/layout/editor-lease";
 import { useLayoutEditorFitsWindow } from "@/lib/layout/editor-width";
 import { openLayoutEditor } from "@/lib/layout/editor-session";
-import { isLayoutEditorAvailable } from "@/lib/settings/settings-availability";
+import { useLayoutEditorDoor } from "@/lib/layout/use-layout-editor-door";
 import { activateTabIntent } from "@/lib/tab-navigation";
 import type { LayoutSnapshot } from "@/lib/layout/layout-snapshot";
 import {
@@ -49,7 +54,6 @@ import {
   subscribePendingLayoutLanding,
   takePendingLayoutLanding,
 } from "@/lib/settings-navigation";
-import { useSettingsSearchStore } from "@/stores/settings/settings-search-store";
 import { useLayoutSnapshot } from "@/stores/layout/layout-store";
 
 /**
@@ -68,7 +72,7 @@ import { useLayoutSnapshot } from "@/stores/layout/layout-store";
  * children a commit AFTER the pick (Presence flips in a layout effect), so a
  * region landing or a search reveal that switches area would look for its row
  * in an empty pane and have nothing to re-run it. Settings search lands on
- * every row here, and picks its area first (`useLayoutAnchorArea`,
+ * every row here, and picks its area first (`useSettingsAnchorArea`,
  * `useLayoutRegionLanding`).
  */
 export function LayoutSettingsPanel(): ReactNode {
@@ -86,7 +90,7 @@ export function LayoutSettingsPanel(): ReactNode {
     );
   }, []);
 
-  useLayoutAnchorArea(setArea);
+  useSettingsAnchorArea("layout", layoutAreaForAnchor, setArea);
   useLayoutRegionLanding({
     paneRef: rootRef,
     tab: area,
@@ -94,7 +98,7 @@ export function LayoutSettingsPanel(): ReactNode {
     openRows,
     setOpenRows,
   });
-  useAreaStartsAtTop(rootRef, area);
+  useSettingsAreaStartsAtTop(rootRef, area);
 
   const changed = (id: LayoutAreaId): boolean =>
     layoutAreaChanged(id, snapshot);
@@ -193,6 +197,7 @@ export function LayoutSettingsPanel(): ReactNode {
                   an opaque fill over the card's translucent surface. */}
                   <div
                     data-layout-area-body
+                    {...SETTINGS_AREA_BODY_PROPS}
                     className="-mx-5 flex flex-col gap-4 px-5 pt-4 pb-5 md:min-h-0 md:flex-1 md:overflow-y-auto"
                   >
                     <LayoutAreaBody
@@ -292,42 +297,6 @@ function layoutAreaForAnchor(anchor: string): LayoutAreaId | null {
   return groupKey === null ? null : (AREA_FOR_GROUP[groupKey] ?? null);
 }
 
-/**
- * A Settings search result for a row on this page, taken to its area.
- *
- * The reveal watcher (`useSettingsAnchorReveal`) finds the anchor and flashes
- * it, and polls until it can - but only the picked area is visible, so the row
- * cannot be seen until this has picked its area.
- */
-function useLayoutAnchorArea(setArea: (area: LayoutAreaId) => void): void {
-  const pendingReveal = useSettingsSearchStore((state) => state.pendingReveal);
-  useEffect(() => {
-    if (pendingReveal === null || pendingReveal.section !== "layout") return;
-    if (pendingReveal.anchor === null) return;
-    const target = layoutAreaForAnchor(pendingReveal.anchor);
-    if (target !== null) setArea(target);
-  }, [pendingReveal, setArea]);
-}
-
-/**
- * A newly picked area starts at its top, as a newly picked provider does.
- *
- * Each area keeps its own scroll box while hidden, so without this one left
- * scrolled far down would come back there. A layout effect, so it runs before
- * a region landing or a search reveal scrolls the same box to a row.
- */
-function useAreaStartsAtTop(
-  root: { current: HTMLDivElement | null },
-  area: LayoutAreaId,
-): void {
-  useLayoutEffect(() => {
-    const body = root.current?.querySelector(
-      '[role="tabpanel"]:not([hidden]) [data-layout-area-body]',
-    );
-    if (body !== null && body !== undefined) body.scrollTop = 0;
-  }, [root, area]);
-}
-
 /** The same dot a changed row draws, said in words for a screen reader. */
 function ChangedDot(): ReactNode {
   return (
@@ -357,18 +326,29 @@ function ChangedDot(): ReactNode {
  * In the installed app it is nothing at all: no window there is ever wide
  * enough, so "needs a wider window" names a remedy that does not exist. The
  * search result and the guide's step are withheld by the same predicate.
+ * While another window holds the editor it is disabled and says so under
+ * itself, through the same door every other entry reads (T6).
  */
 function OpenEditorAction(props: { readonly area: LayoutAreaId }): ReactNode {
   const navigate = useNavigate();
   const fits = useLayoutEditorFitsWindow();
-  const availability = useSettingsAvailabilityContext();
-  if (!isLayoutEditorAvailable(availability)) return null;
+  const door = useLayoutEditorDoor();
+  const reasonId = useId();
+  if (door === "absent") return null;
+  const heldElsewhere = door === "held-elsewhere";
   return (
-    <div data-settings-anchor={LAYOUT.definitions.customizeEntry.anchor}>
+    <div
+      data-settings-anchor={LAYOUT.definitions.customizeEntry.anchor}
+      className="flex flex-col items-end gap-1"
+    >
       {fits ? (
         <Button
           type="button"
           size="sm"
+          // Another window holds the editor (T6): the door says so in place,
+          // in the palette's words, rather than taking a press it cannot act on.
+          disabled={heldElsewhere}
+          aria-describedby={heldElsewhere ? reasonId : undefined}
           onClick={() => {
             openLayoutEditor({
               source: "direct_ui",
@@ -391,6 +371,11 @@ function OpenEditorAction(props: { readonly area: LayoutAreaId }): ReactNode {
           The editor needs a wider window
         </p>
       )}
+      {fits && heldElsewhere ? (
+        <p id={reasonId} className="text-ui-xs text-muted-foreground">
+          {LAYOUT_EDITOR_HELD_ELSEWHERE_REASON}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -456,10 +441,20 @@ function useLayoutRegionLanding(input: {
     if (closed) setOpenRows((current) => [...current, regionId]);
     if (elsewhere || closed) return;
     takePendingLayoutLanding();
-    const row = paneRef.current?.querySelector(
-      layoutRegionRowSelector(regionId),
-    );
-    if (row === null || row === undefined) return;
+    const region =
+      paneRef.current?.querySelector(layoutRegionRowSelector(regionId)) ?? null;
+    // A row inside the region's own section (a provider in the Profiles list)
+    // when that is the controller a reason names. A row the list does not
+    // draw (a provider the usage readings no longer list) falls back to the
+    // region's own row, so the link still lands somewhere.
+    const inner =
+      pending.target.kind === "region-row"
+        ? (region?.querySelector(
+            `[data-sortable-id="${pending.target.row}"]`,
+          ) ?? null)
+        : null;
+    const row = inner ?? region;
+    if (row === null) return;
     scrollPaneToCenter(row, null);
     // The scroll is for the eye; the focus is for the hands. A keyboard user
     // used to land with focus wherever navigation had left it, looking at a

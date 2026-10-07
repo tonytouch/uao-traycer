@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { useLayoutEffect, useState, type ReactNode } from "react";
 import { Info } from "lucide-react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { LazyMotion, domAnimation } from "motion/react";
@@ -33,7 +33,10 @@ import {
   hostRpcRegistry,
   useHostBinding,
 } from "@/lib/host";
-import { useArrangementValue } from "@/lib/layout-overrides";
+import {
+  useArrangementValue,
+  useStatusBarVisible,
+} from "@/lib/layout-overrides";
 import { cn } from "@/lib/utils";
 import { sideTabStripEdge } from "@/lib/layout/layout-arrangement";
 import { EpicSessionContext } from "@/lib/registries/epic-session-registry";
@@ -43,21 +46,12 @@ import {
   useSidebarWidthPx,
 } from "@/stores/epics/left-panel-store";
 import type { OpenedStoreForTest } from "@/stores/epics/open-epic/test-support/open-store-for-test";
-import { useStatusBarShown } from "@/stores/layout/layout-store";
-import {
-  LayoutUsageProvider,
-  ProviderLimitWindowsReader,
-  type ProviderLimitWindows,
-} from "@/components/layout-editor/inspector/provider-limit-windows";
-import type { RateLimitProviderId } from "@/lib/rate-limit-providers";
 import {
   EPIC_SURFACE_ID,
   EPIC_SURFACE_CHAT,
   TRACKED_AGENT_ID,
   harnessMessengerFactory,
-  usageProbe,
   type SweepWindow,
-  SWEEP_CONFIGURED_PROVIDERS,
 } from "@/components/layout-editor/__tests__/layout-sweep-fixtures";
 
 function renderHostedBody(): ReactNode {
@@ -113,7 +107,7 @@ function EpicWindowSurface(props: {
   const mainCollapsed = useMainPanelCollapsed(EPIC_SURFACE_ID);
   const stripEdge = sideTabStripEdge(useArrangementValue("tabStripPlacement"));
   const canvasSeam = stripEdge === sidebarSide ? null : stripEdge;
-  const statusBarShown = useStatusBarShown();
+  const statusBarShown = useStatusBarVisible();
   const handle = (
     <SidebarWidthResizeHandle side={sidebarSide} hidden={mainCollapsed} />
   );
@@ -319,28 +313,5 @@ export function SweepProviders(props: {
         </HostRuntimeProvider>
       </RunnerHostProvider>
     </QueryClientProvider>
-  );
-}
-
-function UsageCapture(props: {
-  readonly providerId: RateLimitProviderId;
-  readonly limits: ProviderLimitWindows;
-}): ReactNode {
-  const { providerId, limits } = props;
-  useEffect(() => {
-    usageProbe.set(providerId, limits);
-  }, [providerId, limits]);
-  return null;
-}
-
-export function UsageProbe(): ReactNode {
-  return (
-    <LayoutUsageProvider>
-      {SWEEP_CONFIGURED_PROVIDERS.map((providerId) => (
-        <ProviderLimitWindowsReader key={providerId} providerId={providerId}>
-          {(limits) => <UsageCapture providerId={providerId} limits={limits} />}
-        </ProviderLimitWindowsReader>
-      ))}
-    </LayoutUsageProvider>
   );
 }
